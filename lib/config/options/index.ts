@@ -52,6 +52,7 @@ const options: RenovateOptions[] = [
     subType: 'string',
     globalOnly: true,
     patternMatch: true,
+    mergeable: true,
   },
   {
     name: 'detectGlobalManagerConfig',
@@ -107,7 +108,7 @@ const options: RenovateOptions[] = [
     globalOnly: true,
   },
   {
-    name: 'allowPostUpgradeCommandTemplating',
+    name: 'allowCommandTemplating',
     description:
       'Set this to `false` to disable template compilation for post-upgrade commands.',
     type: 'boolean',
@@ -115,9 +116,9 @@ const options: RenovateOptions[] = [
     globalOnly: true,
   },
   {
-    name: 'allowedPostUpgradeCommands',
+    name: 'allowedCommands',
     description:
-      'A list of regular expressions that decide which post-upgrade tasks are allowed.',
+      'A list of regular expressions that decide which commands are allowed in post-upgrade tasks.',
     type: 'array',
     subType: 'string',
     default: [],
@@ -515,7 +516,7 @@ const options: RenovateOptions[] = [
     description:
       'Change this value to override the default Renovate sidecar image.',
     type: 'string',
-    default: 'ghcr.io/containerbase/sidecar:13.0.11',
+    default: 'ghcr.io/containerbase/sidecar:13.7.1',
     globalOnly: true,
   },
   {
@@ -1135,6 +1136,7 @@ const options: RenovateOptions[] = [
     supportedManagers: [
       'ansible',
       'bitbucket-pipelines',
+      'buildpacks',
       'crossplane',
       'devcontainer',
       'docker-compose',
@@ -2388,6 +2390,7 @@ const options: RenovateOptions[] = [
       'gomodTidyE',
       'gomodUpdateImportPaths',
       'gomodSkipVendor',
+      'gomodVendor',
       'helmUpdateSubChartArchives',
       'npmDedupe',
       'pnpmDedupe',
@@ -2853,6 +2856,14 @@ const options: RenovateOptions[] = [
       'Set to `true` to initialize submodules during repository clone.',
     type: 'boolean',
     default: false,
+  },
+  {
+    name: 'cloneSubmodulesFilter',
+    description:
+      'List of submodules names or patterns to clone when cloneSubmodules=true.',
+    type: 'array',
+    subType: 'string',
+    default: ['*'],
   },
   {
     name: 'ignorePrAuthor',

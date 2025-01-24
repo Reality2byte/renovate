@@ -1,27 +1,27 @@
-# syntax=docker/dockerfile:1.11.1@sha256:10c699f1b6c8bdc8f6b4ce8974855dd8542f1768c26eb240237b8f1c9c6c9976
+# syntax=docker/dockerfile:1.13.0@sha256:426b85b823c113372f766a963f68cfd9cd4878e1bcc0fda58779127ee98a28eb
 
 ARG BASE_IMAGE_TYPE=slim
 
 # --------------------------------------
 # slim image
 # --------------------------------------
-FROM ghcr.io/renovatebot/base-image:9.4.4@sha256:929f57b34415175bdb70fd5dc9a03c4531fe40f441e4b141bca65f8ace32e9a8 AS slim-base
+FROM ghcr.io/renovatebot/base-image:9.36.5@sha256:bb9a612c66c0849895840edc18acb86e178e3e1aa1bcd971a2103dadee4cce39 AS slim-base
 
 # --------------------------------------
 # full image
 # --------------------------------------
-FROM ghcr.io/renovatebot/base-image:9.4.3-full@sha256:9502eb0c36c823b0a2b24f083841ad9a69a150ff6d1fec68c5c81117a43e48a6 AS full-base
+FROM ghcr.io/renovatebot/base-image:9.36.5-full@sha256:2bb996decbf51ada2c2d883c5c24d2b9676c8c623eb1c2840d5c246bcd11e5ee AS full-base
 
 ENV RENOVATE_BINARY_SOURCE=global
 
 # --------------------------------------
 # build image
 # --------------------------------------
-FROM --platform=$BUILDPLATFORM ghcr.io/renovatebot/base-image:9.4.4@sha256:929f57b34415175bdb70fd5dc9a03c4531fe40f441e4b141bca65f8ace32e9a8 AS build
+FROM --platform=$BUILDPLATFORM ghcr.io/renovatebot/base-image:9.36.5@sha256:bb9a612c66c0849895840edc18acb86e178e3e1aa1bcd971a2103dadee4cce39 AS build
 
 # We want a specific node version here
 # renovate: datasource=node-version
-RUN install-tool node 22.11.0
+RUN install-tool node 22.13.1
 
 WORKDIR /usr/local/renovate
 
@@ -59,9 +59,10 @@ COPY --link pnpm-lock.yaml ./
 
 # set `npm_config_arch` for `prebuild-install`
 # set `npm_config_platform_arch` for `install-artifact-from-github`
+ENV npm_config_arch=${ARCH} npm_config_platform_arch=${ARCH}
+
 # only fetch deps from lockfile https://pnpm.io/cli/fetch
 RUN set -ex; \
-  export npm_config_arch=${ARCH} npm_config_platform_arch=${ARCH}; \
   corepack pnpm fetch --prod; \
   true
 
@@ -94,6 +95,10 @@ COPY --link --from=build --chown=root:root /usr/local/renovate/ /usr/local/renov
 
 # make our node binary available as last in path
 RUN ln -sf /usr/local/renovate/node /bin/node
+
+# ensure default base and cache directories exist.
+RUN mkdir -p /tmp/renovate/cache && \
+  chmod -R 777 /tmp/renovate
 
 # test
 RUN set -ex; \
