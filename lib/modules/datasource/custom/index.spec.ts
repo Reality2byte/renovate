@@ -1,12 +1,12 @@
 import { codeBlock, html } from 'common-tags';
-import { getPkgReleases } from '..';
-import { Fixtures } from '../../../../test/fixtures';
-import * as httpMock from '../../../../test/http-mock';
-import { fs } from '../../../../test/util';
-import { logger } from '../../../logger';
-import { CustomDatasource } from './index';
+import { Fixtures } from '~test/fixtures.ts';
+import * as httpMock from '~test/http-mock.ts';
+import { fs } from '~test/util.ts';
+import { logger } from '../../../logger/index.ts';
+import { getPkgReleases } from '../index.ts';
+import { CustomDatasource } from './index.ts';
 
-jest.mock('../../../util/fs');
+vi.mock('../../../util/fs/index.ts');
 
 describe('modules/datasource/custom/index', () => {
   describe('getReleases', () => {
@@ -248,9 +248,13 @@ describe('modules/datasource/custom/index', () => {
         },
       });
       expect(result).toBeNull();
+
       expect(logger.once.warn).toHaveBeenCalledWith(
-        { errorMessage: 'The symbol "." cannot be used as a unary operator' },
-        'Invalid JSONata expression: $[.name = "Alice" and',
+        {
+          errorMessage: 'The symbol "." cannot be used as a unary operator',
+          transformTemplate: '$[.name = "Alice" and',
+        },
+        'Invalid JSONata expression',
       );
     });
 
@@ -273,9 +277,10 @@ describe('modules/datasource/custom/index', () => {
         },
       });
       expect(result).toBeNull();
+
       expect(logger.once.warn).toHaveBeenCalledWith(
-        { err: expect.any(Object) },
-        'Error while evaluating JSONata expression: $notafunction()',
+        { err: expect.any(Object), transformTemplate: '$notafunction()' },
+        'Error while evaluating JSONata expression',
       );
     });
 
@@ -372,6 +377,86 @@ describe('modules/datasource/custom/index', () => {
           foo: {
             defaultRegistryUrlTemplate: 'file://test.yaml',
             format: 'yaml',
+          },
+        },
+      });
+
+      expect(result).toEqual(expected);
+    });
+
+    it('returns releases for toml API directly exposing in Renovate format', async () => {
+      const expected = {
+        releases: [
+          {
+            version: '1.0.0',
+          },
+          {
+            version: '2.0.0',
+          },
+          {
+            version: '3.0.0',
+          },
+        ],
+      };
+
+      const toml = codeBlock`
+        [[releases]]
+        version = "1.0.0"
+        [[releases]]
+        version = "2.0.0"
+        [[releases]]
+        version = "3.0.0"
+      `;
+
+      httpMock.scope('https://example.com').get('/v1').reply(200, toml, {
+        'Content-Type': 'application/toml',
+      });
+
+      const result = await getPkgReleases({
+        datasource: `${CustomDatasource.id}.foo`,
+        packageName: 'myPackage',
+        customDatasources: {
+          foo: {
+            defaultRegistryUrlTemplate: 'https://example.com/v1',
+            format: 'toml',
+          },
+        },
+      });
+
+      expect(result).toEqual(expected);
+    });
+
+    it('return releases for toml file directly exposing in Renovate format', async () => {
+      const expected = {
+        releases: [
+          {
+            version: '1.0.0',
+          },
+          {
+            version: '2.0.0',
+          },
+          {
+            version: '3.0.0',
+          },
+        ],
+      };
+
+      fs.readLocalFile.mockResolvedValueOnce(codeBlock`
+        [[releases]]
+        version = "1.0.0"
+        [[releases]]
+        version = "2.0.0"
+        [[releases]]
+        version = "3.0.0"
+      `);
+
+      const result = await getPkgReleases({
+        datasource: `${CustomDatasource.id}.foo`,
+        packageName: 'myPackage',
+        customDatasources: {
+          foo: {
+            defaultRegistryUrlTemplate: 'file://test.toml',
+            format: 'toml',
           },
         },
       });

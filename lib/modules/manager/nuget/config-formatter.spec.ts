@@ -1,7 +1,7 @@
 import { XmlDocument } from 'xmldoc';
-import * as hostRules from '../../../util/host-rules';
-import { createNuGetConfigXml } from './config-formatter';
-import type { Registry } from './types';
+import * as hostRules from '../../../util/host-rules.ts';
+import { createNuGetConfigXml } from './config-formatter.ts';
+import type { Registry } from './types.ts';
 
 describe('modules/manager/nuget/config-formatter', () => {
   describe('createNuGetConfigXml', () => {
@@ -34,27 +34,25 @@ describe('modules/manager/nuget/config-formatter', () => {
         'myRegistry',
       );
       expect(myRegistry?.name).toBe('add');
-      expect(myRegistry?.attr['value']).toBe(
-        'https://my-registry.example.org/',
-      );
-      expect(myRegistry?.attr['protocolVersion']).toBe('2');
+      expect(myRegistry?.attr.value).toBe('https://my-registry.example.org/');
+      expect(myRegistry?.attr.protocolVersion).toBe('2');
 
       const myRegistry2 = packageSources?.childWithAttribute(
         'key',
         'myRegistry2',
       );
       expect(myRegistry2?.name).toBe('add');
-      expect(myRegistry2?.attr['value']).toBe(
+      expect(myRegistry2?.attr.value).toBe(
         'https://my-registry2.example.org/index.json',
       );
-      expect(myRegistry2?.attr['protocolVersion']).toBe('3');
+      expect(myRegistry2?.attr.protocolVersion).toBe('3');
 
       const myUnnamedRegistry = packageSources?.childWithAttribute(
         'value',
         'https://my-unnamed-registry.example.org/index.json',
       );
       expect(myUnnamedRegistry?.name).toBe('add');
-      expect(myUnnamedRegistry?.attr['key']).toBe('Package source 1');
+      expect(myUnnamedRegistry?.attr.key).toBe('Package source 1');
     });
 
     it('returns xml with authenticated registries', () => {
@@ -102,21 +100,20 @@ describe('modules/manager/nuget/config-formatter', () => {
         'packageSourceCredentials.myRegistry',
       );
       expect(
-        myRegistryCredentials?.childWithAttribute('key', 'Username')?.attr[
-          'value'
-        ],
+        myRegistryCredentials?.childWithAttribute('key', 'Username')?.attr
+          .value,
       ).toBe('some-username');
 
       expect(
         myRegistryCredentials?.childWithAttribute('key', 'ClearTextPassword')
-          ?.attr['value'],
+          ?.attr.value,
       ).toBe('some-password');
 
       expect(
         myRegistryCredentials?.childWithAttribute(
           'key',
           'ValidAuthenticationTypes',
-        )?.attr['value'],
+        )?.attr.value,
       ).toBe('basic');
 
       const myRegistry2Credentials = xmlDocument.descendantWithPath(
@@ -127,14 +124,14 @@ describe('modules/manager/nuget/config-formatter', () => {
       ).toBeUndefined();
       expect(
         myRegistry2Credentials?.childWithAttribute('key', 'ClearTextPassword')
-          ?.attr['value'],
+          ?.attr.value,
       ).toBe('some-password');
 
       expect(
         myRegistry2Credentials?.childWithAttribute(
           'key',
           'ValidAuthenticationTypes',
-        )?.attr['value'],
+        )?.attr.value,
       ).toBe('basic');
     });
 
@@ -163,21 +160,21 @@ describe('modules/manager/nuget/config-formatter', () => {
 
       const registryCredentialsWithSpecialName =
         packageSourceCredentials?.childNamed(
-          'my__x0020__very__x003f____x0020__weird__x0021__-regi__x0024__try_name',
+          'my_x0020_very_x003f__x0020_weird_x0021_-regi_x0024_try_name',
         );
 
       expect(
         registryCredentialsWithSpecialName?.childWithAttribute(
           'key',
           'Username',
-        )?.attr['value'],
+        )?.attr.value,
       ).toBe('some-username');
 
       expect(
         registryCredentialsWithSpecialName?.childWithAttribute(
           'key',
           'ClearTextPassword',
-        )?.attr['value'],
+        )?.attr.value,
       ).toBe('some-password');
     });
 
@@ -198,10 +195,8 @@ describe('modules/manager/nuget/config-formatter', () => {
         'key',
         'myRegistry',
       );
-      expect(myRegistry?.attr['value']).toBe(
-        'https://my-registry.example.org/',
-      );
-      expect(myRegistry?.attr['protocolVersion']).toBe('3');
+      expect(myRegistry?.attr.value).toBe('https://my-registry.example.org/');
+      expect(myRegistry?.attr.protocolVersion).toBe('3');
     });
 
     it('includes packageSourceMapping when defined', () => {
@@ -233,7 +228,7 @@ describe('modules/manager/nuget/config-formatter', () => {
         'myRegistry',
       );
       expect(myRegistryMaps?.name).toBe('packageSource');
-      expect(myRegistryMaps?.childNamed('package')?.attr['pattern']).toBe('*');
+      expect(myRegistryMaps?.childNamed('package')?.attr.pattern).toBe('*');
 
       const myRegistry2Maps = packageSourceMapping?.childWithAttribute(
         'key',
@@ -243,7 +238,7 @@ describe('modules/manager/nuget/config-formatter', () => {
       expect(
         myRegistry2Maps
           ?.childrenNamed('package')
-          .map((child) => child.attr['pattern']),
+          .map((child) => child.attr.pattern),
       ).toEqual(['LimitedPackages.*', 'MySpecialPackage']);
     });
 
@@ -265,6 +260,69 @@ describe('modules/manager/nuget/config-formatter', () => {
         'packageSourceMapping',
       );
       expect(packageSourceMapping).toBeUndefined();
+    });
+
+    it('skips duplicate registry URLs', () => {
+      const registries: Registry[] = [
+        {
+          name: 'myRegistry',
+          url: 'https://my-registry.example.org',
+        },
+        {
+          name: 'myRegistry2',
+          url: 'https://my-registry2.example.org/index.json',
+        },
+        {
+          name: 'duplicateRegistry',
+          url: 'https://my-registry.example.org', // Duplicate URL with different name
+        },
+        {
+          url: 'https://my-registry2.example.org/index.json', // Duplicate URL without name
+        },
+        {
+          url: 'https://my-unnamed-registry.example.org/index.json',
+        },
+      ];
+
+      const xml = createNuGetConfigXml(registries);
+      const xmlDocument = new XmlDocument(xml);
+      const packageSources = xmlDocument.childNamed('packageSources');
+      expect(packageSources).toBeDefined();
+
+      // First occurrence should be kept
+      const myRegistry = packageSources?.childWithAttribute(
+        'key',
+        'myRegistry',
+      );
+      expect(myRegistry?.name).toBe('add');
+      expect(myRegistry?.attr.value).toBe('https://my-registry.example.org/');
+      expect(myRegistry?.attr.protocolVersion).toBe('2');
+
+      // Second unique registry should be present
+      const myRegistry2 = packageSources?.childWithAttribute(
+        'key',
+        'myRegistry2',
+      );
+      expect(myRegistry2?.name).toBe('add');
+      expect(myRegistry2?.attr.value).toBe(
+        'https://my-registry2.example.org/index.json',
+      );
+      expect(myRegistry2?.attr.protocolVersion).toBe('3');
+
+      // Unnamed registry should be present
+      const myUnnamedRegistry = packageSources?.childWithAttribute(
+        'value',
+        'https://my-unnamed-registry.example.org/index.json',
+      );
+      expect(myUnnamedRegistry?.name).toBe('add');
+      expect(myUnnamedRegistry?.attr.key).toBe('Package source 1');
+
+      // Duplicate registries should not exist
+      const duplicateRegistry = packageSources?.childWithAttribute(
+        'key',
+        'duplicateRegistry',
+      );
+      expect(duplicateRegistry).toBeUndefined();
     });
   });
 });

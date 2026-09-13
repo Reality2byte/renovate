@@ -1,21 +1,52 @@
 # Mend-hosted Apps Configuration
 
-The Mend-hosted apps ([Renovate App on GitHub](https://github.com/apps/renovate) and [Mend App on Bitbucket](https://marketplace.atlassian.com/apps/1232072/mend)) are popular ways to use Renovate on the cloud.
-
 This page:
 
 - covers all non-default Renovate behavior of these Mend-hosted apps
 - is a supplement to the CLI documentation
 
-<!-- prettier-ignore -->
 !!! note
-    For general configuration of the Renovate CLI, read the main [Configuration/Overview](../config-overview.md) section.
+  For general configuration of the Renovate CLI, read the main [Configuration/Overview](../config-overview.md) section.
 
 ## Finding the logs
 
 The Renovate logs for the Mend-hosted apps are on the [Mend Developer Portal](https://developer.mend.io).
 
 Reading the logs can help you understand the configuration that Renovate used.
+
+## Renovate Version
+
+The Renovate version used by the Mend-hosted apps is updated manually by the maintainers of the app.
+The maintainers don't follow any release schedule or release cadence, but try to update at least once a week.
+This means the Mend Renovate App can lag a few hours to a week behind the open source version.
+
+Major releases of Renovate are held back until the maintainers are reasonably certain it works for most users.
+
+### Which version is the Mend Renovate app using?
+
+Follow these steps to see which version the Mend Renovate app used for a specific job:
+
+1. Sign in to the [Mend Developer Portal](https://developer.mend.io/) with your GitHub or Bitbucket account
+1. Select your organization
+1. Select a installed repository
+1. Select a job from the _Recent jobs_ overview
+1. Select the _Info_ Log Level from the dropdown menu
+1. You should see something like this:
+
+   ```
+   INFO: Renovate started
+   {
+     "renovateVersion": "44.52.1"
+   }
+   ...
+   INFO: Repository started
+   {
+     "renovateVersion": "44.52.1"
+   }
+   ```
+
+!!! tip
+  The PRs that Renovate creates have a link to the "repository job log" in the footer of the PR body text.
 
 ## Onboarding behavior
 
@@ -44,12 +75,12 @@ This change causes Renovate to create an Onboarding PR, even if Renovate does no
 
 ## Fork Processing
 
-If an Organization installs Renovate with the "All repositories" option, then `forkProcessing` will remain set to its default value `false`.
+If an Organization installs Renovate with the "All repositories" option, then `forkProcessing` will remain set to its default value `disabled`.
 This means forked repositories are _not_ onboarded, Renovate ignores them.
-To change this behavior, push a `renovate.json` file to the repository with `"forkProcessing": true`.
+To change this behavior, push a `renovate.json` file to the repository with `"forkProcessing": "enabled"`.
 
 If an Organization installs Renovate with "Selected repositories", we assume the organization wants to onboard _all_ of the selected repositories, even forked repositories.
-Therefore we set `forkProcessing` to `true`.
+Therefore we set `forkProcessing` to "enabled".
 
 ## Inherited config
 
@@ -76,4 +107,29 @@ Additionally, the preset `config:recommended` is added to `onboardingConfig`.
 A limited set of approved `postUpgradeTasks` commands are allowed in the app.
 The commands are not documented, as they may change over time.
 
-You can find the allowed `postUpgradeTasks` commands in Renovate's log output.
+You can find the allowed `postUpgradeTasks` commands in Renovate's log output, when searching for a log line which references [`allowedCommands`](../self-hosted-configuration.md#allowedcommands).
+
+## Validating configuration
+
+As noted in [Validation of Renovate config change PRs](../config-validation.md#validation-of-renovate-config-change-prs), Renovate will automagically validate your configuration changes when pushing to the "reconfigure" branch.
+
+!!! tip
+  When using a Mend-hosted app, the "reconfigure" branch defaults to `renovate/reconfigure`.
+
+When pushing to this specific branch name, Renovate will run its validation and report a status check to the Platform whether this passes/fails validation.
+
+!!! note
+  The reconfigure branch **must** be pushed to the source repository that Renovate runs against, not a fork.
+
+If you have a Pull Request open from this branch (including draft PRs), Renovate will comment on the PR to note:
+
+- If there are any failures, and if so, what's wrong
+- If the configuration passed validation, and if so, what the new configuration will do
+
+[For example](https://github.com/JamieTanna-Mend-testing/mend-reconfigure/pull/2), when failing validation:
+
+![A view of a GitHub Pull Request, showing a commit that breaks the build, with a red status check next to the commit, and a comment from Renovate below noting that the configuration is broken, as it has an invalid configuration option](../assets/images/mend-hosted-reconfigure-failed.png){ loading=lazy }
+
+And when the PR then passes validation:
+
+![A similar view of the same Pull Request, but with a new commit reverting the 'broken' changes. We can see a green tick status check showing that Renovate's config validation passed the commit, and below there is a lengthy comment from Renovate summarising the configuration presets (as it would do when performing an onboarding PR - in this case, taking the description of all presets used. Additionally, there is a 'what to expect' section which notes that the repo is up-to-date so no new PRs would be raised by Renovate](../assets/images/mend-hosted-reconfigure-passed.png){ loading=lazy }

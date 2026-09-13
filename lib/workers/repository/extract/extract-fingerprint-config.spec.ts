@@ -1,7 +1,7 @@
-import { mergeChildConfig } from '../../../config';
-import { getConfig } from '../../../config/defaults';
-import { allManagersList } from '../../../modules/manager';
-import { generateFingerprintConfig } from './extract-fingerprint-config';
+import { getConfig } from '../../../config/defaults.ts';
+import { mergeChildConfig } from '../../../config/index.ts';
+import { allManagersList } from '../../../modules/manager/index.ts';
+import { generateFingerprintConfig } from './extract-fingerprint-config.ts';
 
 describe('workers/repository/extract/extract-fingerprint-config', () => {
   it('filter with enabledManagers', () => {
@@ -12,7 +12,7 @@ describe('workers/repository/extract/extract-fingerprint-config', () => {
       ignorePaths: ['ignore-path-1'],
       includePaths: ['include-path-1'],
       npm: {
-        fileMatch: ['hero.json'],
+        managerFilePatterns: ['/hero.json/'],
         ignorePaths: ['ignore-path-2'],
         includePaths: ['include-path-2'],
         registryAliases: {
@@ -23,7 +23,7 @@ describe('workers/repository/extract/extract-fingerprint-config', () => {
       customManagers: [
         {
           customType: 'regex',
-          fileMatch: ['js', '***$}{]]['],
+          managerFilePatterns: ['/js/', '/***$}{]][/'],
           matchStrings: ['^(?<depName>foo)(?<currentValue>bar)$'],
           datasourceTemplate: 'maven',
           versioningTemplate: 'gradle',
@@ -39,7 +39,12 @@ describe('workers/repository/extract/extract-fingerprint-config', () => {
     ).toEqual({
       enabled: true,
       fileList: [],
-      fileMatch: ['(^|/)package\\.json$', 'hero.json'],
+      managerFilePatterns: [
+        '/(^|/)package\\.json$/',
+        '/(^|/)pnpm-workspace\\.yaml$/',
+        '/(^|/)\\.yarnrc\\.yml$/',
+        '/hero.json/',
+      ],
       ignorePaths: ['ignore-path-2'],
       includePaths: ['include-path-2'],
       manager: 'npm',
@@ -54,7 +59,7 @@ describe('workers/repository/extract/extract-fingerprint-config', () => {
     expect(
       fingerprintConfig.managers.find((manager) => manager.manager === 'regex'),
     ).toEqual({
-      fileMatch: ['js', '***$}{]]['],
+      managerFilePatterns: ['/js/', '/***$}{]][/'],
       ignorePaths: ['ignore-path-1'],
       includePaths: ['include-path-1'],
       fileList: [],
@@ -76,7 +81,7 @@ describe('workers/repository/extract/extract-fingerprint-config', () => {
     const config = mergeChildConfig(getConfig(), {
       npmrc: 'some-string',
       npmrcMerge: true,
-      npm: { fileMatch: ['hero.json'] },
+      npm: { managerFilePatterns: ['/hero.json/'] },
     });
     const fingerprintConfig = generateFingerprintConfig(config);
     expect(fingerprintConfig.managerList).toEqual(new Set(allManagersList));
@@ -85,7 +90,12 @@ describe('workers/repository/extract/extract-fingerprint-config', () => {
     ).toEqual({
       enabled: true,
       fileList: [],
-      fileMatch: ['(^|/)package\\.json$', 'hero.json'],
+      managerFilePatterns: [
+        '/(^|/)package\\.json$/',
+        '/(^|/)pnpm-workspace\\.yaml$/',
+        '/(^|/)\\.yarnrc\\.yml$/',
+        '/hero.json/',
+      ],
       ignorePaths: ['**/node_modules/**', '**/bower_components/**'],
       includePaths: [],
       manager: 'npm',
@@ -101,9 +111,9 @@ describe('workers/repository/extract/extract-fingerprint-config', () => {
     ).toEqual({
       enabled: true,
       fileList: [],
-      fileMatch: [
-        '(^|/|\\.)([Dd]ocker|[Cc]ontainer)file$',
-        '(^|/)([Dd]ocker|[Cc]ontainer)file[^/]*$',
+      managerFilePatterns: [
+        '/(^|/|\\.)([Dd]ocker|[Cc]ontainer)file$/',
+        '/(^|/)([Dd]ocker|[Cc]ontainer)file[^/]*$/',
       ],
       ignorePaths: ['**/node_modules/**', '**/bower_components/**'],
       includePaths: [],

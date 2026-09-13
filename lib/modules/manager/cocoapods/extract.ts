@@ -1,13 +1,13 @@
-import { logger } from '../../../logger';
-import { getSiblingFileName, localPathExists } from '../../../util/fs';
-import { newlineRegex, regEx } from '../../../util/regex';
-import { coerceString } from '../../../util/string';
-import { GitTagsDatasource } from '../../datasource/git-tags';
-import { GithubTagsDatasource } from '../../datasource/github-tags';
-import { GitlabTagsDatasource } from '../../datasource/gitlab-tags';
-import { PodDatasource } from '../../datasource/pod';
-import type { PackageDependency, PackageFileContent } from '../types';
-import type { ParsedLine } from './types';
+import { logger } from '../../../logger/index.ts';
+import { getSiblingFileName, localPathExists } from '../../../util/fs/index.ts';
+import { newlineRegex, regEx } from '../../../util/regex.ts';
+import { coerceString } from '../../../util/string.ts';
+import { GitTagsDatasource } from '../../datasource/git-tags/index.ts';
+import { GithubTagsDatasource } from '../../datasource/github-tags/index.ts';
+import { GitlabTagsDatasource } from '../../datasource/gitlab-tags/index.ts';
+import { PodDatasource } from '../../datasource/pod/index.ts';
+import type { PackageDependency, PackageFileContent } from '../types.ts';
+import type { ParsedLine } from './types.ts';
 
 const regexMappings = [
   regEx(`^\\s*pod\\s+(['"])(?<spec>[^'"/]+)(/(?<subspec>[^'"]+))?(['"])`),
@@ -36,12 +36,12 @@ export function parseLine(line: string): ParsedLine {
     const depName = result.subspec
       ? `${result.spec}/${result.subspec}`
       : result.spec;
-    const groupName = result.spec;
+    const specName = result.spec;
     if (depName) {
       result.depName = depName;
     }
-    if (groupName) {
-      result.groupName = groupName;
+    if (specName) {
+      result.specName = specName;
     }
     delete result.spec;
     delete result.subspec;
@@ -96,7 +96,7 @@ export async function extractPackageFile(
     const parsedLine = parseLine(line);
     const {
       depName,
-      groupName,
+      specName,
       currentValue,
       git,
       tag,
@@ -112,14 +112,14 @@ export async function extractPackageFile(
       const managerData = { lineNumber };
       let dep: PackageDependency = {
         depName,
-        groupName,
+        sharedVariableName: specName,
         skipReason: 'unspecified-version',
       };
 
       if (currentValue) {
         dep = {
           depName,
-          groupName,
+          sharedVariableName: specName,
           datasource: PodDatasource.id,
           currentValue,
           managerData,
@@ -131,14 +131,14 @@ export async function extractPackageFile(
         } else {
           dep = {
             depName,
-            groupName,
+            sharedVariableName: specName,
             skipReason: 'git-dependency',
           };
         }
       } else if (path) {
         dep = {
           depName,
-          groupName,
+          sharedVariableName: specName,
           skipReason: 'path-dependency',
         };
       }

@@ -1,7 +1,7 @@
-import { logger } from '../../../logger';
-import type { UpdateDependencyConfig } from '../types';
-import type { GradleManagerData } from './types';
-import { versionLikeSubstring } from './utils';
+import { logger } from '../../../logger/index.ts';
+import type { UpdateDependencyConfig } from '../types.ts';
+import type { GradleManagerData } from './types.ts';
+import { versionLikeSubstring } from './utils.ts';
 
 export function updateDependency({
   fileContent,
@@ -23,7 +23,7 @@ export function updateDependency({
     if (version === newValue) {
       return fileContent;
     }
-    if (version === currentValue || upgrade.groupName) {
+    if (version === currentValue || upgrade.sharedVariableName) {
       // TODO: types (#22198)
       return `${leftPart}${newValue}${restPart}`;
     }

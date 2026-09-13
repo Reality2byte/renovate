@@ -1,11 +1,12 @@
-import type { FluxResource } from './schema';
+import type { FluxResource } from './schema.ts';
 
-export type FluxManagerData = {
-  components: string;
-};
+export interface FluxManagerData {
+  components?: string;
+}
 
 export interface FluxFile {
   file: string;
+  content: string;
 }
 
 export interface ResourceFluxManifest extends FluxFile {

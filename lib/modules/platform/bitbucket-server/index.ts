@@ -1,26 +1,34 @@
-import { setTimeout } from 'timers/promises';
+import { setTimeout } from 'node:timers/promises';
+import { isNonEmptyStringAndNotWhitespace } from '@sindresorhus/is';
+import ignore from 'ignore';
 import semver from 'semver';
 import type { PartialDeep } from 'type-fest';
+import { GlobalConfig } from '../../../config/global.ts';
 import {
   REPOSITORY_CHANGED,
   REPOSITORY_EMPTY,
   REPOSITORY_NOT_FOUND,
-} from '../../../constants/error-messages';
-import { logger } from '../../../logger';
-import type { BranchStatus } from '../../../types';
-import type { FileData } from '../../../types/platform/bitbucket-server';
-import { parseJson } from '../../../util/common';
-import * as git from '../../../util/git';
-import { deleteBranch } from '../../../util/git';
-import * as hostRules from '../../../util/host-rules';
+} from '../../../constants/error-messages.ts';
+import { logger } from '../../../logger/index.ts';
+import type { BranchStatus } from '../../../types/index.ts';
+import type { FileData } from '../../../types/platform/bitbucket-server/index.ts';
+import { parseJson } from '../../../util/common.ts';
+import { getEnv } from '../../../util/env.ts';
+import * as git from '../../../util/git/index.ts';
+import { deleteBranch } from '../../../util/git/index.ts';
+import * as hostRules from '../../../util/host-rules.ts';
 import {
   BitbucketServerHttp,
+  type BitbucketServerHttpOptions,
   setBaseUrl,
-} from '../../../util/http/bitbucket-server';
-import type { HttpOptions, HttpResponse } from '../../../util/http/types';
-import { newlineRegex, regEx } from '../../../util/regex';
-import { sanitize } from '../../../util/sanitize';
-import { ensureTrailingSlash, getQueryString } from '../../../util/url';
+} from '../../../util/http/bitbucket-server.ts';
+import { memCacheProvider } from '../../../util/http/cache/memory-http-cache-provider.ts';
+import type { HttpOptions, HttpResponse } from '../../../util/http/types.ts';
+import { newlineRegex, regEx } from '../../../util/regex.ts';
+import { sampleSize } from '../../../util/sample.ts';
+import { sanitize } from '../../../util/sanitize.ts';
+import { isEmailAdress } from '../../../util/schema-utils/index.ts';
+import { ensureTrailingSlash, getQueryString } from '../../../util/url.ts';
 import type {
   BranchStatusConfig,
   CreatePRConfig,
@@ -28,19 +36,29 @@ import type {
   EnsureCommentRemovalConfig,
   EnsureIssueConfig,
   EnsureIssueResult,
+  FileOwnerRule,
   FindPRConfig,
   Issue,
   MergePRConfig,
   PlatformParams,
+  PlatformPrOptions,
   PlatformResult,
   Pr,
+  ReattemptPlatformAutomergeConfig,
   RepoParams,
   RepoResult,
   UpdatePrConfig,
-} from '../types';
-import { getNewBranchName, repoFingerprint } from '../util';
-import { smartTruncate } from '../utils/pr-body';
-import { UserSchema } from './schema';
+} from '../types.ts';
+import { getNewBranchName, repoFingerprint } from '../util.ts';
+import { smartTruncate } from '../utils/pr-body.ts';
+import { BbsPrCache } from './pr-cache.ts';
+import type {
+  Comment,
+  PullRequestActivity,
+  PullRequestCommentActivity,
+  PullRequestMerge,
+} from './schema.ts';
+import { ReviewerGroups, User, Users } from './schema.ts';
 import type {
   BbsConfig,
   BbsPr,
@@ -48,9 +66,15 @@ import type {
   BbsRestPr,
   BbsRestRepo,
   BbsRestUserRef,
-} from './types';
-import * as utils from './utils';
-import { getExtraCloneOpts } from './utils';
+  BitbucketCommitStatus,
+  BitbucketStatus,
+} from './types.ts';
+import * as utils from './utils.ts';
+import {
+  getExtraCloneOpts,
+  parseModifier,
+  splitEscapedSpaces,
+} from './utils.ts';
 
 /*
  * Version: 5.3 (EOL Date: 15 Aug 2019)
@@ -77,7 +101,7 @@ const defaults: {
   version: '0.0.0',
 };
 
-/* istanbul ignore next */
+/* v8 ignore next -- exercised only via mocked call sites, direct coverage tracked in #40625 */
 function updatePrVersion(pr: number, version: number): number {
   const res = Math.max(config.prVersions.get(pr) ?? 0, version);
   config.prVersions.set(pr, res);
@@ -110,20 +134,23 @@ export async function initPlatform({
     endpoint: defaults.endpoint,
   };
   try {
-    let bitbucketServerVersion: string;
-    // istanbul ignore if: experimental feature
-    if (process.env.RENOVATE_X_PLATFORM_VERSION) {
-      bitbucketServerVersion = process.env.RENOVATE_X_PLATFORM_VERSION;
-    } else {
-      const { version } = (
-        await bitbucketServerHttp.getJson<{ version: string }>(
-          `./rest/api/1.0/application-properties`,
-        )
-      ).body;
-      bitbucketServerVersion = version;
-      logger.debug('Bitbucket Server version is: ' + bitbucketServerVersion);
-    }
+    const env = getEnv();
+    let bitbucketServerVersion = env.RENOVATE_X_PLATFORM_VERSION;
+    const { body, headers } = await bitbucketServerHttp.getJsonUnchecked<{
+      version: string;
+    }>(`./rest/api/1.0/application-properties`, { ...(token && { token }) });
 
+    bitbucketServerVersion ??= body.version;
+    if (isNonEmptyStringAndNotWhitespace(headers['x-ausername']) && !username) {
+      logger.debug(
+        { 'x-ausername': headers['x-ausername'] },
+        'Platform: No username configured using headers["x-ausername"]',
+      );
+      config.username = headers['x-ausername'];
+    }
+    logger.debug(`Bitbucket Server version is: ${bitbucketServerVersion}`);
+
+    // v8 ignore else -- TODO: add test #40625
     if (semver.valid(bitbucketServerVersion)) {
       defaults.version = bitbucketServerVersion;
     }
@@ -152,9 +179,13 @@ export async function initPlatform({
         await bitbucketServerHttp.getJson(
           `./rest/api/1.0/users/${username}`,
           options,
-          UserSchema,
+          User,
         )
       ).body;
+
+      if (!emailAddress?.length) {
+        throw new Error(`No email address configured for username ${username}`);
+      }
 
       platformConfig.gitAuthor = `${displayName} <${emailAddress}>`;
 
@@ -174,16 +205,17 @@ export async function initPlatform({
 export async function getRepos(): Promise<string[]> {
   logger.debug('Autodiscovering Bitbucket Server repositories');
   try {
-    const repos = await utils.accumulateValues(
-      `./rest/api/1.0/repos?permission=REPO_WRITE&state=AVAILABLE`,
-    );
-    const result = repos.map(
-      (r: { project: { key: string }; slug: string }) =>
-        `${r.project.key}/${r.slug}`,
-    );
+    const repos = (
+      await bitbucketServerHttp.getJsonUnchecked<BbsRestRepo[]>(
+        `./rest/api/1.0/repos?permission=REPO_WRITE&state=AVAILABLE`,
+        { paginate: true },
+      )
+    ).body;
+
+    const result = repos.map((repo) => `${repo.project.key}/${repo.slug}`);
     logger.debug({ result }, 'result of getRepos()');
     return result;
-  } catch (err) /* istanbul ignore next */ {
+  } catch (err) /* v8 ignore next -- defensive: repo listing failures are logged and rethrown, not simulated in specs */ {
     logger.error({ err }, `bitbucket getRepos error`);
     throw err;
   }
@@ -196,17 +228,14 @@ export async function getRawFile(
 ): Promise<string | null> {
   const repo = repoName ?? config.repository;
   const [project, slug] = repo.split('/');
-  const fileUrl =
-    `./rest/api/1.0/projects/${project}/repos/${slug}/browse/${fileName}?limit=20000` +
-    (branchOrTag ? '&at=' + branchOrTag : '');
-  const res = await bitbucketServerHttp.getJson<FileData>(fileUrl);
+  const fileUrl = `./rest/api/1.0/projects/${project}/repos/${slug}/browse/${fileName}?limit=20000${branchOrTag ? `&at=${branchOrTag}` : ''}`;
+  const res = await bitbucketServerHttp.getJsonUnchecked<FileData>(fileUrl);
   const { isLastPage, lines, size } = res.body;
   if (isLastPage) {
     return lines.map(({ text }) => text).join('\n');
   }
-  const msg = `The file is too big (${size}B)`;
-  logger.warn({ size }, msg);
-  throw new Error(msg);
+  logger.warn({ size }, 'The file is too big');
+  throw new Error(`The file is too big (${size}B)`);
 }
 
 export async function getJsonFile(
@@ -223,7 +252,7 @@ export async function getJsonFile(
 export async function initRepo({
   repository,
   cloneSubmodules,
-  ignorePrAuthor,
+  cloneSubmodulesFilter,
   gitUrl,
 }: RepoParams): Promise<RepoResult> {
   logger.debug(`initRepo("${JSON.stringify({ repository }, null, 2)}")`);
@@ -240,18 +269,18 @@ export async function initRepo({
     repository,
     prVersions: new Map<number, number>(),
     username: opts.username,
-    ignorePrAuthor,
+    ignorePrAuthor: GlobalConfig.get('ignorePrAuthor'),
   } as any;
 
   try {
     const info = (
-      await bitbucketServerHttp.getJson<BbsRestRepo>(
+      await bitbucketServerHttp.getJsonUnchecked<BbsRestRepo>(
         `./rest/api/1.0/projects/${config.projectKey}/repos/${config.repositorySlug}`,
       )
     ).body;
     config.owner = info.project.key;
     logger.debug(`${repository} owner = ${config.owner}`);
-    const branchRes = await bitbucketServerHttp.getJson<BbsRestBranch>(
+    const branchRes = await bitbucketServerHttp.getJsonUnchecked<BbsRestBranch>(
       `./rest/api/1.0/projects/${config.projectKey}/repos/${config.repositorySlug}/branches/default`,
     );
 
@@ -274,6 +303,7 @@ export async function initRepo({
       url,
       extraCloneOpts: getExtraCloneOpts(opts),
       cloneSubmodules,
+      cloneSubmodulesFilter,
       fullClone: semver.lte(defaults.version, '8.0.0'),
     });
 
@@ -285,7 +315,7 @@ export async function initRepo({
     };
 
     return repoConfig;
-  } catch (err) /* istanbul ignore next */ {
+  } catch (err) /* v8 ignore next -- initRepo error mapping (404, empty repo) is not mocked in specs */ {
     if (err.statusCode === 404) {
       throw new Error(REPOSITORY_NOT_FOUND);
     }
@@ -302,7 +332,7 @@ export async function getBranchForceRebase(
   _branchName: string,
 ): Promise<boolean> {
   // https://docs.atlassian.com/bitbucket-server/rest/7.0.1/bitbucket-rest.html#idp342
-  const res = await bitbucketServerHttp.getJson<{
+  const res = await bitbucketServerHttp.getJsonUnchecked<{
     mergeConfig: { defaultStrategy: { id: string } };
   }>(
     `./rest/api/1.0/projects/${config.projectKey}/repos/${config.repositorySlug}/settings/pull-requests`,
@@ -316,6 +346,7 @@ export async function getBranchForceRebase(
     res.body?.mergeConfig?.defaultStrategy?.id.includes('ff-only'),
   );
 }
+
 // Gets details for a PR
 export async function getPr(
   prNo: number,
@@ -326,9 +357,17 @@ export async function getPr(
     return null;
   }
 
-  const res = await bitbucketServerHttp.getJson<BbsRestPr>(
+  // Disables memCache (which is enabled by default) to be replaced by
+  // memCacheProvider.
+  const opts: HttpOptions = { memCache: false };
+  // TODO: should refresh the cache rather than just ignore it
+  if (!refreshCache) {
+    opts.cacheProvider = memCacheProvider;
+  }
+
+  const res = await bitbucketServerHttp.getJsonUnchecked<BbsRestPr>(
     `./rest/api/1.0/projects/${config.projectKey}/repos/${config.repositorySlug}/pull-requests/${prNo}`,
-    { memCache: !refreshCache },
+    opts,
   );
 
   const pr: BbsPr = {
@@ -341,8 +380,8 @@ export async function getPr(
   return pr;
 }
 
-// TODO: coverage (#9624)
-// istanbul ignore next
+// TODO: coverage (#40625)
+/* v8 ignore next -- covered only through findPr callers, direct coverage tracked in #40625 */
 function matchesState(state: string, desiredState: string): boolean {
   if (desiredState === 'all') {
     return true;
@@ -353,47 +392,37 @@ function matchesState(state: string, desiredState: string): boolean {
   return state === desiredState;
 }
 
-// TODO: coverage (#9624)
-// istanbul ignore next
-const isRelevantPr =
-  (branchName: string, prTitle: string | null | undefined, state: string) =>
-  (p: Pr): boolean =>
+// TODO: coverage (#40625)
+/* v8 ignore next -- covered only through findPr callers, direct coverage tracked in #40625 */
+function isRelevantPr(
+  branchName: string,
+  prTitle: string | null | undefined,
+  state: string,
+) {
+  return (p: Pr): boolean =>
     p.sourceBranch === branchName &&
     (!prTitle || p.title.toUpperCase() === prTitle.toUpperCase()) &&
     matchesState(p.state, state);
-
-// TODO: coverage (#9624)
-export async function getPrList(refreshCache?: boolean): Promise<Pr[]> {
-  logger.debug(`getPrList()`);
-  // istanbul ignore next
-  if (!config.prList || refreshCache) {
-    const searchParams: Record<string, string> = {
-      state: 'ALL',
-    };
-    if (!config.ignorePrAuthor && config.username !== undefined) {
-      searchParams['role.1'] = 'AUTHOR';
-      searchParams['username.1'] = config.username;
-    }
-    const query = getQueryString(searchParams);
-    const values = await utils.accumulateValues(
-      `./rest/api/1.0/projects/${config.projectKey}/repos/${config.repositorySlug}/pull-requests?${query}`,
-    );
-
-    config.prList = values.map(utils.prInfo);
-    logger.debug(`Retrieved Pull Requests, count: ${config.prList.length}`);
-  } else {
-    logger.debug('returning cached PR list');
-  }
-  return config.prList;
 }
 
-// TODO: coverage (#9624)
-// istanbul ignore next
+// TODO: coverage (#40625)
+export async function getPrList(): Promise<Pr[]> {
+  logger.debug(`getPrList()`);
+  return await BbsPrCache.getPrs(
+    bitbucketServerHttp,
+    config.projectKey,
+    config.repositorySlug,
+    config.ignorePrAuthor,
+    config.username,
+  );
+}
+
+// TODO: coverage (#40625)
+/* v8 ignore next -- pr-cache-backed lookup paths lack direct specs, tracked in #40625 */
 export async function findPr({
   branchName,
   prTitle,
   state = 'all',
-  refreshCache,
   includeOtherAuthors,
 }: FindPRConfig): Promise<Pr | null> {
   logger.debug(`findPr(${branchName}, "${prTitle!}", "${state}")`);
@@ -403,16 +432,19 @@ export async function findPr({
     const searchParams: Record<string, string> = {
       state: 'OPEN',
     };
-    searchParams['direction'] = 'outgoing';
-    searchParams['at'] = `refs/heads/${branchName}`;
+    searchParams.direction = 'outgoing';
+    searchParams.at = `refs/heads/${branchName}`;
 
     const query = getQueryString(searchParams);
-    const prs = await utils.accumulateValues(
-      `./rest/api/1.0/projects/${config.projectKey}/repos/${config.repositorySlug}/pull-requests?${query}`,
-      'get',
-      {},
-      1, // only fetch the latest pr
-    );
+    const prs = (
+      await bitbucketServerHttp.getJsonUnchecked<BbsRestPr[]>(
+        `./rest/api/1.0/projects/${config.projectKey}/repos/${config.repositorySlug}/pull-requests?${query}`,
+        {
+          paginate: true,
+          limit: 1, // only fetch the latest pr
+        },
+      )
+    ).body;
 
     if (!prs.length) {
       logger.debug(`No PR found for branch ${branchName}`);
@@ -422,12 +454,12 @@ export async function findPr({
     return utils.prInfo(prs[0]);
   }
 
-  const prList = await getPrList(refreshCache);
+  const prList = await getPrList();
   const pr = prList.find(isRelevantPr(branchName, prTitle, state));
   if (pr) {
     logger.debug(`Found PR #${pr.number}`);
   } else {
-    logger.debug(`Renovate did not find a PR for branch #${branchName}`);
+    logger.debug(`Renovate did not find a PR for branch ${branchName}`);
   }
   return pr ?? null;
 }
@@ -442,7 +474,7 @@ export async function getBranchPr(branchName: string): Promise<BbsPr | null> {
   return existingPr ? getPr(existingPr.number) : null;
 }
 
-// istanbul ignore next
+/* v8 ignore next -- real-time propagation delay helper, sleeping 1s in specs is not worthwhile */
 export async function refreshPr(number: number): Promise<void> {
   // wait for pr change propagation
   await setTimeout(1000);
@@ -453,14 +485,19 @@ export async function refreshPr(number: number): Promise<void> {
 async function getStatus(
   branchName: string,
   memCache = true,
-): Promise<utils.BitbucketCommitStatus> {
+): Promise<BitbucketCommitStatus> {
   const branchCommit = git.getBranchCommit(branchName);
 
+  /* v8 ignore next: temporary code */
+  const opts: HttpOptions = memCache
+    ? { cacheProvider: memCacheProvider }
+    : { memCache: false };
+
   return (
-    await bitbucketServerHttp.getJson<utils.BitbucketCommitStatus>(
+    await bitbucketServerHttp.getJsonUnchecked<BitbucketCommitStatus>(
       // TODO: types (#22198)
       `./rest/build-status/1.0/commits/stats/${branchCommit!}`,
-      { memCache },
+      opts,
     )
   ).body;
 }
@@ -496,18 +533,26 @@ export async function getBranchStatus(
   }
 }
 
-function getStatusCheck(
+async function getStatusCheck(
   branchName: string,
   memCache = true,
-): Promise<utils.BitbucketStatus[]> {
+): Promise<BitbucketStatus[]> {
   const branchCommit = git.getBranchCommit(branchName);
 
-  return utils.accumulateValues(
-    // TODO: types (#22198)
-    `./rest/build-status/1.0/commits/${branchCommit!}`,
-    'get',
-    { memCache },
-  );
+  const opts: BitbucketServerHttpOptions = { paginate: true };
+  /* v8 ignore next: temporary code */
+  if (memCache) {
+    opts.cacheProvider = memCacheProvider;
+  } else {
+    opts.memCache = false;
+  }
+
+  return (
+    await bitbucketServerHttp.getJsonUnchecked<BitbucketStatus[]>(
+      `./rest/build-status/1.0/commits/${branchCommit!}`,
+      opts,
+    )
+  ).body;
 }
 
 // https://docs.atlassian.com/bitbucket-server/rest/6.0.0/bitbucket-build-rest.html#idp2
@@ -592,7 +637,7 @@ export async function setBranchStatus({
 
 // Issue
 
-/* istanbul ignore next */
+/* v8 ignore next -- no-op stub: Bitbucket Server has no issues */
 export function findIssue(title: string): Promise<Issue | null> {
   logger.debug(`findIssue(${title})`);
   // This is used by Renovate when creating its own issues,
@@ -603,7 +648,7 @@ export function findIssue(title: string): Promise<Issue | null> {
   return Promise.resolve(null);
 }
 
-/* istanbul ignore next */
+/* v8 ignore next -- no-op stub: Bitbucket Server has no issues */
 export function ensureIssue({
   title,
 }: EnsureIssueConfig): Promise<EnsureIssueResult | null> {
@@ -616,7 +661,7 @@ export function ensureIssue({
   return Promise.resolve(null);
 }
 
-/* istanbul ignore next */
+/* v8 ignore next -- no-op stub: Bitbucket Server has no issues */
 export function getIssueList(): Promise<Issue[]> {
   logger.debug(`getIssueList()`);
   // This is used by Renovate when creating its own issues,
@@ -627,7 +672,7 @@ export function getIssueList(): Promise<Issue[]> {
   return Promise.resolve([]);
 }
 
-/* istanbul ignore next */
+/* v8 ignore next -- no-op stub: Bitbucket Server has no issues */
 export function ensureIssueClosing(title: string): Promise<void> {
   logger.debug(`ensureIssueClosing(${title})`);
   // This is used by Renovate when creating its own issues,
@@ -654,9 +699,62 @@ export async function addReviewers(
 ): Promise<void> {
   logger.debug(`Adding reviewers '${reviewers.join(', ')}' to #${prNo}`);
 
-  await retry(updatePRAndAddReviewers, [prNo, reviewers], 3, [
+  const reviewerNames = new Set<string>();
+
+  for (const entry of reviewers) {
+    // If entry is an email address, resolve username
+    if (isEmailAdress(entry)) {
+      const names = await getUsernamesByEmail(entry);
+      for (const name of names) {
+        reviewerNames.add(name);
+      }
+    } else {
+      reviewerNames.add(entry);
+    }
+  }
+
+  await retry(updatePRAndAddReviewers, [prNo, Array.from(reviewerNames)], 3, [
     REPOSITORY_CHANGED,
   ]);
+}
+
+/**
+ * Resolves Bitbucket users by email address,
+ * restricted to users who have REPO_READ permission on the target repository.
+ *
+ * @param emailAddress - A string that could be the user's email address.
+ * @returns List of usernames for active, matched users.
+ */
+export async function getUsernamesByEmail(
+  emailAddress: string,
+): Promise<string[]> {
+  try {
+    const filterUrl =
+      `./rest/api/1.0/users?filter=${emailAddress}` +
+      `&permission.1=REPO_READ` +
+      `&permission.1.projectKey=${config.projectKey}` +
+      `&permission.1.repositorySlug=${config.repositorySlug}`;
+
+    const users = await bitbucketServerHttp.getJson(
+      filterUrl,
+      { paginate: true, limit: 100 },
+      Users,
+    );
+
+    if (users.body.length) {
+      return users.body
+        .filter((u) => u.active && u.emailAddress === emailAddress)
+        .map((u) => u.name);
+    }
+  } catch (err) {
+    logger.warn(
+      { err, emailAddress },
+      `Failed to resolve email address to username`,
+    );
+    throw err;
+  }
+  logger.debug({ userinfo: emailAddress }, 'No users found for email-address');
+  return [];
 }
 
 async function updatePRAndAddReviewers(
@@ -669,7 +767,7 @@ async function updatePRAndAddReviewers(
       throw new Error(REPOSITORY_NOT_FOUND);
     }
 
-    // TODO: can `reviewers` be undefined? (#22198)
+    // TODO: can `reviewers` be undefined? (#40625)
     const reviewersSet = new Set([...pr.reviewers!, ...reviewers]);
 
     await bitbucketServerHttp.putJson(
@@ -689,14 +787,28 @@ async function updatePRAndAddReviewers(
     logger.warn({ err, reviewers, prNo }, `Failed to add reviewers`);
     if (err.statusCode === 404) {
       throw new Error(REPOSITORY_NOT_FOUND);
-    } else if (
-      err.statusCode === 409 &&
-      !utils.isInvalidReviewersResponse(err)
-    ) {
-      logger.debug(
-        '409 response to adding reviewers - has repository changed?',
-      );
-      throw new Error(REPOSITORY_CHANGED);
+    } else if (err.statusCode === 409) {
+      if (utils.isInvalidReviewersResponse(err)) {
+        // Retry again with invalid reviewers being removed
+        const invalidReviewers = utils.getInvalidReviewers(err);
+        const filteredReviewers = reviewers.filter(
+          (name) => !invalidReviewers.includes(name),
+        );
+        if (filteredReviewers.length < reviewers.length) {
+          await updatePRAndAddReviewers(prNo, filteredReviewers);
+        } else {
+          logger.warn(
+            { invalidReviewers, reviewers },
+            'Could not filter invalid reviewers from list, aborting to prevent infinite recursion',
+          );
+          throw err;
+        }
+      } else {
+        logger.debug(
+          '409 response to adding reviewers - has repository changed?',
+        );
+        throw new Error(REPOSITORY_CHANGED);
+      }
     } else {
       throw err;
     }
@@ -727,9 +839,7 @@ async function retry<T extends (...arg0: any[]) => Promise<any>>(
   }
 
   logger.debug(`All ${maxAttempts} retry attempts exhausted`);
-  // Can't be `undefined` here.
-  // eslint-disable-next-line @typescript-eslint/only-throw-error
-  throw lastError;
+  throw lastError!;
 }
 
 export function deleteLabel(issueNo: number, label: string): Promise<void> {
@@ -740,20 +850,22 @@ export function deleteLabel(issueNo: number, label: string): Promise<void> {
   return Promise.resolve();
 }
 
-type Comment = { text: string; id: number };
-
 async function getComments(prNo: number): Promise<Comment[]> {
   // GET /rest/api/1.0/projects/{projectKey}/repos/{repositorySlug}/pull-requests/{pullRequestId}/activities
-  let comments = await utils.accumulateValues(
-    `./rest/api/1.0/projects/${config.projectKey}/repos/${config.repositorySlug}/pull-requests/${prNo}/activities`,
-  );
-
-  comments = comments
-    .filter(
-      (a: { action: string; commentAction: string }) =>
-        a.action === 'COMMENTED' && a.commentAction === 'ADDED',
+  const activities = (
+    await bitbucketServerHttp.getJsonUnchecked<PullRequestActivity[]>(
+      `./rest/api/1.0/projects/${config.projectKey}/repos/${config.repositorySlug}/pull-requests/${prNo}/activities`,
+      { paginate: true },
     )
-    .map((a: { comment: Comment }) => a.comment);
+  ).body;
+
+  const comments = activities
+    .filter(
+      (a): a is PullRequestCommentActivity =>
+        a.action === 'COMMENTED' && 'comment' in a && 'commentAction' in a,
+    )
+    .filter((a) => a.commentAction === 'ADDED')
+    .map((a) => a.comment);
 
   logger.debug(`Found ${comments.length} comments`);
 
@@ -776,7 +888,7 @@ async function getCommentVersion(
 ): Promise<number> {
   // GET /rest/api/1.0/projects/{projectKey}/repos/{repositorySlug}/pull-requests/{pullRequestId}/comments/{commentId}
   const { version } = (
-    await bitbucketServerHttp.getJson<{ version: number }>(
+    await bitbucketServerHttp.getJsonUnchecked<{ version: number }>(
       `./rest/api/1.0/projects/${config.projectKey}/repos/${config.repositorySlug}/pull-requests/${prNo}/comments/${commentId}`,
     )
   ).body;
@@ -852,13 +964,21 @@ export async function ensureComment({
         'Comment updated',
       );
     } else {
-      logger.debug('Comment is already update-to-date');
+      logger.debug('Comment is already up-to-date');
     }
     return true;
-  } catch (err) /* istanbul ignore next */ {
+  } catch (err) /* v8 ignore next -- defensive: comment API failures are logged and swallowed, not simulated in specs */ {
     logger.warn({ err }, 'Error ensuring comment');
     return false;
   }
+}
+
+function byTopic(comment: Comment, topic: string): boolean {
+  return comment.text.startsWith(`### ${topic}\n\n`);
+}
+
+function byContent(comment: Comment, content: string): boolean {
+  return comment.text.trim() === content;
 }
 
 export async function ensureCommentRemoval(
@@ -874,28 +994,28 @@ export async function ensureCommentRemoval(
     const comments = await getComments(prNo);
 
     let commentId: number | null | undefined = null;
+    // v8 ignore else -- TODO: add test #40625
     if (deleteConfig.type === 'by-topic') {
-      const byTopic = (comment: Comment): boolean =>
-        comment.text.startsWith(`### ${deleteConfig.topic}\n\n`);
-      commentId = comments.find(byTopic)?.id;
+      const topic = deleteConfig.topic;
+      commentId = comments.find((comment) => byTopic(comment, topic))?.id;
     } else if (deleteConfig.type === 'by-content') {
-      const byContent = (comment: Comment): boolean =>
-        comment.text.trim() === deleteConfig.content;
-      commentId = comments.find(byContent)?.id;
+      const content = deleteConfig.content;
+      commentId = comments.find((comment) => byContent(comment, content))?.id;
     }
 
     if (commentId) {
       await deleteComment(prNo, commentId);
     }
-  } catch (err) /* istanbul ignore next */ {
+  } catch (err) /* v8 ignore next -- defensive: comment API failures are logged and swallowed, not simulated in specs */ {
     logger.warn({ err }, 'Error ensuring comment removal');
   }
 }
 
 // Pull Request
 
-const escapeHash = (input: string): string =>
-  input?.replace(regEx(/#/g), '%23');
+function escapeHash(input: string): string {
+  return input?.replace(regEx(/#/g), '%23');
+}
 
 export async function createPr({
   sourceBranch,
@@ -912,13 +1032,13 @@ export async function createPr({
   if (platformPrOptions?.bbUseDefaultReviewers) {
     logger.debug(`fetching default reviewers`);
     const { id } = (
-      await bitbucketServerHttp.getJson<{ id: number }>(
+      await bitbucketServerHttp.getJsonUnchecked<{ id: number }>(
         `./rest/api/1.0/projects/${config.projectKey}/repos/${config.repositorySlug}`,
       )
     ).body;
 
     const defReviewers = (
-      await bitbucketServerHttp.getJson<{ name: string }[]>(
+      await bitbucketServerHttp.getJsonUnchecked<{ name: string }[]>(
         `./rest/default-reviewers/1.0/projects/${config.projectKey}/repos/${
           config.repositorySlug
         }/reviewers?sourceRefId=refs/heads/${escapeHash(
@@ -949,7 +1069,7 @@ export async function createPr({
       `./rest/api/1.0/projects/${config.projectKey}/repos/${config.repositorySlug}/pull-requests`,
       { body },
     );
-  } catch (err) /* istanbul ignore next */ {
+  } catch (err) /* v8 ignore next -- EmptyPullRequestException handling is not mocked in specs */ {
     if (
       err.body?.errors?.[0]?.exceptionName ===
       'com.atlassian.bitbucket.pull.EmptyPullRequestException'
@@ -969,13 +1089,37 @@ export async function createPr({
 
   // TODO #22198
   updatePrVersion(pr.number, pr.version!);
+  await BbsPrCache.setPr(
+    bitbucketServerHttp,
+    config.projectKey,
+    config.repositorySlug,
+    config.ignorePrAuthor,
+    config.username,
+    pr,
+  );
 
-  // istanbul ignore if
-  if (config.prList) {
-    config.prList.push(pr);
-  }
+  await tryPrAutomerge(pr.number, pr.version!, platformPrOptions);
 
   return pr;
+}
+
+export async function reattemptPlatformAutomerge({
+  number,
+  platformPrOptions,
+}: ReattemptPlatformAutomergeConfig): Promise<void> {
+  logger.debug(`reattemptPlatformAutomerge(${number})`);
+
+  try {
+    const pr = await getPr(number, true);
+    if (!pr) {
+      throw new Error(REPOSITORY_NOT_FOUND);
+    }
+    await tryPrAutomerge(pr.number, pr.version!, platformPrOptions);
+
+    logger.debug(`PR platform automerge re-attempted...prNo: ${number}`);
+  } catch (err) {
+    logger.warn({ err }, 'Error re-attempting PR platform automerge');
+  }
 }
 
 export async function updatePr({
@@ -986,7 +1130,7 @@ export async function updatePr({
   bitbucketInvalidReviewers,
   targetBranch,
 }: UpdatePrConfig & {
-  bitbucketInvalidReviewers: string[] | undefined;
+  bitbucketInvalidReviewers?: string[] | undefined;
 }): Promise<void> {
   const description = sanitize(rawDescription);
   logger.debug(`updatePr(${prNo}, title=${title})`);
@@ -1049,22 +1193,15 @@ export async function updatePr({
       updatePrVersion(pr.number, updatedStatePr.version);
     }
 
-    if (config.prList) {
-      const bbsPr = utils.prInfo(updatedPr);
-      const existingIndex = config.prList.findIndex(
-        (item) => item.number === prNo,
-      );
-      // istanbul ignore if: should never happen
-      if (existingIndex === -1) {
-        logger.warn(
-          { pr: bbsPr },
-          'Possible error: Updated PR was not found in the PRs that were returned from getPrList().',
-        );
-        config.prList.push({ ...bbsPr, state: finalState });
-      } else {
-        config.prList[existingIndex] = { ...bbsPr, state: finalState };
-      }
-    }
+    const bbsPr = utils.prInfo(updatedPr);
+    await BbsPrCache.setPr(
+      bitbucketServerHttp,
+      config.projectKey,
+      config.repositorySlug,
+      config.ignorePrAuthor,
+      config.username,
+      { ...bbsPr, state: finalState },
+    );
   } catch (err) {
     logger.debug({ err, prNo }, `Failed to update PR`);
     if (err.statusCode === 404) {
@@ -1124,6 +1261,152 @@ export async function mergePr({
   return true;
 }
 
+/**
+ * Enables Bitbucket Server-native automerge for the given PR.
+ * https://confluence.atlassian.com/bitbucketserver094/merge-a-pull-request-1489802114.html#Mergeapullrequest-Auto-mergeapullrequest
+ */
+async function tryPrAutomerge(
+  prNumber: number,
+  prVersion: number,
+  platformPrOptions?: PlatformPrOptions,
+): Promise<void> {
+  if (!platformPrOptions?.usePlatformAutomerge) {
+    return;
+  }
+
+  logger.debug(`tryPrAutomerge(${prNumber})`);
+
+  if (semver.lt(defaults.version, '8.15.0')) {
+    logger.debug(
+      { prNumber },
+      'Bitbucket Server-native automerge: not supported on this version of Bitbucket. Use 8.15.0 or newer.',
+    );
+    return;
+  }
+
+  try {
+    const body: PullRequestMerge = { autoMerge: true };
+    await bitbucketServerHttp.postJson(
+      `./rest/api/1.0/projects/${config.projectKey}/repos/${config.repositorySlug}/pull-requests/${prNumber}/merge?version=${prVersion}`,
+      { body },
+    );
+
+    // enabling auto-merge doesn't increase PR version, so we omit updating the cache
+    logger.debug({ prNumber }, 'Bitbucket Server-native automerge: success');
+  } catch (err) {
+    logger.warn({ err, prNumber }, 'Bitbucket Server-native automerge: fail');
+  }
+}
+
+export async function expandGroupMembers(
+  reviewers: string[],
+): Promise<string[]> {
+  logger.debug(`expandGroupMembers(${reviewers.join(', ')})`);
+  const expandedUsers: string[] = [];
+  const reviewerGroupPrefix = '@reviewer-group/';
+
+  for (const reviewer of reviewers) {
+    const [baseEntry, modifier] = reviewer.split(':');
+
+    if (baseEntry.startsWith(reviewerGroupPrefix)) {
+      const groupName = baseEntry.replace(reviewerGroupPrefix, '');
+      const groupUsers = await getUsersFromReviewerGroup(groupName);
+      if (!groupUsers.length) {
+        continue;
+      }
+
+      if (modifier) {
+        const randomCount = parseModifier(modifier);
+        if (randomCount) {
+          expandedUsers.push(...sampleSize(groupUsers, randomCount));
+          continue;
+        }
+      }
+
+      expandedUsers.push(...groupUsers);
+    } else {
+      expandedUsers.push(baseEntry); // Add the user entry
+    }
+  }
+
+  return [...new Set(expandedUsers)];
+}
+
+export function extractRulesFromCodeOwnersLines(
+  cleanedLines: string[],
+): FileOwnerRule[] {
+  const results: FileOwnerRule[] = [];
+
+  const reversedLines = cleanedLines
+    .filter((line) => line.trim() !== '' && !line.trim().startsWith('#'))
+    .reverse();
+
+  for (const line of reversedLines) {
+    const [pattern, ...entries] = splitEscapedSpaces(line);
+    const matcher = ignore().add(pattern);
+    results.push({
+      pattern,
+      usernames: [...new Set(entries)],
+      score: pattern.length,
+      match: (path: string) => matcher.ignores(path),
+    });
+  }
+
+  return results;
+}
+
+// Gets active users by name, from a reviewer group
+// Returns an empty array if the group is not found or has no active users
+// As there is no direct API to get group by name, we get all reviewer groups per repo and filter them
+// This is not efficient, but it is the only way to get users from a group by name
+// Supports both repository-scoped and project-scoped groups following the BitBucket server logic described here:
+// https://confluence.atlassian.com/bitbucketserver/code-owners-1296171116.html#Codeowners-Whatifaprojectandrepositorycontainareviewergroupwiththesamename?
+async function getUsersFromReviewerGroup(groupName: string): Promise<string[]> {
+  const allGroups = [];
+
+  try {
+    const reviewerGroups = await bitbucketServerHttp.getJson(
+      `./rest/api/1.0/projects/${config.projectKey}/repos/${config.repositorySlug}/settings/reviewer-groups`,
+      { paginate: true },
+      ReviewerGroups,
+    );
+
+    allGroups.push(...reviewerGroups.body);
+  } catch (err) {
+    logger.debug({ err, groupName }, 'Failed to get reviewer groups for repo');
+    return [];
+  }
+
+  // First, try to find a repo-scoped group with this name
+  const repoGroup = allGroups.find(
+    (group) => group.name === groupName && group.scope?.type === 'REPOSITORY',
+  );
+
+  if (repoGroup) {
+    return repoGroup.users
+      .filter((user) => user.active)
+      .map((user) => user.name);
+  }
+
+  // If no repo-level group, fall back to project-level group
+  const projectGroup = allGroups.find(
+    (group) => group.name === groupName && group.scope?.type === 'PROJECT',
+  );
+
+  if (projectGroup) {
+    return projectGroup.users
+      .filter((user) => user.active)
+      .map((user) => user.name);
+  }
+
+  // Group not found at either level
+  logger.warn(
+    { groupName },
+    'Reviewer group not found at repo or project level',
+  );
+  return [];
+}
+
 export function massageMarkdown(input: string): string {
   logger.debug(`massageMarkdown(${input.split(newlineRegex)[0]})`);
   // Remove any HTML we use
@@ -1139,7 +1422,13 @@ export function massageMarkdown(input: string): string {
     .replace(regEx(/<\/?summary>/g), '**')
     .replace(regEx(/<\/?details>/g), '')
     .replace(regEx(`\n---\n\n.*?<!-- rebase-check -->.*?(\n|$)`), '')
-    .replace(regEx(/<!--.*?-->/gs), '');
+    .replace(regEx(/<!--.*?-->/gs), '')
+    .replace(
+      regEx(
+        /(?<badge>!\[.+?\]\(https:\/\/developer\.mend\.io\/api\/mc\/badges\/.+?\))/g,
+      ),
+      '$<badge>{height=20}',
+    );
 }
 
 export function maxBodyLength(): number {

@@ -1,18 +1,24 @@
 // based on https://www.python.org/dev/peps/pep-0508/#names
 import { RANGE_PATTERN } from '@renovatebot/pep440';
-import { logger } from '../../../logger';
-import { newlineRegex, regEx } from '../../../util/regex';
-import { PypiDatasource } from '../../datasource/pypi';
-import { normalizePythonDepName } from '../../datasource/pypi/common';
-import type { PackageDependency, PackageFileContent, Result } from '../types';
+import { logger } from '../../../logger/index.ts';
+import type { MaybePromise } from '../../../types/index.ts';
+import { coerceArray } from '../../../util/array.ts';
+import { newlineRegex, regEx } from '../../../util/regex.ts';
+import { normalizePythonDepName } from '../../datasource/pypi/common.ts';
+import { PypiDatasource } from '../../datasource/pypi/index.ts';
+import type { PackageDependency, PackageFileContent } from '../types.ts';
 
 function getSectionName(str: string): string {
-  const [, sectionName] = regEx(/^\[\s*([^\s]+)\s*]\s*$/).exec(str) ?? [];
+  const [, sectionName] = coerceArray(
+    regEx(/^\[\s*(?<sectionName>[^\s]+)\s*]\s*$/).exec(str),
+  );
   return sectionName;
 }
 
 function getSectionRecord(str: string): string {
-  const [, sectionRecord] = regEx(/^([^\s]+)\s*=/).exec(str) ?? [];
+  const [, sectionRecord] = coerceArray(
+    regEx(/^(?<sectionRecord>[^\s]+)\s*=/).exec(str),
+  );
   return sectionRecord;
 }
 
@@ -81,7 +87,7 @@ function parseDep(
   };
 
   if (currentValue?.startsWith('==')) {
-    dep.currentVersion = currentValue.replace(/^==\s*/, '');
+    dep.currentVersion = currentValue.replace(regEx(/^==\s*/), '');
   }
 
   return dep;
@@ -89,7 +95,7 @@ function parseDep(
 
 export function extractPackageFile(
   content: string,
-): Result<PackageFileContent | null> {
+): MaybePromise<PackageFileContent | null> {
   logger.trace('setup-cfg.extractPackageFile()');
 
   let sectionName: string | null = null;

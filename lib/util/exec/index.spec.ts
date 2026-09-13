@@ -1,21 +1,38 @@
-import { mockDeep } from 'jest-mock-extended';
-import { exec as cpExec, envMock } from '../../../test/exec-util';
-import { mockedFunction } from '../../../test/util';
-import { GlobalConfig } from '../../config/global';
-import type { RepoGlobalConfig } from '../../config/types';
-import { TEMPORARY_ERROR } from '../../constants/error-messages';
-import * as dockerModule from './docker';
-import { getHermitEnvs } from './hermit';
-import type { ExecOptions, RawExecOptions, VolumeOption } from './types';
-import { exec } from '.';
+// oxlint-disable renovate/prefer-stub-env -- these tests assert on the *whole*
+// env handed to the child process, so they need `process.env` to hold exactly
+// the fixture and nothing else. `vi.stubEnv()` cannot express that: it refuses
+// to delete `PROD`, `DEV` and `SSR`, setting them to '' instead, and those
+// would then show up in the `exposeAllEnv` expectations. Nothing here stubs,
+// so the two styles are not mixed.
+import { mockDeep } from 'vitest-mock-extended';
+import { exec as cpExec, envMock } from '~test/exec-util.ts';
+import { logger } from '~test/util.ts';
+import { GlobalConfig } from '../../config/global.ts';
+import type { RepoGlobalConfig } from '../../config/types.ts';
+import { TEMPORARY_ERROR } from '../../constants/error-messages.ts';
+import type { UpdateArtifactsConfig } from '../../modules/manager/types.ts';
+import { setCustomEnv } from '../env.ts';
+import { coerceObject } from '../object.ts';
+import * as dockerModule from './docker/index.ts';
+import { hardcodedProcessEnv } from './env.ts';
+import { getHermitEnvs } from './hermit.ts';
+import { exec, getToolSettingsOptions, gradleJvmArg } from './index.ts';
+import type {
+  CommandWithOptions,
+  ExecOptions,
+  ExecResult,
+  RawExecOptions,
+  VolumeOption,
+} from './types.ts';
+import { asRawCommand } from './utils.ts';
 
-const getHermitEnvsMock = mockedFunction(getHermitEnvs);
+const getHermitEnvsMock = vi.mocked(getHermitEnvs);
 
-jest.mock('./hermit', () => ({
-  ...jest.requireActual<typeof import('./hermit')>('./hermit'),
-  getHermitEnvs: jest.fn(),
+vi.mock('./hermit.ts', async () => ({
+  ...(await vi.importActual<typeof import('./hermit.ts')>('./hermit.ts')),
+  getHermitEnvs: vi.fn(),
 }));
-jest.mock('../../modules/datasource', () => mockDeep());
+vi.mock('../../modules/datasource/index.ts', () => mockDeep());
 
 interface TestInput {
   processEnv: Record<string, string>;
@@ -41,23 +58,24 @@ describe('util/exec/index', () => {
   const globalConfig: RepoGlobalConfig = {
     cacheDir,
     containerbaseDir,
-    dockerSidecarImage: 'ghcr.io/containerbase/sidecar',
+    dockerSidecarImage: 'ghcr.io/renovatebot/base-image',
   };
 
   beforeEach(() => {
     dockerModule.resetPrefetchedImages();
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
     processEnvOrig = process.env;
     GlobalConfig.reset();
+    setCustomEnv({});
   });
 
   afterEach(() => {
     process.env = processEnvOrig;
   });
 
-  const image = dockerModule.sideCarImage;
-  const fullImage = `ghcr.io/containerbase/sidecar`;
-  const name = `renovate_${image}`;
+  const sideCarName = dockerModule.sideCarName;
+  const fullImage = `ghcr.io/renovatebot/base-image`;
+  const name = `renovate_${sideCarName}`;
   const inCmd = 'echo hello';
   const outCmd = ['echo hello'];
   const volume_1 = '/path/to/volume-1';
@@ -69,12 +87,11 @@ describe('util/exec/index', () => {
     undefined,
     [volume_2_from, volume_2_to],
   ];
-  const encoding = 'utf-8';
   const docker = {};
   const processEnv = envMock.full;
   const dockerPullCmd = `docker pull ${fullImage}`;
   const dockerRemoveCmd = `docker ps --filter name=${name} -aq`;
-  const dockerPullOpts = { encoding };
+  const dockerPullOpts = {};
   const dockerRemoveOpts = dockerPullOpts;
 
   const containerbaseEnv = {
@@ -97,10 +114,12 @@ describe('util/exec/index', () => {
         outOpts: [
           {
             cwd,
-            encoding,
             env: envMock.basic,
             timeout: 900000,
             maxBuffer: 10485760,
+            stdin: 'pipe',
+            stdout: 'pipe',
+            stderr: 'pipe',
           },
         ],
       },
@@ -116,10 +135,12 @@ describe('util/exec/index', () => {
         outOpts: [
           {
             cwd,
-            encoding,
             env: envMock.basic,
             timeout: 900000,
             maxBuffer: 10485760,
+            stdin: 'pipe',
+            stdout: 'pipe',
+            stderr: 'pipe',
           },
         ],
       },
@@ -135,24 +156,30 @@ describe('util/exec/index', () => {
         outOpts: [
           {
             cwd,
-            encoding,
             env: envMock.basic,
             timeout: 900000,
             maxBuffer: 10485760,
+            stdin: 'pipe',
+            stdout: 'pipe',
+            stderr: 'pipe',
           },
           {
             cwd,
-            encoding,
             env: envMock.basic,
             timeout: 900000,
             maxBuffer: 10485760,
+            stdin: 'pipe',
+            stdout: 'pipe',
+            stderr: 'pipe',
           },
           {
             cwd,
-            encoding,
             env: envMock.basic,
             timeout: 900000,
             maxBuffer: 10485760,
+            stdin: 'pipe',
+            stdout: 'pipe',
+            stderr: 'pipe',
           },
         ],
       },
@@ -168,17 +195,19 @@ describe('util/exec/index', () => {
         outOpts: [
           {
             cwd,
-            encoding,
             env: { ...envMock.basic, FOO: 'BAR' },
             timeout: 900000,
             maxBuffer: 10485760,
+            stdin: 'pipe',
+            stdout: 'pipe',
+            stderr: 'pipe',
           },
         ],
       },
     ],
 
     [
-      'Low trust level',
+      'By default, exposeAllEnv=false',
       {
         processEnv,
         inCmd,
@@ -187,17 +216,19 @@ describe('util/exec/index', () => {
         outOpts: [
           {
             cwd,
-            encoding,
             env: envMock.basic,
             timeout: 900000,
             maxBuffer: 10485760,
+            stdin: 'pipe',
+            stdout: 'pipe',
+            stderr: 'pipe',
           },
         ],
       },
     ],
 
     [
-      'High trust level',
+      'When exposeAllEnv=true, all environment variables are passed to child',
       {
         processEnv: envMock.full,
         inCmd,
@@ -206,10 +237,12 @@ describe('util/exec/index', () => {
         outOpts: [
           {
             cwd,
-            encoding,
             env: envMock.full,
             timeout: 900000,
             maxBuffer: 10485760,
+            stdin: 'pipe',
+            stdout: 'pipe',
+            stderr: 'pipe',
           },
         ],
         adminConfig: { exposeAllEnv: true },
@@ -225,17 +258,54 @@ describe('util/exec/index', () => {
         outCmd: [
           dockerPullCmd,
           dockerRemoveCmd,
-          `docker run --rm --name=${name} --label=renovate_child ${defaultVolumes} -e CONTAINERBASE_CACHE_DIR ${defaultCwd} ${fullImage} bash -l -c "${inCmd}"`,
+          `docker run --rm --name=${name} --label=renovate_child ${defaultVolumes} -e CI -e CONTAINERBASE_CACHE_DIR ${defaultCwd} ${fullImage} bash -l -c '${inCmd}'`,
         ],
         outOpts: [
           dockerPullOpts,
           dockerRemoveOpts,
           {
             cwd,
-            encoding,
             env: containerbaseEnv,
             timeout: 900000,
             maxBuffer: 10485760,
+            stdin: 'pipe',
+            stdout: 'pipe',
+            stderr: 'pipe',
+          },
+        ],
+        adminConfig: { binarySource: 'docker' },
+      },
+    ],
+
+    [
+      'Explicit Docker env vars',
+      {
+        processEnv,
+        inCmd,
+        inOpts: {
+          docker: { envVars: ['FORCED_ENV_VAR'] },
+          env: { FORCED_ENV_VAR: 'forced' },
+          cwd,
+        },
+        outCmd: [
+          dockerPullCmd,
+          dockerRemoveCmd,
+          `docker run --rm --name=${name} --label=renovate_child ${defaultVolumes} -e CI -e FORCED_ENV_VAR -e CONTAINERBASE_CACHE_DIR ${defaultCwd} ${fullImage} bash -l -c '${inCmd}'`,
+        ],
+        outOpts: [
+          dockerPullOpts,
+          dockerRemoveOpts,
+          {
+            cwd,
+            env: {
+              ...containerbaseEnv,
+              FORCED_ENV_VAR: 'forced',
+            },
+            timeout: 900000,
+            maxBuffer: 10485760,
+            stdin: 'pipe',
+            stdout: 'pipe',
+            stderr: 'pipe',
           },
         ],
         adminConfig: { binarySource: 'docker' },
@@ -259,10 +329,12 @@ describe('util/exec/index', () => {
         outOpts: [
           {
             cwd,
-            encoding,
             env: containerbaseEnvFiltered,
             timeout: 900000,
             maxBuffer: 10485760,
+            stdin: 'pipe',
+            stdout: 'pipe',
+            stderr: 'pipe',
           },
         ],
         adminConfig: { binarySource: 'docker' },
@@ -287,17 +359,19 @@ describe('util/exec/index', () => {
         outCmd: [
           dockerPullCmd,
           dockerRemoveCmd,
-          `docker run --rm --name=${name} --label=renovate_child ${defaultVolumes} -e SELECTED_ENV_VAR -e CONTAINERBASE_CACHE_DIR ${defaultCwd} ${fullImage} bash -l -c "${inCmd}"`,
+          `docker run --rm --name=${name} --label=renovate_child ${defaultVolumes} -e CI -e SELECTED_ENV_VAR -e CONTAINERBASE_CACHE_DIR ${defaultCwd} ${fullImage} bash -l -c '${inCmd}'`,
         ],
         outOpts: [
           dockerPullOpts,
           dockerRemoveOpts,
           {
             cwd,
-            encoding,
             env: containerbaseEnvFiltered,
             timeout: 900000,
             maxBuffer: 10485760,
+            stdin: 'pipe',
+            stdout: 'pipe',
+            stderr: 'pipe',
           },
         ],
         adminConfig: { binarySource: 'docker' },
@@ -314,10 +388,12 @@ describe('util/exec/index', () => {
         outOpts: [
           {
             cwd,
-            encoding,
             env: { ...containerbaseEnv, SELECTED_ENV_VAR: 'Default value' },
             timeout: 900000,
             maxBuffer: 10485760,
+            stdin: 'pipe',
+            stdout: 'pipe',
+            stderr: 'pipe',
           },
         ],
         adminConfig: { binarySource: 'docker' },
@@ -337,17 +413,19 @@ describe('util/exec/index', () => {
         outCmd: [
           dockerPullCmd,
           dockerRemoveCmd,
-          `docker run --rm --name=${name} --label=renovate_child ${defaultVolumes} -e SELECTED_ENV_VAR -e CONTAINERBASE_CACHE_DIR ${defaultCwd} ${fullImage} bash -l -c "${inCmd}"`,
+          `docker run --rm --name=${name} --label=renovate_child ${defaultVolumes} -e CI -e SELECTED_ENV_VAR -e CONTAINERBASE_CACHE_DIR ${defaultCwd} ${fullImage} bash -l -c '${inCmd}'`,
         ],
         outOpts: [
           dockerPullOpts,
           dockerRemoveOpts,
           {
             cwd,
-            encoding,
             env: { ...containerbaseEnv, SELECTED_ENV_VAR: 'Default value' },
             timeout: 900000,
             maxBuffer: 10485760,
+            stdin: 'pipe',
+            stdout: 'pipe',
+            stderr: 'pipe',
           },
         ],
         adminConfig: { binarySource: 'docker' },
@@ -363,17 +441,19 @@ describe('util/exec/index', () => {
         outCmd: [
           dockerPullCmd,
           dockerRemoveCmd,
-          `docker run --rm --name=${name} --label=renovate_child ${defaultVolumes} -v "${volume_1}":"${volume_1}" -v "${volume_2_from}":"${volume_2_to}" -e CONTAINERBASE_CACHE_DIR -w "${cwd}" ${fullImage} bash -l -c "${inCmd}"`,
+          `docker run --rm --name=${name} --label=renovate_child ${defaultVolumes} -v "${volume_1}":"${volume_1}" -v "${volume_2_from}":"${volume_2_to}" -e CI -e CONTAINERBASE_CACHE_DIR -w "${cwd}" ${fullImage} bash -l -c '${inCmd}'`,
         ],
         outOpts: [
           dockerPullOpts,
           dockerRemoveOpts,
           {
             cwd,
-            encoding,
             env: containerbaseEnv,
             timeout: 900000,
             maxBuffer: 10485760,
+            stdin: 'pipe',
+            stdout: 'pipe',
+            stderr: 'pipe',
           },
         ],
         adminConfig: { binarySource: 'docker' },
@@ -389,17 +469,19 @@ describe('util/exec/index', () => {
         outCmd: [
           dockerPullCmd,
           dockerRemoveCmd,
-          `docker run --rm --name=${name} --label=renovate_child --user=foobar ${defaultVolumes} -e CONTAINERBASE_CACHE_DIR -w "${cwd}" ${fullImage} bash -l -c "${inCmd}"`,
+          `docker run --rm --name=${name} --label=renovate_child --user=foobar ${defaultVolumes} -e CI -e CONTAINERBASE_CACHE_DIR -w "${cwd}" ${fullImage} bash -l -c '${inCmd}'`,
         ],
         outOpts: [
           dockerPullOpts,
           dockerRemoveOpts,
           {
             cwd,
-            encoding,
             env: containerbaseEnv,
             timeout: 900000,
             maxBuffer: 10485760,
+            stdin: 'pipe',
+            stdout: 'pipe',
+            stderr: 'pipe',
           },
         ],
         adminConfig: {
@@ -416,23 +498,25 @@ describe('util/exec/index', () => {
         inCmd,
         inOpts: { docker },
         outCmd: [
-          `docker pull ghcr.io/containerbase/${image}`,
+          `docker pull ghcr.io/renovatebot/base-image`,
           dockerRemoveCmd,
-          `docker run --rm --name=${name} --label=renovate_child ${defaultVolumes} -e CONTAINERBASE_CACHE_DIR -w "${cwd}" ghcr.io/containerbase/${image} bash -l -c "${inCmd}"`,
+          `docker run --rm --name=${name} --label=renovate_child ${defaultVolumes} -e CI -e CONTAINERBASE_CACHE_DIR -w "${cwd}" ghcr.io/renovatebot/base-image bash -l -c '${inCmd}'`,
         ],
         outOpts: [
           dockerPullOpts,
           dockerRemoveOpts,
           {
             cwd,
-            encoding,
             env: containerbaseEnv,
             timeout: 900000,
             maxBuffer: 10485760,
+            stdin: 'pipe',
+            stdout: 'pipe',
+            stderr: 'pipe',
           },
         ],
         adminConfig: {
-          dockerSidecarImage: 'ghcr.io/containerbase/sidecar',
+          dockerSidecarImage: 'ghcr.io/renovatebot/base-image',
           binarySource: 'docker',
         },
       },
@@ -446,18 +530,20 @@ describe('util/exec/index', () => {
         inOpts: { docker },
         outCmd: [
           dockerPullCmd,
-          `docker ps --filter name=myprefix_${image} -aq`,
-          `docker run --rm --name=myprefix_${image} --label=myprefix_child ${defaultVolumes} -e CONTAINERBASE_CACHE_DIR -w "${cwd}" ${fullImage} bash -l -c "${inCmd}"`,
+          `docker ps --filter name=myprefix_${sideCarName} -aq`,
+          `docker run --rm --name=myprefix_${sideCarName} --label=myprefix_child ${defaultVolumes} -e CI -e CONTAINERBASE_CACHE_DIR -w "${cwd}" ${fullImage} bash -l -c '${inCmd}'`,
         ],
         outOpts: [
           dockerPullOpts,
           dockerRemoveOpts,
           {
             cwd,
-            encoding,
             env: containerbaseEnv,
             timeout: 900000,
             maxBuffer: 10485760,
+            stdin: 'pipe',
+            stdout: 'pipe',
+            stderr: 'pipe',
           },
         ],
         adminConfig: {
@@ -479,17 +565,19 @@ describe('util/exec/index', () => {
         outCmd: [
           dockerPullCmd,
           dockerRemoveCmd,
-          `docker run --rm --name=${name} --label=renovate_child ${defaultVolumes} -e CONTAINERBASE_CACHE_DIR -w "${cwd}" ${fullImage} bash -l -c "preCommand1 && preCommand2 && ${inCmd}"`,
+          `docker run --rm --name=${name} --label=renovate_child ${defaultVolumes} -e CI -e CONTAINERBASE_CACHE_DIR -w "${cwd}" ${fullImage} bash -l -c 'preCommand1 && preCommand2 && ${inCmd}'`,
         ],
         outOpts: [
           dockerPullOpts,
           dockerRemoveOpts,
           {
             cwd,
-            encoding,
             env: containerbaseEnv,
             timeout: 900000,
             maxBuffer: 10485760,
+            stdin: 'pipe',
+            stdout: 'pipe',
+            stderr: 'pipe',
           },
         ],
         adminConfig: { binarySource: 'docker' },
@@ -505,17 +593,19 @@ describe('util/exec/index', () => {
         outCmd: [
           dockerPullCmd,
           dockerRemoveCmd,
-          `docker run --rm --name=${name} --label=renovate_child ${defaultVolumes} -e CONTAINERBASE_CACHE_DIR -w "${cwd}" ${fullImage} bash -l -c "${inCmd}"`,
+          `docker run --rm --name=${name} --label=renovate_child ${defaultVolumes} -e CI -e CONTAINERBASE_CACHE_DIR -w "${cwd}" ${fullImage} bash -l -c '${inCmd}'`,
         ],
         outOpts: [
           dockerPullOpts,
           dockerRemoveOpts,
           {
             cwd,
-            encoding,
             env: containerbaseEnv,
             timeout: 900000,
             maxBuffer: 10485760,
+            stdin: 'pipe',
+            stdout: 'pipe',
+            stderr: 'pipe',
           },
         ],
         adminConfig: { binarySource: 'docker' },
@@ -534,10 +624,12 @@ describe('util/exec/index', () => {
         outOpts: [
           {
             cwd,
-            encoding,
             env: containerbaseEnv,
             timeout: 20 * 60 * 1000,
             maxBuffer: 10485760,
+            stdin: 'pipe',
+            stdout: 'pipe',
+            stderr: 'pipe',
           },
         ],
         adminConfig: { binarySource: 'docker' },
@@ -554,10 +646,12 @@ describe('util/exec/index', () => {
         outOpts: [
           {
             cwd,
-            encoding,
             env: envMock.basic,
             timeout: 30 * 60 * 1000,
             maxBuffer: 10485760,
+            stdin: 'pipe',
+            stdout: 'pipe',
+            stderr: 'pipe',
           },
         ],
         adminConfig: { executionTimeout: 30 },
@@ -576,10 +670,12 @@ describe('util/exec/index', () => {
         outOpts: [
           {
             cwd,
-            encoding,
             env: containerbaseEnv,
             timeout: 900000,
             maxBuffer: 1024,
+            stdin: 'pipe',
+            stdout: 'pipe',
+            stderr: 'pipe',
           },
         ],
         adminConfig: { binarySource: 'docker' },
@@ -596,13 +692,15 @@ describe('util/exec/index', () => {
         outOpts: [
           {
             cwd,
-            encoding,
             env: {
               ...containerbaseEnv,
               CUSTOM_KEY: 'CUSTOM_VALUE',
             },
             timeout: 900000,
             maxBuffer: 10485760,
+            stdin: 'pipe',
+            stdout: 'pipe',
+            stderr: 'pipe',
           },
         ],
         adminConfig: {
@@ -624,13 +722,15 @@ describe('util/exec/index', () => {
         outOpts: [
           {
             cwd,
-            encoding,
             env: {
               ...containerbaseEnv,
               CUSTOM_KEY: 'CUSTOM_OVERRIDEN_VALUE',
             },
             timeout: 900000,
             maxBuffer: 10485760,
+            stdin: 'pipe',
+            stdout: 'pipe',
+            stderr: 'pipe',
           },
         ],
         adminConfig: {
@@ -651,20 +751,22 @@ describe('util/exec/index', () => {
         outCmd: [
           dockerPullCmd,
           dockerRemoveCmd,
-          `docker run --rm --name=${name} --label=renovate_child ${defaultVolumes} -e CUSTOM_KEY -e CONTAINERBASE_CACHE_DIR ${defaultCwd} ${fullImage} bash -l -c "${inCmd}"`,
+          `docker run --rm --name=${name} --label=renovate_child ${defaultVolumes} -e CI -e CUSTOM_KEY -e CONTAINERBASE_CACHE_DIR ${defaultCwd} ${fullImage} bash -l -c '${inCmd}'`,
         ],
         outOpts: [
           dockerPullOpts,
           dockerRemoveOpts,
           {
             cwd,
-            encoding,
             env: {
               ...containerbaseEnv,
               CUSTOM_KEY: 'CUSTOM_VALUE',
             },
             timeout: 900000,
             maxBuffer: 10485760,
+            stdin: 'pipe',
+            stdout: 'pipe',
+            stderr: 'pipe',
           },
         ],
         adminConfig: {
@@ -685,20 +787,22 @@ describe('util/exec/index', () => {
         outCmd: [
           dockerPullCmd,
           dockerRemoveCmd,
-          `docker run --rm --name=${name} --label=renovate_child ${defaultVolumes} -e CUSTOM_KEY -e CONTAINERBASE_CACHE_DIR ${defaultCwd} ${fullImage} bash -l -c "${inCmd}"`,
+          `docker run --rm --name=${name} --label=renovate_child ${defaultVolumes} -e CI -e CUSTOM_KEY -e CONTAINERBASE_CACHE_DIR ${defaultCwd} ${fullImage} bash -l -c '${inCmd}'`,
         ],
         outOpts: [
           dockerPullOpts,
           dockerRemoveOpts,
           {
             cwd,
-            encoding,
             env: {
               ...containerbaseEnv,
               CUSTOM_KEY: 'CUSTOM_OVERRIDEN_VALUE',
             },
             timeout: 900000,
             maxBuffer: 10485760,
+            stdin: 'pipe',
+            stdout: 'pipe',
+            stderr: 'pipe',
           },
         ],
         adminConfig: {
@@ -723,11 +827,81 @@ describe('util/exec/index', () => {
         outOpts: [
           {
             cwd,
-            encoding,
             env: envMock.basic,
             timeout: 900000,
             maxBuffer: 10485760,
-            stdio: ['pipe', 'ignore', 'pipe'],
+            stdin: 'pipe',
+            stdout: 'ignore',
+            stderr: 'pipe',
+          },
+        ],
+      },
+    ],
+
+    [
+      'Shell is not set if not specified',
+      {
+        processEnv,
+        inCmd,
+        inOpts: {},
+        outCmd,
+        outOpts: [
+          {
+            cwd,
+            env: envMock.basic,
+            timeout: 900000,
+            maxBuffer: 10485760,
+            stdin: 'pipe',
+            stdout: 'pipe',
+            stderr: 'pipe',
+          },
+        ],
+      },
+    ],
+
+    [
+      'Shell=true is set if specified',
+      {
+        processEnv,
+        inCmd,
+        inOpts: {
+          shell: true,
+        },
+        outCmd,
+        outOpts: [
+          {
+            cwd,
+            env: envMock.basic,
+            timeout: 900000,
+            maxBuffer: 10485760,
+            shell: true,
+            stdin: 'pipe',
+            stdout: 'pipe',
+            stderr: 'pipe',
+          },
+        ],
+      },
+    ],
+
+    [
+      'Shell={string} is set if specified',
+      {
+        processEnv,
+        inCmd,
+        inOpts: {
+          shell: '/usr/bin/another-shell',
+        },
+        outCmd,
+        outOpts: [
+          {
+            cwd,
+            env: envMock.basic,
+            timeout: 900000,
+            maxBuffer: 10485760,
+            shell: '/usr/bin/another-shell',
+            stdin: 'pipe',
+            stdout: 'pipe',
+            stderr: 'pipe',
           },
         ],
       },
@@ -749,7 +923,6 @@ describe('util/exec/index', () => {
         outOpts: [
           {
             cwd,
-            encoding,
             env: {
               ...envMock.basic,
               CUSTOM_KEY: 'CUSTOM_OVERRIDEN_VALUE',
@@ -758,6 +931,9 @@ describe('util/exec/index', () => {
             },
             timeout: 900000,
             maxBuffer: 10485760,
+            stdin: 'pipe',
+            stdout: 'pipe',
+            stderr: 'pipe',
           },
         ],
         hermitEnvs: {
@@ -781,7 +957,7 @@ describe('util/exec/index', () => {
       inOpts,
       outCmd: outCommand,
       outOpts,
-      adminConfig = {} as any,
+      adminConfig = {},
       hermitEnvs,
     } = testOpts;
 
@@ -790,17 +966,18 @@ describe('util/exec/index', () => {
     const actualCmd: string[] = [];
     const actualOpts: RawExecOptions[] = [];
     cpExec.mockImplementation((execCmd, execOpts) => {
-      actualCmd.push(execCmd);
+      actualCmd.push(asRawCommand(execCmd));
       actualOpts.push(execOpts);
 
       return Promise.resolve({ stdout: '', stderr: '' });
     });
     GlobalConfig.set({ ...globalConfig, localDir: cwd, ...adminConfig });
+    setCustomEnv(coerceObject(adminConfig.customEnvVariables));
     if (hermitEnvs !== undefined) {
       getHermitEnvsMock.mockResolvedValue(hermitEnvs);
     }
 
-    await exec(cmd as string, inOpts);
+    await exec(cmd, inOpts);
 
     expect(actualCmd).toEqual(outCommand);
     expect(actualOpts).toEqual(outOpts);
@@ -811,7 +988,7 @@ describe('util/exec/index', () => {
 
     const actualCmd: string[] = [];
     cpExec.mockImplementation((execCmd) => {
-      actualCmd.push(execCmd);
+      actualCmd.push(asRawCommand(execCmd));
       return Promise.resolve({ stdout: '', stderr: '' });
     });
 
@@ -835,17 +1012,129 @@ describe('util/exec/index', () => {
       `echo hello`,
       `echo hello`,
       `docker pull ${fullImage}`,
-      `docker ps --filter name=renovate_${image} -aq`,
-      `docker run --rm --name=renovate_${image} --label=renovate_child ${defaultCacheVolume} -e CONTAINERBASE_CACHE_DIR ${fullImage} bash -l -c "echo hello"`,
-      `docker ps --filter name=renovate_${image} -aq`,
-      `docker run --rm --name=renovate_${image} --label=renovate_child ${defaultCacheVolume} -e CONTAINERBASE_CACHE_DIR ${fullImage} bash -l -c "echo hello"`,
+      `docker ps --filter name=renovate_${sideCarName} -aq`,
+      `docker run --rm --name=renovate_${sideCarName} --label=renovate_child ${defaultCacheVolume} -e CI -e CONTAINERBASE_CACHE_DIR ${fullImage} bash -l -c 'echo hello'`,
+      `docker ps --filter name=renovate_${sideCarName} -aq`,
+      `docker run --rm --name=renovate_${sideCarName} --label=renovate_child ${defaultCacheVolume} -e CI -e CONTAINERBASE_CACHE_DIR ${fullImage} bash -l -c 'echo hello'`,
       `echo hello`,
       `echo hello`,
-      `docker ps --filter name=renovate_${image} -aq`,
-      `docker run --rm --name=renovate_${image} --label=renovate_child ${defaultCacheVolume} -e CONTAINERBASE_CACHE_DIR ${fullImage} bash -l -c "echo hello"`,
-      `docker ps --filter name=renovate_${image} -aq`,
-      `docker run --rm --name=renovate_${image} --label=renovate_child ${defaultCacheVolume} -e CONTAINERBASE_CACHE_DIR ${fullImage} bash -l -c "echo hello"`,
+      `docker ps --filter name=renovate_${sideCarName} -aq`,
+      `docker run --rm --name=renovate_${sideCarName} --label=renovate_child ${defaultCacheVolume} -e CI -e CONTAINERBASE_CACHE_DIR ${fullImage} bash -l -c 'echo hello'`,
+      `docker ps --filter name=renovate_${sideCarName} -aq`,
+      `docker run --rm --name=renovate_${sideCarName} --label=renovate_child ${defaultCacheVolume} -e CI -e CONTAINERBASE_CACHE_DIR ${fullImage} bash -l -c 'echo hello'`,
     ]);
+  });
+
+  it.each(Object.keys(hardcodedProcessEnv))(
+    'always forwards %s into the Docker sidecar',
+    async (envVar) => {
+      process.env = processEnv;
+
+      const actualCmd: string[] = [];
+      cpExec.mockImplementation((execCmd) => {
+        actualCmd.push(asRawCommand(execCmd));
+        return Promise.resolve({ stdout: '', stderr: '' });
+      });
+
+      GlobalConfig.set({
+        ...globalConfig,
+        localDir: cwd,
+        binarySource: 'docker',
+      });
+      await exec(inCmd, { docker });
+
+      expect(actualCmd.at(-1)).toContain(`-e ${envVar} `);
+    },
+  );
+
+  it('throws when an error is thrown', async () => {
+    process.env = processEnv;
+    cpExec.mockImplementation(() => {
+      throw new Error('some error occurred');
+    });
+    GlobalConfig.set({ ...globalConfig, binarySource: 'install' });
+    const promise = exec('foobar');
+    await expect(promise).rejects.toThrow('some error occurred');
+  });
+
+  it('rejects and throws if an error is thrown, even if we specify ignoreFailure=true', async () => {
+    process.env = processEnv;
+    cpExec.mockImplementation(() => {
+      throw new Error('some error occurred');
+    });
+    GlobalConfig.set({ ...globalConfig });
+    const promise = exec([
+      {
+        command: ['foobar'],
+        ignoreFailure: true,
+      },
+    ]);
+    await expect(promise).rejects.toThrow('some error occurred');
+  });
+
+  it('does not reject and throw if rawExec returns an exit code, and we specify ignoreFailure=true', async () => {
+    process.env = processEnv;
+    const stdout = 'out';
+    const stderr = 'err';
+    cpExec.mockImplementation((): Promise<ExecResult> =>
+      // NOTE that this only makes sense as a return value when `ignoreFailure=true` is set
+      Promise.resolve({
+        stdout,
+        stderr,
+        exitCode: 10,
+      }),
+    );
+    GlobalConfig.set({ ...globalConfig });
+    const promise = exec([
+      {
+        command: ['foobar'],
+        // NOTE that the implementation would only work if `ignoreFailure: true`
+        ignoreFailure: true,
+      },
+    ]);
+    await expect(promise).resolves.toEqual({
+      stdout,
+      stderr,
+      exitCode: 10,
+    });
+  });
+
+  it('exec takes an array with both `string`s and `CommandWithOptions` as an argument', async () => {
+    const command: CommandWithOptions = {
+      command: ['exit 1'],
+      ignoreFailure: true,
+    };
+
+    cpExec.mockImplementationOnce(() => {
+      return Promise.resolve({ stdout: '', stderr: '' });
+    });
+
+    cpExec.mockImplementationOnce(() => {
+      return Promise.resolve({ stdout: 'out', stderr: 'err', exitCode: 5 });
+    });
+
+    await expect(exec(['ls', command])).resolves.toEqual({
+      stdout: 'out',
+      stderr: 'err',
+      exitCode: 5,
+    });
+  });
+
+  it('exec takes CommandWithOptions as an argument', async () => {
+    const command: CommandWithOptions = {
+      command: ['exit 1'],
+      ignoreFailure: true,
+    };
+
+    cpExec.mockImplementation(() => {
+      return Promise.resolve({ stdout: 'out', stderr: 'err', exitCode: 5 });
+    });
+
+    await expect(exec([command])).resolves.toEqual({
+      stdout: 'out',
+      stderr: 'err',
+      exitCode: 5,
+    });
   });
 
   it('Supports binarySource=install', async () => {
@@ -859,11 +1148,47 @@ describe('util/exec/index', () => {
     await expect(promise).rejects.toThrow('No tool releases found.');
   });
 
+  it('logs "Executing command" with the command and environment variable names', async () => {
+    process.env = processEnv;
+    cpExec.mockResolvedValue({ stdout: '', stderr: '' });
+    GlobalConfig.set({ ...globalConfig, localDir: cwd });
+
+    await exec(inCmd);
+
+    expect(logger.logger.debug).toHaveBeenCalledWith(
+      {
+        command: inCmd,
+        env: [
+          'HTTP_PROXY',
+          'HTTPS_PROXY',
+          'NO_PROXY',
+          'HOME',
+          'PATH',
+          'LC_ALL',
+          'LANG',
+          'CI',
+        ],
+      },
+      'Executing command',
+    );
+  });
+
+  it('logs ignored tool constraints for binarySource=global', async () => {
+    process.env = processEnv;
+    cpExec.mockResolvedValue({ stdout: '', stderr: '' });
+    GlobalConfig.set({ ...globalConfig, binarySource: 'global' });
+    await exec('foobar', { toolConstraints: [{ toolName: 'npm' }] });
+    expect(logger.logger.once.debug).toHaveBeenCalledWith(
+      { toolConstraints: [{ toolName: 'npm' }] },
+      'Ignoring tool contraints because of `binarySource=global`',
+    );
+  });
+
   it('Supports binarySource=install preCommands', async () => {
     process.env = processEnv;
     const actualCmd: string[] = [];
     cpExec.mockImplementation((execCmd) => {
-      actualCmd.push(execCmd);
+      actualCmd.push(asRawCommand(execCmd));
       return Promise.resolve({ stdout: '', stderr: '' });
     });
 
@@ -878,7 +1203,7 @@ describe('util/exec/index', () => {
       throw new Error('some error occurred');
     });
 
-    const removeDockerContainerSpy = jest.spyOn(
+    const removeDockerContainerSpy = vi.spyOn(
       dockerModule,
       'removeDockerContainer',
     );
@@ -893,14 +1218,14 @@ describe('util/exec/index', () => {
     cpExec.mockImplementation(() => {
       throw new Error('some error occurred');
     });
-    jest
-      .spyOn(dockerModule, 'generateDockerCommand')
-      .mockImplementation((): any => 'asdf');
+    vi.spyOn(dockerModule, 'generateDockerCommand').mockImplementation(
+      (): any => 'asdf',
+    );
 
     // The `removeDockerContainer` function is called once before it's used in the `catch` block.
     // We want it to fail in the catch block so we can assert the error is wrapped.
     let calledOnce = false;
-    const removeDockerContainerSpy = jest.spyOn(
+    const removeDockerContainerSpy = vi.spyOn(
       dockerModule,
       'removeDockerContainer',
     );
@@ -931,12 +1256,397 @@ describe('util/exec/index', () => {
       error.signal = 'SIGTERM';
       throw error;
     });
-    const removeDockerContainerSpy = jest.spyOn(
+    const removeDockerContainerSpy = vi.spyOn(
       dockerModule,
       'removeDockerContainer',
     );
     const promise = exec('foobar', {});
     await expect(promise).rejects.toThrow(TEMPORARY_ERROR);
     expect(removeDockerContainerSpy).toHaveBeenCalledTimes(0);
+  });
+
+  describe('getToolSettingsOptions()', () => {
+    const config: UpdateArtifactsConfig = {
+      newValue: '5.6.4',
+    };
+
+    describe('for JVM settings', () => {
+      beforeEach(() => {
+        GlobalConfig.set({
+          toolSettings: { jvmMemory: 768, jvmMaxMemory: 800 },
+        });
+
+        // remove any test-specific overrides
+        delete config.toolSettings;
+      });
+
+      it('returns default values if no global or repo config', () => {
+        GlobalConfig.set({});
+
+        const res = getToolSettingsOptions(undefined);
+
+        expect(res).toMatchObject({
+          jvmMemory: 512,
+          jvmMaxMemory: 512,
+        });
+      });
+
+      it('returns default values if empty repo config', () => {
+        GlobalConfig.set({});
+
+        const res = getToolSettingsOptions({});
+
+        expect(res).toMatchObject({
+          jvmMemory: 512,
+          jvmMaxMemory: 512,
+        });
+      });
+
+      it('returns default values if empty global config', () => {
+        GlobalConfig.set({
+          toolSettings: {},
+        });
+
+        const res = getToolSettingsOptions(undefined);
+
+        expect(res).toMatchObject({
+          jvmMemory: 512,
+          jvmMaxMemory: 512,
+        });
+      });
+
+      describe('does not allow floating point numbers', () => {
+        it('in global config', () => {
+          GlobalConfig.set({
+            toolSettings: { jvmMemory: 512.5, jvmMaxMemory: 600.2 },
+          });
+
+          const res = getToolSettingsOptions(undefined);
+
+          expect(res).toMatchObject({
+            jvmMemory: 512,
+            jvmMaxMemory: 600,
+          });
+        });
+
+        it('in repo config', () => {
+          GlobalConfig.set({
+            toolSettings: { jvmMemory: 1024, jvmMaxMemory: 1024 },
+          });
+
+          config.toolSettings = {
+            jvmMemory: 556.8,
+            jvmMaxMemory: 600.4,
+          };
+
+          const res = getToolSettingsOptions(config.toolSettings);
+
+          expect(res).toMatchObject({
+            jvmMemory: 556,
+            jvmMaxMemory: 600,
+          });
+        });
+      });
+
+      describe('when using repo config to override memory limits', () => {
+        it('when below global settings, repo settings are used', () => {
+          config.toolSettings = {
+            jvmMemory: 512,
+            jvmMaxMemory: 700,
+          };
+
+          const res = getToolSettingsOptions(config.toolSettings);
+
+          expect(res).toMatchObject({
+            jvmMemory: 512,
+            jvmMaxMemory: 700,
+          });
+        });
+
+        it('when repo settings are the same as global settings, they are used', () => {
+          config.toolSettings = {
+            jvmMemory: 512,
+            jvmMaxMemory: 600,
+          };
+
+          const res = getToolSettingsOptions(config.toolSettings);
+
+          expect(res).toMatchObject({
+            jvmMemory: 512,
+            jvmMaxMemory: 600,
+          });
+        });
+
+        it('when repo jvmMemory setting is higher than global setting, but lower than global jvmMaxMemory, the repo config is used', () => {
+          config.toolSettings = {
+            jvmMemory: 600,
+          };
+
+          const res = getToolSettingsOptions(config.toolSettings);
+
+          expect(res).toMatchObject({
+            jvmMemory: 600,
+          });
+        });
+
+        it('when repo jvmMaxMemory setting is lower than global settings, it is applied', () => {
+          config.toolSettings = {
+            jvmMaxMemory: 680,
+          };
+
+          const res = getToolSettingsOptions(config.toolSettings);
+
+          expect(res).toMatchObject({
+            jvmMaxMemory: 680,
+          });
+        });
+
+        it('when repo jvmMaxMemory setting is lower than global jvmMemory, jvmMemory is set to the same value', () => {
+          config.toolSettings = {
+            jvmMaxMemory: 600,
+          };
+
+          const res = getToolSettingsOptions(config.toolSettings);
+
+          expect(res).toMatchObject({
+            jvmMemory: 600,
+            jvmMaxMemory: 600,
+          });
+        });
+
+        it('when repo jvmMaxMemory setting is lower than repo jvmMemory, jvmMemory is set to the same value', () => {
+          config.toolSettings = {
+            jvmMemory: 600,
+            jvmMaxMemory: 600,
+          };
+
+          const res = getToolSettingsOptions(config.toolSettings);
+
+          expect(res).toMatchObject({
+            jvmMemory: 600,
+            jvmMaxMemory: 600,
+          });
+        });
+
+        it('when repo jvmMaxMemory setting is higher than global settings, they are ignored', () => {
+          config.toolSettings = {
+            jvmMaxMemory: 8192,
+          };
+
+          const res = getToolSettingsOptions(config.toolSettings);
+
+          expect(res).toMatchObject({
+            jvmMemory: 768,
+            jvmMaxMemory: 800,
+          });
+        });
+
+        it('when repo jvmMaxMemory setting is higher than global settings, a debug log is logged', () => {
+          config.toolSettings = {
+            jvmMaxMemory: 8192,
+          };
+
+          const res = getToolSettingsOptions(config.toolSettings);
+
+          expect(logger.logger.once.debug).toHaveBeenCalledWith(
+            'A higher jvmMaxMemory (8192) than the global configuration (800) is not permitted for Java VM invocations. Using global configuration instead',
+          );
+
+          expect(res).toMatchObject({
+            jvmMemory: 768,
+            jvmMaxMemory: 800,
+          });
+        });
+      });
+
+      // to provide a bit more safety to users, so they can't specify too little memory for Gradle
+      describe('a minimum of 512M is enforced', () => {
+        it('when global settings are lower than 512M, they are overridden to 512M', () => {
+          GlobalConfig.set({
+            toolSettings: { jvmMemory: 100, jvmMaxMemory: 127 },
+          });
+
+          const res = getToolSettingsOptions(undefined);
+
+          expect(res).toMatchObject({
+            jvmMemory: 512,
+            jvmMaxMemory: 512,
+          });
+        });
+
+        it('when global settings are lower than 512M, a debug log is logged', () => {
+          GlobalConfig.set({
+            toolSettings: { jvmMemory: 200, jvmMaxMemory: 255 },
+          });
+
+          getToolSettingsOptions(undefined);
+
+          expect(logger.logger.once.debug).toHaveBeenCalledWith(
+            'Overriding low memory settings for Java VM invocations to a minimum of 512M',
+          );
+        });
+
+        it('when repo settings are lower than 512M, they are overridden to 512M', () => {
+          config.toolSettings = {
+            jvmMemory: 500,
+            jvmMaxMemory: 511,
+          };
+
+          const res = getToolSettingsOptions(config.toolSettings);
+
+          expect(res).toMatchObject({
+            jvmMemory: 512,
+            jvmMaxMemory: 512,
+          });
+        });
+
+        it('when repo settings are lower than 512M, a debug log is logged', () => {
+          config.toolSettings = {
+            jvmMemory: 500,
+            jvmMaxMemory: 511,
+          };
+
+          getToolSettingsOptions(config.toolSettings);
+
+          expect(logger.logger.once.debug).toHaveBeenCalledWith(
+            'Overriding low memory settings for Java VM invocations to a minimum of 512M',
+          );
+        });
+      });
+    });
+
+    describe('for Node settings', () => {
+      beforeEach(() => {
+        GlobalConfig.set({
+          toolSettings: { nodeMaxMemory: 1024 },
+        });
+
+        // remove any test-specific overrides
+        delete config.toolSettings;
+      });
+
+      it('does not return a default value if no global or repo config', () => {
+        GlobalConfig.set({});
+
+        const res = getToolSettingsOptions(undefined);
+
+        expect(res).toMatchObject({
+          nodeMaxMemory: undefined,
+        });
+      });
+
+      it('does not return default values if empty global config', () => {
+        GlobalConfig.set({
+          toolSettings: {},
+        });
+
+        const res = getToolSettingsOptions(undefined);
+
+        expect(res).toMatchObject({
+          nodeMaxMemory: undefined,
+        });
+      });
+
+      describe('does not allow floating point numbers', () => {
+        it('in global config', () => {
+          GlobalConfig.set({
+            toolSettings: { nodeMaxMemory: 1024.1536 },
+          });
+
+          const res = getToolSettingsOptions(undefined);
+
+          expect(res).toMatchObject({
+            nodeMaxMemory: 1024,
+          });
+        });
+
+        it('in repo config', () => {
+          GlobalConfig.set({});
+
+          config.toolSettings = {
+            nodeMaxMemory: 1024.1536,
+          };
+
+          const res = getToolSettingsOptions(config.toolSettings);
+
+          expect(res).toMatchObject({
+            nodeMaxMemory: 1024,
+          });
+        });
+      });
+
+      describe('when using repo config to override memory limits', () => {
+        it('when below global settings, repo settings are used', () => {
+          config.toolSettings = {
+            nodeMaxMemory: 700,
+          };
+
+          const res = getToolSettingsOptions(config.toolSettings);
+
+          expect(res).toMatchObject({
+            nodeMaxMemory: 700,
+          });
+        });
+
+        it('when repo settings are the same as global settings, they are used', () => {
+          config.toolSettings = {
+            nodeMaxMemory: 1024,
+          };
+
+          const res = getToolSettingsOptions(config.toolSettings);
+
+          expect(res).toMatchObject({
+            nodeMaxMemory: 1024,
+          });
+        });
+
+        it('when repo nodeMaxMemory setting is lower than global settings, it is applied', () => {
+          config.toolSettings = {
+            nodeMaxMemory: 128,
+          };
+
+          const res = getToolSettingsOptions(config.toolSettings);
+
+          expect(res).toMatchObject({
+            nodeMaxMemory: 128,
+          });
+        });
+
+        it('when repo nodeMaxMemory setting is higher than global settings, they are ignored', () => {
+          config.toolSettings = {
+            nodeMaxMemory: 8192,
+          };
+
+          const res = getToolSettingsOptions(config.toolSettings);
+
+          expect(res).toMatchObject({
+            nodeMaxMemory: 1024,
+          });
+        });
+
+        it('when repo nodeMaxMemory setting is higher than global settings, a debug log is logged', () => {
+          config.toolSettings = {
+            nodeMaxMemory: 8192,
+          };
+
+          const res = getToolSettingsOptions(config.toolSettings);
+
+          expect(logger.logger.once.debug).toHaveBeenCalledWith(
+            'A higher nodeMaxMemory (8192) than the global configuration (1024) is not permitted for Node invocations. Using global configuration instead',
+          );
+
+          expect(res).toMatchObject({
+            nodeMaxMemory: 1024,
+          });
+        });
+      });
+    });
+  });
+
+  describe('gradleJvmArg()', () => {
+    it('takes the values given to it, and returns the JVM arguments', () => {
+      const result = gradleJvmArg({ jvmMemory: 256, jvmMaxMemory: 768 });
+      expect(result).toBe(' -Dorg.gradle.jvmargs="-Xms256m -Xmx768m"');
+    });
   });
 });

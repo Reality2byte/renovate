@@ -5,23 +5,29 @@ description: Learn all about Renovate's automerge functionality here
 
 # Introduction
 
-Automerging is a Renovate feature that you can use to automate upgrading dependencies.
-When enabled, Renovate tries to merge the proposed update once the tests pass.
+You can choose to automate some dependency updates by letting Renovate automerge its PR.
+Renovate will wait for the required tests to pass before it automerges.
 
-Keep in mind that Renovate automerges take a bit of time, do not expect Renovate to automerge a PR the second it opens and passes tests.
-Wait for at least an hour or two before troubleshooting to ensure that Renovate has had the time to run once in a state where tests have passed and the branch is up-to-date with its base branch.
+## Renovate automerges take time
+
+Renovate automerges take time, so Renovate can't automerge a PR the second it passes your required tests.
+Before you start troubleshooting, wait!
+Give Renovate about two hours, so Renovate can run in a state where your tests have passed, and the PR branch is up-to-date with the base branch.
 If you or others keep committing to the default branch then Renovate cannot find a suitable gap to automerge into!
 
-Once a branch is automerged, the "Git state" needs to be recalculated for every remaining branch.
-At times, merging one branch could result in another branch's updates being changed or even removed as unnecessary.
-Renovate's approach is to ensure that automerging branches are up-to-date with their target branch before automerging.
-This means merging multiple branches in a row won't work reliably, so we prefer not to do that.
-What all this means is that Renovate will only automerge at most one branch/PR per target branch per run, before you need to wait for the next run.
+After Renovate automerges a branch, Renovate must calculate the "Git state" again, for all remaining branches.
+Merging one branch may result in another branch's updates being changed, or even removed as no longer needed.
+Renovate requires automerging branches to be up-to-date with their target branch, _before_ automerging.
+As merging more than one branch in a row does not work _reliably_, Renovate will only automerge one branch/PR, per target branch, per run.
+Then you'll have to wait for the next time Renovate runs.
 
-As a general guide, we recommend that you enable automerge for any type of dependency updates where you would select "merge" anyway.
-For any updates where you want to review the changelogs - or code - before you merge, you can keep automerge disabled.
+## Recommendations from the Renovate maintainers
 
-Automerge works particularly well for `devDependencies` as well as for production `dependencies` in projects which have great test coverage.
+In general, we recommend you enable automerge for any dependency update where you would select "merge" anyway.
+Keep automerge _disabled_ for updates where you want to read the changelogs or code before the merge.
+
+Automerge often works well for `devDependencies`.
+It can work for production `dependencies` too, but your project should have good test coverage.
 
 For example, if you have Jest or Mocha as a development dependency, and it has an upgrade with passing tests... automerge them!
 If you have a linter like ESLint or TSLint and its update passes... automerge them!
@@ -34,7 +40,8 @@ If you have an API with 100% test coverage and Express is updated... automerge i
 ### Automerge lock file maintenance
 
 The lowest risk type of update to automerge is probably `lockFileMaintenance`.
-When Renovate performs lock file maintenance, it leaves the project dependency definitions unchanged, but refreshes the lock file completely so that the latest versions according to the package file constraints are installed.
+When Renovate performs lock file maintenance, it leaves the project dependency definitions unchanged, but refreshes the lock file completely.
+This means Renovate installs the latest versions, that match the package file constraints.
 
 ```json title="Example of automerging lock file maintenance"
 {
@@ -48,8 +55,11 @@ When Renovate performs lock file maintenance, it leaves the project dependency d
 ### Automerge lint tool updates
 
 Automerging lint tool updates can be a real time-saver.
-Sometimes an update to a lint tool or plugin definition causes tests to fail, and that is usually deliberate/intentional because the lint authors have added a new rule that you need to adhere to.
-But in many cases the new version(s) will pass tests, and if so then there's really nothing else to consider before merging, so they may as well be automerged:
+Often a new lint tool version pass the updated tests, without any code changes on your end.
+If the tests pass you may as well automerge the PR.
+
+In cases where you need to make changes to your code, the Renovate PR will fail the linter check.
+You can then make the necessary code changes directly in the Renovate branch for that PR, confirm the tests pass with your changes, and manually merge the PR.
 
 ```json title="Example of automerging lint and Prettier development packages"
 {
@@ -123,11 +133,23 @@ Read the [GitHub Docs, managing a merge queue](https://docs.github.com/en/reposi
 
 The steps to enable GitHub's Merge Queue differ based on whether you use GitHub Actions or another CI provider.
 
-<!-- prettier-ignore -->
+With `platformAutomerge` enabled (which is the default), GitHub's auto-merge takes care of adding the PR to the merge queue.
+This requires the "Allow auto-merge" checkbox in the repository settings to be enabled, as described in the steps below.
+
+Merge queues also work with `platformAutomerge=false`: Renovate detects whether the base branch has a merge queue, configured via classic branch protection or repository rulesets, and adds the PR to the merge queue itself once all checks have passed.
+In that case the "Allow auto-merge" checkbox is not needed.
+PRs that are already waiting in the merge queue are left untouched on later runs.
+We recommend enabling the "Automatically delete head branches" repository setting, so branches get cleaned up after the merge queue merges the PR.
+
+!!! warning
+  Branch automerge (`automergeType=branch`) only works if the base branch has a merge queue when Renovate is on the merge queue's bypass list, because pushing directly to the base branch is not possible otherwise.
+  Renovate logs a warning and creates a PR instead if the merge queue rejects the push.
+  Configure `automergeType=pr` in such repositories, or add Renovate to the bypass list.
+
 !!! tip "GitHub Merge Queue overview page"
-    GitHub has a page that shows all the PRs in the Merge Queue.
-    The page link follows this pattern: `https://github.com/organization-name/repository-name/queue/base-branch-name`.
-    For example, here's [Renovate's main repository's Merge Queue overview](https://github.com/renovatebot/renovate/queue/main).
+  GitHub has a page that shows all the PRs in the Merge Queue.
+  The page link follows this pattern: `https://github.com/organization-name/repository-name/queue/base-branch-name`.
+  For example, here's [Renovate's main repository's Merge Queue overview](https://github.com/renovatebot/renovate/queue/main).
 
 #### If you use GitHub Actions
 
@@ -172,6 +194,20 @@ Confirm you've set the correct "required checks" for your base branch.
 
 Finally, allow Renovate to automerge by setting `automerge=true` in your Renovate config file (see earlier example).
 
+### GitLab Merge Trains
+
+Renovate supports GitLab's [merge trains](https://docs.gitlab.com/ci/pipelines/merge_trains/).
+Renovate detects whether merge trains are enabled on the project and then:
+
+- With `platformAutomerge` enabled (the default), Renovate asks GitLab to add the MR to the merge train once its pipeline succeeds. This requires GitLab 17.11 or later.
+- With `platformAutomerge=false`, Renovate adds the MR to the merge train itself once all checks have passed, instead of merging it directly.
+- `rebaseWhen=auto` resolves to `conflicted` instead of `behind-base-branch`, because the merge train already tests MRs against the head of the target branch.
+
+!!! warning
+  Branch automerge (`automergeType=branch`) only works with merge trains if Renovate is allowed to push to the protected target branch.
+  If the push is rejected, Renovate logs a warning and creates a MR instead.
+  Configure `automergeType=pr` in such projects, or allow Renovate to push to the target branch.
+
 ## Automerging and scheduling
 
 Automerging is particularly beneficial if you have configured a schedule, because Renovate on its own may be able to automerge the majority of your updates.
@@ -209,6 +245,8 @@ If tests subsequently _fail_, making automerge not possible, then Renovate will 
 Note: Renovate won't add assignees and reviewers to a PR with failing checks if the PR already has assignees or reviewers present.
 If there are accounts you wish to ignore (i.e. add assignees and reviewers regardless) then add them to `ignoreReviewers` to specify those which should be filtered out in such consideration.
 
+If you want Renovate to _always_ add assigness and reviewers to a PR regardless of automerge configuration, activate the [`assignAutomerge` option](../configuration-options.md#assignautomerge).
+
 ## Frequent problems and how to resolve them
 
 ### Automerge not enabled correctly in config
@@ -222,9 +260,8 @@ If you see "Automerge: Disabled by config" it means you need to make a config ch
 By default, Renovate will not automerge until it sees passing status checks / check runs for the branch.
 If you have no tests but still want Renovate to automerge, you need to add `"ignoreTests": true` to your configuration.
 
-<!-- prettier-ignore -->
 !!! tip
-    We strongly recommend you have tests in any project where you are regularly updating dependencies.
+  We strongly recommend you have tests in any project where you are regularly updating dependencies.
 
 ### Committer restrictions
 
@@ -242,6 +279,8 @@ If you're on `github.com` or GitHub Enterprise Server (`>=3.4`) you can let Reno
 
 Alternatively, if you use the Mend Renovate App, you can also install the helper apps [renovate-approve](https://github.com/apps/renovate-approve) and [renovate-approve-2](https://github.com/apps/renovate-approve-2) and they will mark all automerging Pull Requests by Renovate as approved.
 These approval helper apps are only available for GitHub.
+
+On Azure/Gerrit/Gitlab, you can activate the [`autoApprove` option](../configuration-options.md#autoapprove).
 
 ### Codeowners
 

@@ -1,13 +1,11 @@
-import * as httpMock from '../../../test/http-mock';
-import { JiraHttp, setBaseUrl } from './jira';
+import * as httpMock from '~test/http-mock.ts';
+import { JiraHttp, setBaseUrl } from './jira.ts';
 
 describe('util/http/jira', () => {
   const api = new JiraHttp();
 
   it('throws error if setBaseUrl not called', async () => {
-    await expect(api.postJson('some-path')).rejects.toThrow(
-      new TypeError('Invalid URL'),
-    );
+    await expect(api.postJson('some-path')).rejects.toThrow('Invalid URL');
   });
 
   it('accepts custom baseUrl', async () => {
@@ -15,7 +13,7 @@ describe('util/http/jira', () => {
     httpMock.scope(siteUrl).post('/some-path').reply(200, {});
     setBaseUrl(siteUrl);
 
-    expect(await api.postJson('some-path')).toEqual({
+    await expect(api.postJson('some-path')).resolves.toEqual({
       authorization: false,
       body: {},
       headers: {

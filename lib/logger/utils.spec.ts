@@ -1,42 +1,11 @@
-import { z } from 'zod';
-import prepareError, {
-  prepareZodIssues,
-  sanitizeValue,
-  validateLogLevel,
-} from './utils';
+import { TimeoutError } from 'got';
+import { z } from 'zod/v4';
+import { ExecError } from '../util/exec/exec-error.ts';
+import prepareError, { prepareZodIssues, sanitizeValue } from './utils.ts';
 
 describe('logger/utils', () => {
   afterEach(() => {
-    jest.restoreAllMocks();
-  });
-
-  it('checks for valid log levels', () => {
-    expect(validateLogLevel(undefined, 'info')).toBe('info');
-    expect(validateLogLevel('warn', 'info')).toBe('warn');
-    expect(validateLogLevel('debug', 'info')).toBe('debug');
-    expect(validateLogLevel('trace', 'info')).toBe('trace');
-    expect(validateLogLevel('info', 'info')).toBe('info');
-    expect(validateLogLevel('error', 'info')).toBe('error');
-    expect(validateLogLevel('fatal', 'info')).toBe('fatal');
-  });
-
-  it.each`
-    input
-    ${'warning'}
-    ${'100'}
-    ${''}
-    ${' '}
-  `('checks for invalid log level: $input', (input) => {
-    // Mock when the function exits
-    const mockExit = jest.spyOn(process, 'exit');
-    mockExit.mockImplementationOnce((number) => {
-      // TODO: types (#22198)
-      throw new Error(`process.exit: ${number}`);
-    });
-    expect(() => {
-      validateLogLevel(input, 'info');
-    }).toThrow();
-    expect(mockExit).toHaveBeenCalledWith(1);
+    vi.restoreAllMocks();
   });
 
   it.each`
@@ -52,6 +21,19 @@ describe('logger/utils', () => {
     ${'user@domain.com'}                                                  | ${'user@domain.com'}
   `('sanitizeValue("$input") == "$output"', ({ input, output }) => {
     expect(sanitizeValue(input)).toBe(output);
+  });
+
+  it('sanitizes boxed String objects as strings', () => {
+    const input = {
+      commands: [
+        'clone',
+        new String('https://token@domain.com/repo.git'),
+        new String('.'),
+      ],
+    };
+    expect(sanitizeValue(input)).toEqual({
+      commands: ['clone', 'https://**redacted**@domain.com/repo.git', '.'],
+    });
   });
 
   it('preserves secret template strings in redacted fields', () => {
@@ -106,25 +88,28 @@ describe('logger/utils', () => {
     }
 
     it('prepareZodIssues', () => {
+      expect(prepareZodIssues(null)).toBe(null);
+      expect(prepareZodIssues({ _errors: ['a', 'b'] })).toEqual(['a', 'b']);
+
       expect(prepareIssues(z.string(), 42)).toBe(
-        'Expected string, received number',
+        'Invalid input: expected string, received number',
       );
 
       expect(prepareIssues(z.string().array(), 42)).toBe(
-        'Expected array, received number',
+        'Invalid input: expected array, received number',
       );
 
       expect(
         prepareIssues(z.string().array(), ['foo', 'bar', 42, 42, 42, 42, 42]),
       ).toEqual({
-        '2': 'Expected string, received number',
-        '3': 'Expected string, received number',
-        '4': 'Expected string, received number',
+        '2': 'Invalid input: expected string, received number',
+        '3': 'Invalid input: expected string, received number',
+        '4': 'Invalid input: expected string, received number',
         ___: '... 2 more',
       });
 
       expect(
-        prepareIssues(z.record(z.string()), {
+        prepareIssues(z.record(z.string(), z.string()), {
           foo: 'foo',
           bar: 'bar',
           key1: 42,
@@ -134,9 +119,9 @@ describe('logger/utils', () => {
           key5: 42,
         }),
       ).toEqual({
-        key1: 'Expected string, received number',
-        key2: 'Expected string, received number',
-        key3: 'Expected string, received number',
+        key1: 'Invalid input: expected string, received number',
+        key2: 'Invalid input: expected string, received number',
+        key3: 'Invalid input: expected string, received number',
         ___: '... 2 more',
       });
 
@@ -151,7 +136,7 @@ describe('logger/utils', () => {
         ),
       ).toEqual({
         foo: {
-          bar: 'Expected string, received array',
+          bar: 'Invalid input: expected string, received array',
         },
       });
 
@@ -187,7 +172,7 @@ describe('logger/utils', () => {
           ]),
           42,
         ),
-      ).toBe('Expected object, received number');
+      ).toBe('Invalid input: expected object, received number');
     });
 
     it('prepareError', () => {
@@ -206,12 +191,58 @@ describe('logger/utils', () => {
         issues: {
           foo: {
             bar: {
-              baz: 'Expected string, received number',
+              baz: 'Invalid input: expected string, received number',
             },
           },
         },
         message: 'Schema error',
         stack: expect.stringMatching(/^ZodError: Schema error/),
+      });
+    });
+
+    it('handles HTTP timout error', () => {
+      const err = new TimeoutError(
+        // @ts-expect-error some types are private
+        new Error('timeout'),
+        {},
+        { context: { hostType: 'foo' } },
+      );
+      Object.assign(err, {
+        response: {},
+      });
+      expect(prepareError(err)).toMatchObject({
+        message: 'timeout',
+        name: 'TimeoutError',
+      });
+    });
+
+    it('handles rawExec error', () => {
+      const execError = new ExecError('exec-error', {
+        cmd: '',
+        stdout: '',
+        stderr: '',
+        options: { env: { key: 'val' } },
+      });
+
+      expect(prepareError(execError)).toMatchObject({
+        options: { env: ['key'] },
+      });
+    });
+
+    it('handles AggregateError', () => {
+      const err = new Error('err');
+      err.stack = 'err stack';
+      const aggregateErr = new AggregateError([err], 'aggregate');
+      aggregateErr.stack = 'aggregate stack';
+      expect(prepareError(aggregateErr)).toMatchObject({
+        message: 'aggregate',
+        stack: 'aggregate stack',
+        errors: [
+          {
+            message: 'err',
+            stack: 'err stack',
+          },
+        ],
       });
     });
   });

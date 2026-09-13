@@ -1,6 +1,6 @@
-import { api as pep440 } from '../pep440';
-import { api as poetry } from '../poetry';
-import type { NewValueConfig, VersioningApi } from '../types';
+import { api as pep440 } from '../pep440/index.ts';
+import { api as poetry } from '../poetry/index.ts';
+import type { NewValueConfig, VersioningApi } from '../types.ts';
 
 export const id = 'python';
 export const displayName = 'Python';
@@ -51,10 +51,19 @@ function subset(subRange: string, superRange: string): boolean | undefined {
     : undefined;
 }
 
+export function isBreaking(current: string, version: string): boolean {
+  const currentMajor = poetry.getMajor(current);
+  const currentMinor = poetry.getMinor(current);
+  const newMajor = poetry.getMajor(version);
+  const newMinor = poetry.getMinor(version);
+  return !(currentMajor === newMajor && currentMinor === newMinor);
+}
+
 export const api: VersioningApi = {
   ...poetry,
   getNewValue,
   getSatisfyingVersion,
+  isBreaking,
   isLessThanRange,
   isValid,
   matches,

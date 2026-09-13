@@ -19,6 +19,7 @@ import type {
   ListRepositoriesOutput,
   PostCommentForPullRequestInput,
   PostCommentForPullRequestOutput,
+  RepositoryMetadata,
   UpdateCommentInput,
   UpdateCommentOutput,
   UpdatePullRequestDescriptionInput,
@@ -46,11 +47,12 @@ import {
   UpdatePullRequestStatusCommand,
   UpdatePullRequestTitleCommand,
 } from '@aws-sdk/client-codecommit';
-import type { RepositoryMetadata } from '@aws-sdk/client-codecommit/dist-types/models/models_0';
-import is from '@sindresorhus/is';
+import { isString } from '@sindresorhus/is';
 import * as aws4 from 'aws4';
-import { REPOSITORY_UNINITIATED } from '../../../constants/error-messages';
-import { logger } from '../../../logger';
+import { REPOSITORY_UNINITIATED } from '../../../constants/error-messages.ts';
+import { logger } from '../../../logger/index.ts';
+import { getEnv } from '../../../util/env.ts';
+import { regEx } from '../../../util/regex.ts';
 
 let codeCommitClient: CodeCommitClient;
 
@@ -59,7 +61,7 @@ export function buildCodeCommitClient(): void {
     codeCommitClient = new CodeCommitClient({});
   }
 
-  // istanbul ignore if
+  /* v8 ignore next -- unreachable: the client was just constructed above */
   if (!codeCommitClient) {
     throw new Error('Failed to initialize codecommit client');
   }
@@ -281,43 +283,42 @@ export function getCodeCommitUrl(
   repoName: string,
 ): string {
   logger.debug('get code commit url');
-  if (!process.env.AWS_ACCESS_KEY_ID || !process.env.AWS_SECRET_ACCESS_KEY) {
+  const env = getEnv();
+  if (!env.AWS_ACCESS_KEY_ID || !env.AWS_SECRET_ACCESS_KEY) {
     if (repoMetadata.cloneUrlHttp) {
       return repoMetadata.cloneUrlHttp;
     }
     // shouldn't reach here, but just in case
     return `https://git-codecommit.${
-      process.env.AWS_REGION ?? 'us-east-1'
+      env.AWS_REGION ?? 'us-east-1'
     }.amazonaws.com/v1/repos/${repoName}`;
   }
 
   const signer = new aws4.RequestSigner({
     service: 'codecommit',
-    host: `git-codecommit.${
-      process.env.AWS_REGION ?? 'us-east-1'
-    }.amazonaws.com`,
+    host: `git-codecommit.${env.AWS_REGION ?? 'us-east-1'}.amazonaws.com`,
     method: 'GIT',
     path: `v1/repos/${repoName}`,
   });
   const dateTime = signer.getDateTime();
 
-  /* istanbul ignore if */
-  if (!is.string(dateTime)) {
+  /* v8 ignore next -- defensive: the SigV4 signer always returns a datetime string */
+  if (!isString(dateTime)) {
     throw new Error(REPOSITORY_UNINITIATED);
   }
 
   const token = `${dateTime}Z${signer.signature()}`;
 
-  let username = `${process.env.AWS_ACCESS_KEY_ID}${
-    process.env.AWS_SESSION_TOKEN ? `%${process.env.AWS_SESSION_TOKEN}` : ''
+  let username = `${env.AWS_ACCESS_KEY_ID}${
+    env.AWS_SESSION_TOKEN ? `%${env.AWS_SESSION_TOKEN}` : ''
   }`;
 
   // massaging username with the session token,
-  // istanbul ignore if
+  /* v8 ignore next -- only hit when an AWS session token contains '/', not present in spec env */
   if (username.includes('/')) {
-    username = username.replace(/\//g, '%2F');
+    username = username.replace(regEx(/\//g), '%2F');
   }
   return `https://${username}:${token}@git-codecommit.${
-    process.env.AWS_REGION ?? 'us-east-1'
+    env.AWS_REGION ?? 'us-east-1'
   }.amazonaws.com/v1/repos/${repoName}`;
 }

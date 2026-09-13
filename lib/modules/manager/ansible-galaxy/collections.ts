@@ -1,23 +1,23 @@
-import { regEx } from '../../../util/regex';
-import { GalaxyCollectionDatasource } from '../../datasource/galaxy-collection';
-import { GitTagsDatasource } from '../../datasource/git-tags';
-import { GithubTagsDatasource } from '../../datasource/github-tags';
-import type { PackageDependency } from '../types';
-import type { AnsibleGalaxyPackageDependency } from './types';
+import { regEx } from '../../../util/regex.ts';
+import { GalaxyCollectionDatasource } from '../../datasource/galaxy-collection/index.ts';
+import { GitTagsDatasource } from '../../datasource/git-tags/index.ts';
+import { GithubTagsDatasource } from '../../datasource/github-tags/index.ts';
+import type { PackageDependency } from '../types.ts';
+import type { AnsibleGalaxyPackageDependency } from './types.ts';
 import {
   blockLineRegEx,
   galaxyDepRegex,
   nameMatchRegex,
   newBlockRegEx,
-} from './util';
+} from './util.ts';
 
 function interpretLine(
   lineMatch: RegExpMatchArray,
   dependency: AnsibleGalaxyPackageDependency,
 ): void {
   const localDependency = dependency;
-  const key = lineMatch[2];
-  const value = lineMatch[3].replace(regEx(/["']/g), '');
+  const key = lineMatch.groups!.key;
+  const value = lineMatch.groups!.value.replace(regEx(/["']/g), '');
   switch (key) {
     case 'name': {
       localDependency.managerData.name = value;

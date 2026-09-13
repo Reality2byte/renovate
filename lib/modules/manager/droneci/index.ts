@@ -1,13 +1,15 @@
-import type { Category } from '../../../constants';
-import { DockerDatasource } from '../../datasource/docker';
-import { extractPackageFile } from './extract';
+import type { Category } from '../../../constants/index.ts';
+import { DockerDatasource } from '../../datasource/docker/index.ts';
+import { extractPackageFile } from './extract.ts';
 
+export { knownDepTypes } from './dep-types.ts';
 export { extractPackageFile };
 
-export const defaultConfig = {
-  fileMatch: ['(^|/)\\.drone\\.yml$'],
-};
-
+export const url = 'https://docs.drone.io';
 export const categories: Category[] = ['ci'];
+
+export const defaultConfig = {
+  managerFilePatterns: ['/(^|/)\\.drone\\.yml$/'],
+};
 
 export const supportedDatasources = [DockerDatasource.id];

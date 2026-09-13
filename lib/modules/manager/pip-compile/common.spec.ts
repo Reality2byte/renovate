@@ -1,16 +1,13 @@
-import { mockDeep } from 'jest-mock-extended';
-import { hostRules } from '../../../../test/util';
-import { logger } from '../../../logger';
+import { hostRules } from '~test/host-rules.ts';
+import { logger } from '../../../logger/index.ts';
 import {
-  allowedPipOptions,
+  allowedOptions,
   extractHeaderCommand,
   extractPythonVersion,
   getRegistryCredVarsFromPackageFiles,
   matchManager,
-} from './common';
-import { inferCommandExecDir } from './utils';
-
-jest.mock('../../../util/host-rules', () => mockDeep());
+} from './common.ts';
+import { inferCommandExecDir } from './utils.ts';
 
 function getCommandInHeader(command: string) {
   return `#
@@ -39,6 +36,38 @@ describe('modules/manager/pip-compile/common', () => {
       expect(
         extractHeaderCommand(
           getCommandInHeader(`pip-compile ${argument} reqs.in`),
+          'reqs.txt',
+        ),
+      ).toBeObject();
+      expect(logger.warn).toHaveBeenCalledTimes(0);
+    });
+
+    it.each([
+      '-v',
+      '--all-extras',
+      '--generate-hashes',
+      '--output-file=reqs.txt',
+      '--extra-index-url=https://pypi.org/simple',
+      // uv-specific options
+      `--no-strip-extras`,
+      '--universal',
+      '--constraints=constraints.txt',
+      '--constraint=constraints.txt',
+      '--python-version=3.13',
+      '--no-emit-package=cffi',
+      '--prerelease=if-necessary',
+      '--format=pylock.toml',
+      '--resolution=lowest',
+      '--fork-strategy=fewest',
+      '--exclude-newer=2025-11-01',
+      '--exclude-newer-package="tqdm=2022-04-04T00:00:00Z"',
+      '--group=docs',
+      '--override=overrides.txt',
+      '--overrides=overrides.txt',
+    ])('returns object on correct uv options', (argument: string) => {
+      expect(
+        extractHeaderCommand(
+          getCommandInHeader(`uv pip compile ${argument} reqs.in`),
           'reqs.txt',
         ),
       ).toBeObject();
@@ -116,7 +145,7 @@ describe('modules/manager/pip-compile/common', () => {
           ),
           'reqs.txt',
         ),
-      ).toThrow();
+      ).toThrow('Cannot use both --no-emit-index-url and --emit-index-url');
     });
 
     it('returned sourceFiles returns all source files', () => {
@@ -137,11 +166,23 @@ describe('modules/manager/pip-compile/common', () => {
       ).toEqual(exampleSourceFiles);
     });
 
-    it.each(allowedPipOptions)(
-      'returned sourceFiles must not contain options',
+    it.each(allowedOptions['pip-compile'])(
+      'returned sourceFiles must not contain options (pip-compile)',
       (argument: string) => {
         const sourceFiles = extractHeaderCommand(
           getCommandInHeader(`pip-compile ${argument}=reqs.txt reqs.in`),
+          'reqs.txt',
+        ).sourceFiles;
+        expect(sourceFiles).not.toContainEqual(argument);
+        expect(sourceFiles).toEqual(['reqs.in']);
+      },
+    );
+
+    it.each(allowedOptions.uv)(
+      'returned sourceFiles must not contain options (uv)',
+      (argument: string) => {
+        const sourceFiles = extractHeaderCommand(
+          getCommandInHeader(`uv pip compile ${argument}=reqs.txt reqs.in`),
           'reqs.txt',
         ).sourceFiles;
         expect(sourceFiles).not.toContainEqual(argument);
@@ -155,7 +196,7 @@ describe('modules/manager/pip-compile/common', () => {
           getCommandInHeader(`./pip-compile-wrapper reqs.in`),
           'reqs.txt',
         ),
-      ).toHaveProperty('isCustomCommand', true);
+      ).toHaveProperty('commandType', 'custom');
     });
 
     it.each([
@@ -189,11 +230,13 @@ describe('modules/manager/pip-compile/common', () => {
 
   describe('getRegistryCredVarsFromPackageFiles()', () => {
     it('handles both registryUrls and additionalRegistryUrls', () => {
-      hostRules.find.mockReturnValueOnce({
+      hostRules.add({
+        matchHost: 'example.com',
         username: 'user1',
         password: 'password1',
       });
-      hostRules.find.mockReturnValueOnce({
+      hostRules.add({
+        matchHost: 'example2.com',
         username: 'user2',
         password: 'password2',
       });
@@ -216,11 +259,13 @@ describe('modules/manager/pip-compile/common', () => {
     });
 
     it('handles multiple additionalRegistryUrls', () => {
-      hostRules.find.mockReturnValueOnce({
+      hostRules.add({
+        matchHost: 'example.com',
         username: 'user1',
         password: 'password1',
       });
-      hostRules.find.mockReturnValueOnce({
+      hostRules.add({
+        matchHost: 'example2.com',
         username: 'user2',
         password: 'password2',
       });
@@ -245,7 +290,7 @@ describe('modules/manager/pip-compile/common', () => {
     });
 
     it('handles hosts with only a username', () => {
-      hostRules.find.mockReturnValue({
+      hostRules.add({
         username: 'user',
       });
       expect(
@@ -263,7 +308,7 @@ describe('modules/manager/pip-compile/common', () => {
     });
 
     it('handles hosts with only a password', () => {
-      hostRules.find.mockReturnValue({
+      hostRules.add({
         password: 'password',
       });
       expect(
@@ -281,9 +326,6 @@ describe('modules/manager/pip-compile/common', () => {
     });
 
     it('handles invalid URLs', () => {
-      hostRules.find.mockReturnValue({
-        password: 'password',
-      });
       expect(
         getRegistryCredVarsFromPackageFiles([
           {
@@ -296,11 +338,13 @@ describe('modules/manager/pip-compile/common', () => {
   });
 
   it('handles multiple package files', () => {
-    hostRules.find.mockReturnValueOnce({
+    hostRules.add({
+      matchHost: 'example.com',
       username: 'user1',
       password: 'password1',
     });
-    hostRules.find.mockReturnValueOnce({
+    hostRules.add({
+      matchHost: 'example2.com',
       username: 'user2',
       password: 'password2',
     });

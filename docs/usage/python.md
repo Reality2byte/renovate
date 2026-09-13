@@ -10,7 +10,7 @@ See [all supported managers](./modules/manager/index.md).
 
 ## Versioning support
 
-We've written a JavaScript version of the [PEP440 specification](https://www.python.org/dev/peps/pep-0440/) so we can use it in Renovate bot.
+We've written a JavaScript version of the [PEP440 specification](https://www.python.org/dev/peps/pep-0440/) so we can use it in Renovate.
 You can find this project in our [`renovatebot/pep440` repository](https://github.com/renovatebot/pep440).
 
 Our PEP440 implementation supports pinned versions and ranges.
@@ -26,7 +26,7 @@ Legacy versions with the `===` prefix are ignored.
 ## Package name matching
 
 Your `matchPackageName` or `matchPackagePattern` rules will be matching against normalized names.
-So if you have specified package `some.package` or `ANOTHER_DEP` in your package files (`requirements.txt`, `pyproject.toml`), they will be treated as `some-package` and `another-dep` respecitvely.
+So if you have specified package `some.package` or `ANOTHER_DEP` in your package files (`requirements.txt`, `pyproject.toml`), they will be treated as `some-package` and `another-dep` respectively.
 Not only they will be case insensitive but will replace any amount `._-` to a single `-`.
 [Consult Python packaging documentation for the specification](https://packaging.python.org/en/latest/specifications/name-normalization/).
 
@@ -74,19 +74,21 @@ Fill the array with alternate index URL(s).
 }
 ```
 
-<!-- prettier-ignore -->
 !!! tip
-    If a `requirements.txt` file has an index-url then Renovate follows that link, instead of following any link set in the `registryUrls` array.
-    To override the URL found in `requirements.txt`, you must create a custom `packageRules` setting.
-    This is because `packageRules` are applied _after_ package file extraction.
+  If a `requirements.txt` file has an index-url then Renovate follows that link, instead of following any link set in the `registryUrls` array.
+  To override the URL found in `requirements.txt`, you must create a custom `packageRules` setting.
+  This is because `packageRules` are applied _after_ package file extraction.
 
 ## Disabling Python support
 
-```json title="Disabling all managers where language is set to Python"
+```json title="Disabling all managers in the Python category"
 {
-  "python": {
-    "enabled": false
-  }
+  "packageRules": [
+    {
+      "matchCategories": ["python"],
+      "enabled": false
+    }
+  ]
 }
 ```
 

@@ -1,23 +1,23 @@
-import is from '@sindresorhus/is';
-import { logger } from '../../../logger';
-import { cache } from '../../../util/cache/package/decorator';
-import { queryReleases } from '../../../util/github/graphql';
+import { isBoolean } from '@sindresorhus/is';
+import { logger } from '../../../logger/index.ts';
+import { withCache } from '../../../util/cache/package/with-cache.ts';
+import { queryReleases } from '../../../util/github/graphql/index.ts';
 import type {
   GithubDigestFile,
   GithubRestAsset,
   GithubRestRelease,
-} from '../../../util/github/types';
-import { getApiBaseUrl, getSourceUrl } from '../../../util/github/url';
-import { hashStream } from '../../../util/hash';
-import { GithubHttp } from '../../../util/http/github';
-import { newlineRegex, regEx } from '../../../util/regex';
-import { Datasource } from '../datasource';
+} from '../../../util/github/types.ts';
+import { getApiBaseUrl, getSourceUrl } from '../../../util/github/url.ts';
+import { hashStream } from '../../../util/hash.ts';
+import { GithubHttp } from '../../../util/http/github.ts';
+import { newlineRegex, regEx } from '../../../util/regex.ts';
+import { Datasource } from '../datasource.ts';
 import type {
   DigestConfig,
   GetReleasesConfig,
   Release,
   ReleaseResult,
-} from '../types';
+} from '../types.ts';
 
 export const cacheNamespace = 'datasource-github-releases';
 
@@ -51,13 +51,7 @@ export class GithubReleaseAttachmentsDatasource extends Datasource {
     this.http = new GithubHttp(GithubReleaseAttachmentsDatasource.id);
   }
 
-  @cache({
-    ttlMinutes: 1440,
-    namespace: `datasource-${GithubReleaseAttachmentsDatasource.id}`,
-    key: (release: GithubRestRelease, digest: string) =>
-      `findDigestFile:${release.html_url}:${digest}`,
-  })
-  async findDigestFile(
+  private async _findDigestFile(
     release: GithubRestRelease,
     digest: string,
   ): Promise<GithubDigestFile | null> {
@@ -65,7 +59,7 @@ export class GithubReleaseAttachmentsDatasource extends Datasource {
       (a: GithubRestAsset) => a.size < 5 * 1024,
     );
     for (const asset of smallAssets) {
-      const res = await this.http.get(asset.browser_download_url);
+      const res = await this.http.getText(asset.browser_download_url);
       for (const line of res.body.split(newlineRegex)) {
         const [lineDigest, lineFilename] = line.split(regEx(/\s+/), 2);
         if (lineDigest === digest) {
@@ -81,19 +75,41 @@ export class GithubReleaseAttachmentsDatasource extends Datasource {
     return null;
   }
 
-  @cache({
-    ttlMinutes: 1440,
-    namespace: `datasource-${GithubReleaseAttachmentsDatasource.id}`,
-    key: (asset: GithubRestAsset, algorithm: string) =>
-      `downloadAndDigest:${asset.browser_download_url}:${algorithm}`,
-  })
-  async downloadAndDigest(
+  findDigestFile(
+    release: GithubRestRelease,
+    digest: string,
+  ): Promise<GithubDigestFile | null> {
+    return withCache(
+      {
+        ttlMinutes: 1440,
+        namespace: `datasource-${GithubReleaseAttachmentsDatasource.id}`,
+        key: `findDigestFile:${release.html_url}:${digest}`,
+      },
+      () => this._findDigestFile(release, digest),
+    );
+  }
+
+  private async _downloadAndDigest(
     asset: GithubRestAsset,
     algorithm: string,
   ): Promise<string> {
     const res = this.http.stream(asset.browser_download_url);
     const digest = await hashStream(res, algorithm);
     return digest;
+  }
+
+  downloadAndDigest(
+    asset: GithubRestAsset,
+    algorithm: string,
+  ): Promise<string> {
+    return withCache(
+      {
+        ttlMinutes: 1440,
+        namespace: `datasource-${GithubReleaseAttachmentsDatasource.id}`,
+        key: `downloadAndDigest:${asset.browser_download_url}:${algorithm}`,
+      },
+      () => this._downloadAndDigest(asset, algorithm),
+    );
   }
 
   async findAssetWithDigest(
@@ -147,34 +163,44 @@ export class GithubReleaseAttachmentsDatasource extends Datasource {
   ): Promise<string | null> {
     const current = digestAsset.currentVersion.replace(regEx(/^v/), '');
     const next = release.tag_name.replace(regEx(/^v/), '');
-    const releaseChecksumAssetName = digestAsset.assetName.replace(
-      current,
-      next,
+
+    if (digestAsset.digestedFileName) {
+      const checksumAssetName = digestAsset.assetName.replace(current, next);
+      const checksumAsset = release.assets.find(
+        (a: GithubRestAsset) => a.name === checksumAssetName,
+      );
+
+      // If the checksum asset is not found in the new release, fall back to the download method
+      if (checksumAsset) {
+        const releaseFilename = digestAsset.digestedFileName.replace(
+          current,
+          next,
+        );
+        const res = await this.http.getText(checksumAsset.browser_download_url);
+        for (const line of res.body.split(newlineRegex)) {
+          const [lineDigest, lineFn] = line.split(regEx(/\s+/), 2);
+          if (lineFn === releaseFilename) {
+            return lineDigest;
+          }
+        }
+        return null;
+      }
+    }
+
+    const oldFileName = digestAsset.digestedFileName ?? digestAsset.assetName;
+    const fileName = oldFileName.replace(current, next);
+
+    const asset = release.assets.find(
+      (a: GithubRestAsset) => a.name === fileName,
     );
-    const releaseAsset = release.assets.find(
-      (a: GithubRestAsset) => a.name === releaseChecksumAssetName,
-    );
-    if (!releaseAsset) {
+
+    if (!asset) {
       return null;
     }
-    if (digestAsset.digestedFileName) {
-      const releaseFilename = digestAsset.digestedFileName.replace(
-        current,
-        next,
-      );
-      const res = await this.http.get(releaseAsset.browser_download_url);
-      for (const line of res.body.split(newlineRegex)) {
-        const [lineDigest, lineFn] = line.split(regEx(/\s+/), 2);
-        if (lineFn === releaseFilename) {
-          return lineDigest;
-        }
-      }
-    } else {
-      const algorithm = inferHashAlg(digestAsset.currentDigest);
-      const newDigest = await this.downloadAndDigest(releaseAsset, algorithm);
-      return newDigest;
-    }
-    return null;
+
+    const algorithm = inferHashAlg(digestAsset.currentDigest);
+    const newDigest = await this.downloadAndDigest(asset, algorithm);
+    return newDigest;
   }
 
   /**
@@ -210,9 +236,10 @@ export class GithubReleaseAttachmentsDatasource extends Datasource {
     }
 
     const apiBaseUrl = getApiBaseUrl(registryUrl);
-    const { body: currentRelease } = await this.http.getJson<GithubRestRelease>(
-      `${apiBaseUrl}repos/${repo}/releases/tags/${currentValue}`,
-    );
+    const { body: currentRelease } =
+      await this.http.getJsonUnchecked<GithubRestRelease>(
+        `${apiBaseUrl}repos/${repo}/releases/tags/${currentValue}`,
+      );
     const digestAsset = await this.findDigestAsset(
       currentRelease,
       currentDigest,
@@ -221,9 +248,10 @@ export class GithubReleaseAttachmentsDatasource extends Datasource {
     if (!digestAsset || newValue === currentValue) {
       newDigest = currentDigest;
     } else {
-      const { body: newRelease } = await this.http.getJson<GithubRestRelease>(
-        `${apiBaseUrl}repos/${repo}/releases/tags/${newValue}`,
-      );
+      const { body: newRelease } =
+        await this.http.getJsonUnchecked<GithubRestRelease>(
+          `${apiBaseUrl}repos/${repo}/releases/tags/${newValue}`,
+        );
       newDigest = await this.mapDigestAssetToRelease(digestAsset, newRelease);
     }
     return newDigest;
@@ -247,7 +275,7 @@ export class GithubReleaseAttachmentsDatasource extends Datasource {
         gitRef: version,
         releaseTimestamp,
       };
-      if (is.boolean(isStable)) {
+      if (isBoolean(isStable)) {
         result.isStable = isStable;
       }
       return result;

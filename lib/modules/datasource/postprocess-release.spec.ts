@@ -1,17 +1,17 @@
-import { mocked } from '../../../test/util';
-import * as _datasourceCommon from './common';
-import { Datasource } from './datasource';
-import { postprocessRelease } from './postprocess-release';
+import type { Timestamp } from '../../util/timestamp.ts';
+import * as _datasourceCommon from './common.ts';
+import { Datasource } from './datasource.ts';
+import { postprocessRelease } from './postprocess-release.ts';
 import type {
   GetReleasesConfig,
   PostprocessReleaseConfig,
   PostprocessReleaseResult,
   Release,
   ReleaseResult,
-} from './types';
+} from './types.ts';
 
-jest.mock('./common');
-const { getDatasourceFor } = mocked(_datasourceCommon);
+vi.mock('./common.ts');
+const { getDatasourceFor } = vi.mocked(_datasourceCommon);
 
 class DummyDatasource extends Datasource {
   constructor() {
@@ -86,14 +86,18 @@ describe('modules/datasource/postprocess-release', () => {
         _config: PostprocessReleaseConfig,
         release: Release,
       ): Promise<PostprocessReleaseResult> {
-        release.releaseTimestamp = '2024-09-05';
+        release.releaseTimestamp = '2024-09-05' as Timestamp;
         return Promise.resolve(release);
       }
     }
     getDatasourceFor.mockReturnValueOnce(new SomeDatasource());
 
     const release = await postprocessRelease(
-      { datasource: 'some-datasource', packageName: 'some-package' },
+      {
+        datasource: 'some-datasource',
+        packageName: 'some-package',
+        registryUrl: 'https://example.com',
+      },
       releaseOrig,
     );
 
@@ -124,29 +128,34 @@ describe('modules/datasource/postprocess-release', () => {
     expect(release).toBeNull();
   });
 
-  it('preserves rejected release when `extractVersion` was set', async () => {
-    const releaseOrig: Release = { version: '1.2.3' };
+  it('uses release-level `registryUrl` over the config-level one', async () => {
+    const releaseOrig: Release = {
+      version: '1.2.3',
+      registryUrl: 'https://release-registry.example.com',
+    };
+    let usedRegistryUrl: string | null = null;
 
     class SomeDatasource extends DummyDatasource {
       override postprocessRelease(
-        _config: PostprocessReleaseConfig,
-        _release: Release,
+        config: PostprocessReleaseConfig,
+        release: Release,
       ): Promise<PostprocessReleaseResult> {
-        return Promise.resolve('reject');
+        usedRegistryUrl = config.registryUrl;
+        return Promise.resolve(release);
       }
     }
     getDatasourceFor.mockReturnValueOnce(new SomeDatasource());
 
-    const release = await postprocessRelease(
+    await postprocessRelease(
       {
         datasource: 'some-datasource',
         packageName: 'some-package',
-        extractVersion: '^(?<version>\\d+)$',
+        registryUrl: 'https://config-registry.example.com',
       },
       releaseOrig,
     );
 
-    expect(release).toBe(releaseOrig);
+    expect(usedRegistryUrl).toBe('https://release-registry.example.com');
   });
 
   it('falls back when error was thrown', async () => {
@@ -163,7 +172,11 @@ describe('modules/datasource/postprocess-release', () => {
     getDatasourceFor.mockReturnValueOnce(new SomeDatasource());
 
     const release = await postprocessRelease(
-      { datasource: 'some-datasource', packageName: 'some-package' },
+      {
+        datasource: 'some-datasource',
+        packageName: 'some-package',
+        registryUrls: ['https://example.com'],
+      },
       releaseOrig,
     );
 

@@ -1,26 +1,12 @@
 import { DateTime } from 'luxon';
-import type { DataFile } from '../../data-files.generated';
-import dataFiles from '../../data-files.generated';
-
-export interface DistroSchedule {
-  codename: string;
-  series: string;
-  created: string;
-  release: string;
-  eol: string;
-  eol_server?: string;
-  eol_esm?: string;
-  eol_lts?: string;
-  eol_elts?: string;
-}
-
-export type DistroDataFile =
-  | 'data/ubuntu-distro-info.json'
-  | 'data/debian-distro-info.json';
-
-export type DistroInfoRecord = Record<string, DistroSchedule>;
-
-export type DistroInfoRecordWithVersion = { version: string } & DistroSchedule;
+import dataFiles from '../../data-files.generated.ts';
+import { regEx } from '../../util/regex.ts';
+import type {
+  DistroDataFile,
+  DistroInfoRecord,
+  DistroInfoRecordWithVersion,
+  DistroSchedule,
+} from './types.ts';
 
 // Days to delay new releases
 const delay = 1;
@@ -37,7 +23,9 @@ export class DistroInfo {
 
   constructor(distroJsonKey: DistroDataFile) {
     this._distroInfo = JSON.parse(
-      dataFiles.get(distroJsonKey as DataFile)!.replace(/v([\d.]+)\b/gm, '$1'),
+      dataFiles
+        .get(distroJsonKey)!
+        .replace(regEx(/v(?<version>[\d.]+)\b/gm), '$<version>'),
     );
 
     for (const version of Object.keys(this._distroInfo)) {
@@ -128,9 +116,7 @@ export class DistroInfo {
 
     // ubuntu: does not have eol_lts
     // debian: only "Stable" has no eol_lts, old and oldold has both
-    if (!end) {
-      end = endLts;
-    }
+    end ??= endLts;
 
     if (end) {
       const now = DateTime.now().toUTC();
@@ -138,7 +124,6 @@ export class DistroInfo {
       return eol < now;
     }
 
-    // istanbul ignore next
     return true;
   }
 
@@ -151,7 +136,7 @@ export class DistroInfo {
     const ver = this.getVersionByCodename(input);
     const schedule = this.getSchedule(ver);
 
-    if (!schedule) {
+    if (!schedule?.release) {
       return false;
     }
 
@@ -159,6 +144,25 @@ export class DistroInfo {
     const release = DateTime.fromISO(schedule.release, { zone: 'utc' });
 
     return release < now;
+  }
+
+  /**
+   * Check if a given version has been created
+   * @param input A codename/semVer
+   * @returns false if unreleased or has no schedule, true otherwise
+   */
+  public isCreated(input: string): boolean {
+    const ver = this.getVersionByCodename(input);
+    const schedule = this.getSchedule(ver);
+
+    if (!schedule) {
+      return false;
+    }
+
+    const now = DateTime.now().minus({ day: delay }).toUTC();
+    const created = DateTime.fromISO(schedule.created, { zone: 'utc' });
+
+    return created < now;
   }
 
   /**

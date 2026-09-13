@@ -1,5 +1,5 @@
-import * as httpMock from '../../../test/http-mock';
-import { GerritHttp, setBaseUrl } from './gerrit';
+import * as httpMock from '~test/http-mock.ts';
+import { GerritHttp, setBaseUrl } from './gerrit.ts';
 
 const baseUrl = 'https://gerrit.example.com/';
 
@@ -11,14 +11,14 @@ describe('util/http/gerrit', () => {
     setBaseUrl(baseUrl);
   });
 
-  it.each(['some-url/', baseUrl + 'some-url/'])('get %p', async (pathOrUrl) => {
+  it.each(['some-url/', `${baseUrl}some-url/`])('get %p', async (pathOrUrl) => {
     const body = 'body result';
     httpMock
       .scope(baseUrl)
       .get(/some-url\/$/)
       .reply(200, body, { 'content-type': 'text/plain;charset=utf-8' });
 
-    const res = await api.get(pathOrUrl);
+    const res = await api.getText(pathOrUrl);
     expect(res.body).toEqual(body);
   });
 
@@ -33,7 +33,7 @@ describe('util/http/gerrit', () => {
       });
 
     const res = await api
-      .getJson('some-url', { headers: { a: 'b' } })
+      .getJsonUnchecked('some-url', { headers: { a: 'b' } })
       .then((res) => res.body);
     return expect(res).toEqual(body);
   });

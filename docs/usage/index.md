@@ -1,4 +1,4 @@
-![Renovate banner](https://app.renovatebot.com/images/whitesource_renovate_660_220.jpg){ loading=lazy }
+![Renovate banner](./assets/images/mend-renovate-cli-banner.jpg){ loading=lazy }
 
 # Renovate documentation
 
@@ -14,45 +14,45 @@ Multi-platform and multi-language.
 
 -   :octicons-git-pull-request-24:{ .lg .middle } __Automatic updates__
 
-    ---
+  ---
 
-    Get pull requests to update your dependencies and lock files.
+  Get pull requests to update your dependencies and lock files.
 
 -   :octicons-calendar-24:{ .lg .middle } __On your schedule__
 
-    ---
+  ---
 
-    Reduce noise by scheduling when Renovate creates PRs.
+  Reduce noise by scheduling when Renovate creates PRs.
 
 -   :octicons-package-24:{ .lg .middle } __Works out of the box__
 
-    ---
+  ---
 
-    Renovate finds relevant package files automatically, including in monorepos.
+  Renovate finds relevant package files automatically, including in monorepos.
 
 -   :octicons-goal-24:{ .lg .middle } __How you like it__
 
-    ---
+  ---
 
-    You can customize the bot's behavior with configuration files.
+  You can customize Renovate's behavior with configuration files.
 
 -   :octicons-share-24:{ .lg .middle } __Share your configuration__
 
-    ---
+  ---
 
-    Share your configuration with ESLint-like config presets.
+  Share your configuration with ESLint-like config presets.
 
 -   :octicons-sync-24:{ .lg .middle } __Out with the old, in with the new__
 
-    ---
+  ---
 
-    Get replacement PRs to migrate from a deprecated dependency to the community suggested replacement, works with _most_ managers, see [issue 14149](https://github.com/renovatebot/renovate/issues/14149) for exceptions.
+  Get replacement PRs to migrate from a deprecated dependency to the community suggested replacement, works with _most_ managers, see [issue 14149](https://github.com/renovatebot/renovate/issues/14149) for exceptions.
 
 -   :octicons-tools-24:{ .lg .middle } __Open source__
 
-    ---
+  ---
 
-    Renovate is licensed under the [GNU Affero General Public License](https://github.com/renovatebot/renovate/blob/main/license).
+  Renovate is licensed under the [GNU Affero General Public License](https://github.com/renovatebot/renovate/blob/main/license) (`AGPL-3.0-only`).
 
 </div>
 
@@ -63,18 +63,19 @@ Multi-platform and multi-language.
 
 Renovate works on these platforms:
 
-- [GitHub (.com and Enterprise Server)](./modules/platform/github/index.md)
-- [GitLab (.com and CE/EE)](./modules/platform/gitlab/index.md)
-- [Bitbucket Cloud](./modules/platform/bitbucket/index.md)
-- [Bitbucket Server](./modules/platform/bitbucket-server/index.md)
 - [Azure DevOps](./modules/platform/azure/index.md)
 - [AWS CodeCommit](./modules/platform/codecommit/index.md)
-- [Gitea and Forgejo](./modules/platform/gitea/index.md)
+- [Bitbucket Cloud](./modules/platform/bitbucket/index.md)
+- [Bitbucket Server](./modules/platform/bitbucket-server/index.md)
+- [Forgejo](./modules/platform/forgejo/index.md)
 - [Gerrit (experimental)](./modules/platform/gerrit/index.md)
+- [Gitea](./modules/platform/gitea/index.md)
+- [GitHub (.com and Enterprise Server)](./modules/platform/github/index.md)
+- [GitLab (.com and CE/EE)](./modules/platform/gitlab/index.md)
 
 ## Who Uses Renovate?
 
-Renovate is used by:
+A non-exhaustive list of companies and projects using Renovate can be seen below:
 
 ![Logos of companies and projects that use Renovate](./assets/images/matrix.png){ loading=lazy }
 
@@ -109,6 +110,7 @@ Renovate is used by:
 You can run Renovate as:
 
 - an [Open Source npm package](https://www.npmjs.com/package/renovate)
+- a [pre-built Open Source image on GitHub Container Registry](https://github.com/renovatebot/renovate/pkgs/container/renovate)
 - a [pre-built Open Source image on Docker Hub](https://hub.docker.com/r/renovate/renovate)
 
 Or you can use [the Mend Renovate App](https://github.com/marketplace/renovate) which is hosted by [Mend](https://www.mend.io/).

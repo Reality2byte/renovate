@@ -1,15 +1,21 @@
-import { z } from 'zod';
-import { logger } from '../../../logger';
-import { readLocalFile } from '../../../util/fs';
-import { regEx } from '../../../util/regex';
-import { Json, LooseArray, LooseRecord } from '../../../util/schema-utils';
-import { BitbucketTagsDatasource } from '../../datasource/bitbucket-tags';
-import { GitTagsDatasource } from '../../datasource/git-tags';
-import { GithubTagsDatasource } from '../../datasource/github-tags';
-import { PackagistDatasource } from '../../datasource/packagist';
-import { api as semverComposer } from '../../versioning/composer';
-import type { PackageDependency, PackageFileContent } from '../types';
-import type { ComposerManagerData } from './types';
+import { z } from 'zod/v4';
+import { logger } from '../../../logger/index.ts';
+import { coerceArray } from '../../../util/array.ts';
+import { readLocalFile } from '../../../util/fs/index.ts';
+import { regEx } from '../../../util/regex.ts';
+import {
+  Json,
+  LooseArray,
+  LooseRecord,
+  withDebugMessage,
+} from '../../../util/schema-utils/index.ts';
+import { BitbucketTagsDatasource } from '../../datasource/bitbucket-tags/index.ts';
+import { GitTagsDatasource } from '../../datasource/git-tags/index.ts';
+import { GithubTagsDatasource } from '../../datasource/github-tags/index.ts';
+import { PackagistDatasource } from '../../datasource/packagist/index.ts';
+import { api as semverComposer } from '../../versioning/composer/index.ts';
+import type { PackageDependency, PackageFileContent } from '../types.ts';
+import type { ComposerManagerData } from './types.ts';
 
 export const ComposerRepo = z.object({
   type: z.literal('composer'),
@@ -20,7 +26,9 @@ export const ComposerRepo = z.object({
    *
    * See https://github.com/composer/composer/blob/750a92b4b7aecda0e5b2f9b963f1cb1421900675/src/Composer/Repository/ComposerRepository.php#L815
    */
-  url: z.string().transform((url) => url.replace(/\/packages\.json$/, '')),
+  url: z
+    .string()
+    .transform((url) => url.replace(regEx(/\/packages\.json$/), '')),
 });
 export type ComposerRepo = z.infer<typeof ComposerRepo>;
 
@@ -48,7 +56,7 @@ export const Repo = z.discriminatedUnion('type', [
   PathRepo,
   PackageRepo,
 ]);
-export type Repo = z.infer<typeof ComposerRepo>;
+export type Repo = z.infer<typeof Repo>;
 
 export const NamedRepo = z.discriminatedUnion('type', [
   ComposerRepo,
@@ -126,10 +134,7 @@ export type ReposArray = z.infer<typeof ReposArray>;
 export const Repos = z
   .union([ReposRecord, ReposArray])
   .default([]) // Prevents warnings for packages without repositories field
-  .catch(({ error: err }) => {
-    logger.debug({ err }, 'Composer: invalid "repositories" field');
-    return [];
-  })
+  .catch(withDebugMessage([], 'Composer: invalid "repositories" field'))
   .transform((repos) => {
     let packagist = true;
     const repoUrls: string[] = [];
@@ -149,7 +154,7 @@ export const Repos = z
     }
 
     if (packagist && repoUrls.length) {
-      repoUrls.push('https://packagist.org');
+      repoUrls.push('https://repo.packagist.org');
     }
     const registryUrls = repoUrls.length ? repoUrls : null;
 
@@ -220,7 +225,7 @@ export const ComposerExtract = z
     fileName: z.string(),
   })
   .transform(({ content, fileName }) => {
-    const lockfileName = fileName.replace(/\.json$/, '.lock');
+    const lockfileName = fileName.replace(regEx(/\.json$/), '.lock');
     return {
       file: content,
       lockfileName,
@@ -242,10 +247,7 @@ export const ComposerExtract = z
               .pipe(Json)
               .pipe(Lockfile)
               .nullable()
-              .catch(({ error: err }) => {
-                logger.debug({ err }, 'Composer: lockfile parsing error');
-                return null;
-              }),
+              .catch(withDebugMessage(null, 'Composer: does not match schema')),
           ]),
         ),
     }),
@@ -260,12 +262,12 @@ export const ComposerExtract = z
       {
         depType: 'require',
         req: require,
-        locked: lockfile?.packages ?? [],
+        locked: coerceArray(lockfile?.packages),
       },
       {
         depType: 'require-dev',
         req: requireDev,
-        locked: lockfile?.packagesDev ?? [],
+        locked: coerceArray(lockfile?.packagesDev),
       },
     ];
 

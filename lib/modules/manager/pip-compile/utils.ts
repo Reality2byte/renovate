@@ -1,19 +1,19 @@
-import { Graph } from 'graph-data-structure';
+import { Graph, topologicalSort } from 'graph-data-structure';
 import upath from 'upath';
-import { logger } from '../../../logger';
-import type { PackageFile } from '../types';
-import type { DependencyBetweenFiles, PipCompileArgs } from './types';
+import { logger } from '../../../logger/index.ts';
+import type { PackageFile } from '../types.ts';
+import type { DependencyBetweenFiles, PipCompileArgs } from './types.ts';
 
 export function sortPackageFiles(
   depsBetweenFiles: DependencyBetweenFiles[],
   packageFiles: Map<string, PackageFile>,
 ): PackageFile[] {
   const result: PackageFile[] = [];
-  const graph: ReturnType<typeof Graph> = Graph();
+  const graph = new Graph();
   depsBetweenFiles.forEach(({ sourceFile, outputFile }) => {
     graph.addEdge(sourceFile, outputFile);
   });
-  const sorted = graph.topologicalSort();
+  const sorted = topologicalSort(graph);
   for (const file of sorted) {
     if (packageFiles.has(file)) {
       const packageFile = packageFiles.get(file)!;
@@ -48,7 +48,7 @@ export function generateMermaidGraph(
     lockFiles.push(`  ${lockFile}[[${lockFile}]]`);
   }
   const edges = depsBetweenFiles.map(({ sourceFile, outputFile, type }) => {
-    return `  ${sourceFile} -${type === 'constraint' ? '.' : ''}-> ${outputFile}`;
+    return `  ${sourceFile} -${type === 'requirement' ? '' : '.'}-> ${outputFile}`;
   });
   return `graph TD\n${lockFiles.join('\n')}\n${edges.join('\n')}`;
 }

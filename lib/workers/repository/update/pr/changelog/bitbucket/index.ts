@@ -1,16 +1,17 @@
-import is from '@sindresorhus/is';
+import path from 'node:path';
+import { isNullOrUndefined } from '@sindresorhus/is';
 import changelogFilenameRegex from 'changelog-filename-regex';
-import { logger } from '../../../../../../logger';
-import { PagedSourceResultsSchema } from '../../../../../../modules/platform/bitbucket/schema';
-import { BitbucketHttp } from '../../../../../../util/http/bitbucket';
-import { joinUrlParts } from '../../../../../../util/url';
-import { compareChangelogFilePath } from '../common';
+import { logger } from '../../../../../../logger/index.ts';
+import { PagedSourceResults } from '../../../../../../modules/platform/bitbucket/schema.ts';
+import { BitbucketHttp } from '../../../../../../util/http/bitbucket.ts';
+import { joinUrlParts } from '../../../../../../util/url.ts';
+import { compareChangelogFilePath } from '../common.ts';
 import type {
   ChangeLogFile,
   ChangeLogNotes,
   ChangeLogProject,
   ChangeLogRelease,
-} from '../types';
+} from '../types.ts';
 
 export const id = 'bitbucket-changelog';
 const bitbucketHttp = new BitbucketHttp(id);
@@ -18,15 +19,16 @@ const bitbucketHttp = new BitbucketHttp(id);
 export async function getReleaseNotesMd(
   repository: string,
   apiBaseUrl: string,
-  _sourceDirectory?: string,
+  sourceDirectory?: string,
 ): Promise<ChangeLogFile | null> {
   logger.trace('bitbucket.getReleaseNotesMd()');
 
   const repositorySourceURl = joinUrlParts(
     apiBaseUrl,
-    `2.0/repositories`,
+    '2.0/repositories',
     repository,
-    'src',
+    'src/HEAD',
+    sourceDirectory ?? '',
   );
 
   const rootFiles = (
@@ -35,18 +37,20 @@ export async function getReleaseNotesMd(
       {
         paginate: true,
       },
-      PagedSourceResultsSchema,
+      PagedSourceResults,
     )
   ).body.values;
 
   const allFiles = rootFiles.filter((f) => f.type === 'commit_file');
 
-  const files = allFiles.filter((f) => changelogFilenameRegex.test(f.path));
+  const files = allFiles.filter((f) =>
+    changelogFilenameRegex.test(path.basename(f.path)),
+  );
 
   const changelogFile = files
     .sort((a, b) => compareChangelogFilePath(a.path, b.path))
     .shift();
-  if (is.nullOrUndefined(changelogFile)) {
+  if (isNullOrUndefined(changelogFile)) {
     logger.trace('no changelog file found');
     return null;
   }
@@ -57,9 +61,12 @@ export async function getReleaseNotesMd(
     );
   }
 
-  const fileRes = await bitbucketHttp.get(
+  const fileRes = await bitbucketHttp.getText(
     joinUrlParts(
-      repositorySourceURl,
+      apiBaseUrl,
+      '2.0/repositories',
+      repository,
+      'src',
       changelogFile.commit.hash,
       changelogFile.path,
     ),

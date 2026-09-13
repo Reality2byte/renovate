@@ -1,15 +1,20 @@
 import { codeBlock } from 'common-tags';
 import upath from 'upath';
-import { Fixtures } from '../../../../test/fixtures';
-import { GlobalConfig } from '../../../config/global';
-import type { RepoGlobalConfig } from '../../../config/types';
-import { DotnetVersionDatasource } from '../../datasource/dotnet-version';
-import type { ExtractConfig } from '../types';
-import { extractPackageFile } from '.';
+import { Fixtures } from '~test/fixtures.ts';
+import { fs, logger } from '~test/util.ts';
+import { GlobalConfig } from '../../../config/global.ts';
+import type {
+  InternalGlobalConfigOptions,
+  RepoGlobalConfig,
+} from '../../../config/types.ts';
+import { DotnetVersionDatasource } from '../../datasource/dotnet-version/index.ts';
+import type { ExtractConfig } from '../types.ts';
+import { extractPackageFile } from './index.ts';
+import * as nugetExtractUtil from './util.ts';
 
 const config: ExtractConfig = {};
 
-const adminConfig: RepoGlobalConfig = {
+const adminConfig: RepoGlobalConfig & InternalGlobalConfigOptions = {
   localDir: upath.resolve('lib/modules/manager/nuget/__fixtures__'),
 };
 
@@ -24,9 +29,36 @@ describe('modules/manager/nuget/extract', () => {
     });
 
     it('returns null for invalid csproj', async () => {
-      expect(
-        await extractPackageFile('nothing here', 'bogus', config),
-      ).toBeNull();
+      await expect(
+        extractPackageFile(
+          '\uFEFF  <?xml version="1.0" encoding="utf-8" ?>invalid xml>',
+          'bogus',
+          config,
+        ),
+      ).resolves.toBeNull();
+
+      expect(logger.logger.debug).toHaveBeenCalledWith(
+        expect.anything(),
+        'Failed to parse XML',
+      );
+    });
+
+    it('returns null if not xml', async () => {
+      await expect(
+        extractPackageFile(
+          codeBlock`
+          org.apache.curator:* =4.3.0
+          org.apache.hadoop:*=3.1.4
+          org.apache.hadoop.thirdparty:* =   1.1.0
+          `,
+          'versions.props',
+          config,
+        ),
+      ).resolves.toBeNull();
+
+      expect(logger.logger.debug).toHaveBeenCalledWith(
+        'NuGet: Skipping versions.props as it is not XML',
+      );
     });
 
     it('extracts package version dependency', async () => {
@@ -34,15 +66,23 @@ describe('modules/manager/nuget/extract', () => {
         'with-centralized-package-versions/Directory.Packages.props';
       const sample = Fixtures.get(packageFile);
       const res = await extractPackageFile(sample, packageFile, config);
-      expect(res?.deps).toMatchSnapshot();
-      expect(res?.deps).toHaveLength(1);
+      expect(res?.deps).toEqual([
+        {
+          currentValue: '4.5.0',
+          datasource: 'nuget',
+          depName: 'Autofac',
+          depType: 'nuget',
+        },
+      ]);
     });
 
     it('extracts package file version', async () => {
       const packageFile = 'sample.csproj';
       const sample = Fixtures.get(packageFile);
+      vi.spyOn(fs, 'localPathExists').mockResolvedValueOnce(true);
       const res = await extractPackageFile(sample, packageFile, config);
       expect(res?.packageFileVersion).toBe('0.1.0');
+      expect(res?.lockFiles).toEqual(['packages.lock.json']);
     });
 
     it('does not fail on package file without version', async () => {
@@ -56,8 +96,55 @@ describe('modules/manager/nuget/extract', () => {
       const packageFile = 'sample.csproj';
       const sample = Fixtures.get(packageFile);
       const res = await extractPackageFile(sample, packageFile, config);
-      expect(res?.deps).toMatchSnapshot();
-      expect(res?.deps).toHaveLength(17);
+      expect(res?.deps).toMatchObject([
+        { currentValue: '1.0.0', depName: 'My.Package' },
+        {
+          currentValue: '1.0.0',
+          depName: 'Microsoft.VisualStudio.Web.CodeGeneration.Tools',
+        },
+        { depName: 'NotUpdatable3', skipReason: 'invalid-version' },
+        { currentValue: '[1.2.3, 3.2.1)', depName: 'NotUpdatable3' },
+        { currentValue: '[1.2.3, 3.2.1]', depName: 'NotUpdatable3' },
+        { currentValue: '(1.2.3, 3.2.1)', depName: 'NotUpdatable3' },
+        { currentValue: '(1.2.3,)', depName: 'NotUpdatable2' },
+        { currentValue: '[,1.2.3)', depName: 'NotUpdatable1' },
+        { currentValue: '[1.2.3,)', depName: 'Range3' },
+        { currentValue: '[1.2.3,]', depName: 'Range2' },
+        { currentValue: '[1.2.3]', depName: 'Range1' },
+        { currentValue: '3.1.0.5', depName: 'Stateless' },
+        { currentValue: '2.1.0', depName: 'Serilog.Sinks.Literate' },
+        { currentValue: '1.4.0', depName: 'Serilog.Extensions.Logging' },
+        { currentValue: '2.4.0', depName: 'Serilog' },
+        { currentValue: '10.0.2', depName: 'Newtonsoft.Json' },
+        {
+          currentValue: '1.1.2',
+          depName: 'Microsoft.Extensions.Logging.Debug',
+        },
+        {
+          currentValue: '1.1.2',
+          depName: 'Microsoft.Extensions.Configuration.Json',
+        },
+        {
+          currentValue: '1.1.2',
+          depName: 'Microsoft.AspNetCore.Server.Kestrel',
+        },
+        { currentValue: '1.1.3', depName: 'Microsoft.AspNetCore.Mvc.Core' },
+        {
+          currentValue: '$(UnknownVariable)',
+          depName: 'Microsoft.AspNetCore.Hosting',
+          skipReason: 'contains-variable',
+        },
+        {
+          currentValue: '4.5.0',
+          depName: 'Autofac.Extensions.DependencyInjection',
+          sharedVariableName: 'AutofacVersion',
+        },
+        {
+          currentValue: '4.5.0',
+          depName: 'Autofac',
+          sharedVariableName: 'AutofacVersion',
+        },
+      ]);
     });
 
     it('extracts msbuild sdk from the Sdk attr of Project element', async () => {
@@ -122,6 +209,24 @@ describe('modules/manager/nuget/extract', () => {
       expect(res?.deps).toHaveLength(1);
     });
 
+    it('extracts msbuild sdk from sqlproj Sdk element', async () => {
+      const packageFile = 'sample.sqlproj';
+      const sample = codeBlock`
+        <Project>
+          <Sdk Name="Microsoft.Build.Sql" Version="0.1.19-preview" />
+        </Project>
+      `;
+      const res = await extractPackageFile(sample, packageFile, config);
+      expect(res?.deps).toEqual([
+        {
+          depName: 'Microsoft.Build.Sql',
+          depType: 'msbuild-sdk',
+          currentValue: '0.1.19-preview',
+          datasource: 'nuget',
+        },
+      ]);
+    });
+
     it('does not extract msbuild sdk from the Sdk element if version is missing', async () => {
       const packageFile = 'sample.csproj';
       const sample = `
@@ -132,6 +237,66 @@ describe('modules/manager/nuget/extract', () => {
           <NuspecFile>$(MSBuildThisFileDirectory)\tdlib.native.nuspec</NuspecFile>
           <NuspecProperties>version=$(PackageVersion)</NuspecProperties>
         </PropertyGroup>
+      </Project>
+      `;
+      const res = await extractPackageFile(sample, packageFile, config);
+      expect(res).toBeNull();
+    });
+
+    it('extracts msbuild sdk from the Import element', async () => {
+      const packageFile = 'sample.csproj';
+      const sample = `
+      <Project>
+        <PropertyGroup>
+          <TargetFramework>net7.0</TargetFramework> <!-- this is a dummy value -->
+          <NuspecFile>$(MSBuildThisFileDirectory)\tdlib.native.nuspec</NuspecFile>
+          <NuspecProperties>version=$(PackageVersion)</NuspecProperties>
+        </PropertyGroup>
+        <Import Project="Sdk.props" Sdk="My.Custom.Sdk" Version="1.2.3" />
+      </Project>
+      `;
+      const res = await extractPackageFile(sample, packageFile, config);
+      expect(res?.deps).toEqual([
+        {
+          depName: 'My.Custom.Sdk',
+          depType: 'msbuild-sdk',
+          currentValue: '1.2.3',
+          datasource: 'nuget',
+        },
+      ]);
+      expect(res?.deps).toHaveLength(1);
+    });
+
+    it('does not set versioning on PackageReference dependencies', async () => {
+      const packageFile = 'sample.csproj';
+      const sample = codeBlock`
+        <Project>
+          <ItemGroup>
+            <PackageReference Include="Autofac" Version="4.5.0" />
+          </ItemGroup>
+        </Project>
+      `;
+      const res = await extractPackageFile(sample, packageFile, config);
+      expect(res?.deps).toEqual([
+        {
+          currentValue: '4.5.0',
+          datasource: 'nuget',
+          depName: 'Autofac',
+          depType: 'nuget',
+        },
+      ]);
+    });
+
+    it('does not extract msbuild sdk from the Import element if version is missing', async () => {
+      const packageFile = 'sample.csproj';
+      const sample = `
+      <Project>
+        <PropertyGroup>
+          <TargetFramework>net7.0</TargetFramework> <!-- this is a dummy value -->
+          <NuspecFile>$(MSBuildThisFileDirectory)\tdlib.native.nuspec</NuspecFile>
+          <NuspecProperties>version=$(PackageVersion)</NuspecProperties>
+        </PropertyGroup>
+        <Import Project="Sdk.props" Sdk="My.Custom.Sdk" />
       </Project>
       `;
       const res = await extractPackageFile(sample, packageFile, config);
@@ -156,8 +321,45 @@ describe('modules/manager/nuget/extract', () => {
       const packageFile = 'packages.props';
       const sample = Fixtures.get(packageFile);
       const res = await extractPackageFile(sample, packageFile, config);
-      expect(res?.deps).toMatchSnapshot();
-      expect(res?.deps).toHaveLength(17);
+      expect(res?.deps).toMatchObject([
+        {
+          currentValue: '1.0.0',
+          depName: 'Microsoft.VisualStudio.Web.CodeGeneration.Tools',
+        },
+        { currentValue: '[1.2.3, 3.2.1)', depName: 'NotUpdatable3' },
+        { currentValue: '[1.2.3, 3.2.1]', depName: 'NotUpdatable3' },
+        { currentValue: '(1.2.3, 3.2.1)', depName: 'NotUpdatable3' },
+        { currentValue: '(1.2.3,)', depName: 'NotUpdatable2' },
+        { currentValue: '[,1.2.3)', depName: 'NotUpdatable1' },
+        { currentValue: '[1.2.3,)', depName: 'Range3' },
+        { currentValue: '[1.2.3,]', depName: 'Range2' },
+        { currentValue: '[1.2.3]', depName: 'Range1' },
+        { currentValue: '3.1.0.5', depName: 'Stateless' },
+        { currentValue: '2.1.0', depName: 'Serilog.Sinks.Literate' },
+        { currentValue: '1.4.0', depName: 'Serilog.Extensions.Logging' },
+        { currentValue: '2.4.0', depName: 'Serilog' },
+        { currentValue: '10.0.2', depName: 'Newtonsoft.Json' },
+        {
+          currentValue: '1.1.2',
+          depName: 'Microsoft.Extensions.Logging.Debug',
+        },
+        {
+          currentValue: '1.1.2',
+          depName: 'Microsoft.Extensions.Configuration.Json',
+        },
+        {
+          currentValue: '1.1.2',
+          depName: 'Microsoft.AspNetCore.Server.Kestrel',
+        },
+        { currentValue: '1.1.3', depName: 'Microsoft.AspNetCore.Mvc.Core' },
+        { currentValue: '1.1.2', depName: 'Microsoft.AspNetCore.Hosting' },
+        {
+          currentValue: '4.1.0',
+          depName: 'Autofac.Extensions.DependencyInjection',
+        },
+        { currentValue: '4.5.0', depName: 'Autofac' },
+        { currentValue: '2.0.0', depName: 'Roslynator.Analyzers' },
+      ]);
     });
 
     it('extracts ContainerBaseImage', async () => {
@@ -169,12 +371,15 @@ describe('modules/manager/nuget/extract', () => {
         </PropertyGroup>
       </Project>`;
 
-      expect(await extractPackageFile(contents, contents, config)).toEqual({
+      await expect(
+        extractPackageFile(contents, contents, config),
+      ).resolves.toEqual({
         deps: [
           {
             autoReplaceStringTemplate:
               '{{depName}}{{#if newValue}}:{{newValue}}{{/if}}{{#if newDigest}}@{{newDigest}}{{/if}}',
             depName: 'mcr.microsoft.com/dotnet/runtime',
+            packageName: 'mcr.microsoft.com/dotnet/runtime',
             depType: 'docker',
             datasource: 'docker',
             currentValue: '7.0.10',
@@ -194,12 +399,15 @@ describe('modules/manager/nuget/extract', () => {
         </PropertyGroup>
       </Project>`;
 
-      expect(await extractPackageFile(contents, contents, config)).toEqual({
+      await expect(
+        extractPackageFile(contents, contents, config),
+      ).resolves.toEqual({
         deps: [
           {
             autoReplaceStringTemplate:
               '{{depName}}{{#if newValue}}:{{newValue}}{{/if}}{{#if newDigest}}@{{newDigest}}{{/if}}',
             depName: 'mcr.microsoft.com/dotnet/runtime',
+            packageName: 'mcr.microsoft.com/dotnet/runtime',
             depType: 'docker',
             datasource: 'docker',
             currentValue: '7.0.10',
@@ -216,7 +424,9 @@ describe('modules/manager/nuget/extract', () => {
     it('considers NuGet.config', async () => {
       const packageFile = 'with-config-file/with-config-file.csproj';
       const contents = Fixtures.get(packageFile);
-      expect(await extractPackageFile(contents, packageFile, config)).toEqual({
+      await expect(
+        extractPackageFile(contents, packageFile, config),
+      ).resolves.toEqual({
         deps: [
           {
             currentValue: '4.5.0',
@@ -237,7 +447,9 @@ describe('modules/manager/nuget/extract', () => {
       const packageFile =
         'with-lower-case-config-file/with-lower-case-config-file.csproj';
       const contents = Fixtures.get(packageFile);
-      expect(await extractPackageFile(contents, packageFile, config)).toEqual({
+      await expect(
+        extractPackageFile(contents, packageFile, config),
+      ).resolves.toEqual({
         deps: [
           {
             currentValue: '4.5.0',
@@ -258,7 +470,9 @@ describe('modules/manager/nuget/extract', () => {
       const packageFile =
         'with-pascal-case-config-file/with-pascal-case-config-file.csproj';
       const contents = Fixtures.get(packageFile);
-      expect(await extractPackageFile(contents, packageFile, config)).toEqual({
+      await expect(
+        extractPackageFile(contents, packageFile, config),
+      ).resolves.toEqual({
         deps: [
           {
             currentValue: '4.5.0',
@@ -279,7 +493,9 @@ describe('modules/manager/nuget/extract', () => {
       const packageFile =
         'with-malformed-config-file/with-malformed-config-file.csproj';
       const contents = Fixtures.get(packageFile);
-      expect(await extractPackageFile(contents, packageFile, config)).toEqual({
+      await expect(
+        extractPackageFile(contents, packageFile, config),
+      ).resolves.toEqual({
         deps: [
           {
             currentValue: '4.5.0',
@@ -296,7 +512,9 @@ describe('modules/manager/nuget/extract', () => {
       const packageFile =
         'without-package-sources/without-package-sources.csproj';
       const contents = Fixtures.get(packageFile);
-      expect(await extractPackageFile(contents, packageFile, config)).toEqual({
+      await expect(
+        extractPackageFile(contents, packageFile, config),
+      ).resolves.toEqual({
         deps: [
           {
             currentValue: '4.5.0',
@@ -312,7 +530,9 @@ describe('modules/manager/nuget/extract', () => {
     it('handles NuGet.config with whitespaces in package source keys', async () => {
       const packageFile = 'with-whitespaces/with-whitespaces.csproj';
       const contents = Fixtures.get(packageFile);
-      expect(await extractPackageFile(contents, packageFile, config)).toEqual({
+      await expect(
+        extractPackageFile(contents, packageFile, config),
+      ).resolves.toEqual({
         deps: [
           {
             currentValue: '12.0.3',
@@ -332,7 +552,9 @@ describe('modules/manager/nuget/extract', () => {
       const packageFile =
         'with-local-feed-in-config-file/with-local-feed-in-config-file.csproj';
       const contents = Fixtures.get(packageFile);
-      expect(await extractPackageFile(contents, packageFile, config)).toEqual({
+      await expect(
+        extractPackageFile(contents, packageFile, config),
+      ).resolves.toEqual({
         deps: [
           {
             currentValue: '4.5.0',
@@ -351,7 +573,9 @@ describe('modules/manager/nuget/extract', () => {
       const contents = Fixtures.get(packageFile);
       const otherPackageFile = 'multiple-package-files/two/two.csproj';
       const otherContents = Fixtures.get(otherPackageFile);
-      expect(await extractPackageFile(contents, packageFile, config)).toEqual({
+      await expect(
+        extractPackageFile(contents, packageFile, config),
+      ).resolves.toEqual({
         deps: [
           {
             currentValue: '4.5.0',
@@ -366,9 +590,9 @@ describe('modules/manager/nuget/extract', () => {
         ],
         packageFileVersion: '0.1.0',
       });
-      expect(
-        await extractPackageFile(otherContents, otherPackageFile, config),
-      ).toEqual({
+      await expect(
+        extractPackageFile(otherContents, otherPackageFile, config),
+      ).resolves.toEqual({
         deps: [
           {
             currentValue: '4.5.0',
@@ -388,7 +612,9 @@ describe('modules/manager/nuget/extract', () => {
     it('extracts msbuild-sdks from global.json', async () => {
       const packageFile = 'msbuild-sdk-files/global.json';
       const contents = Fixtures.get(packageFile);
-      expect(await extractPackageFile(contents, packageFile, config)).toEqual({
+      await expect(
+        extractPackageFile(contents, packageFile, config),
+      ).resolves.toEqual({
         deps: [
           {
             currentValue: '5.0.302',
@@ -410,35 +636,35 @@ describe('modules/manager/nuget/extract', () => {
     it('extracts dotnet-sdk from global.json', async () => {
       const packageFile = 'msbuild-sdk-files/global.1.json';
       const contents = Fixtures.get(packageFile);
-      expect(await extractPackageFile(contents, 'global.json', config)).toEqual(
-        {
-          deps: [
-            {
-              currentValue: '5.0.302',
-              depName: 'dotnet-sdk',
-              depType: 'dotnet-sdk',
-              datasource: DotnetVersionDatasource.id,
-            },
-          ],
-          extractedConstraints: { 'dotnet-sdk': '5.0.302' },
-        },
-      );
+      await expect(
+        extractPackageFile(contents, 'global.json', config),
+      ).resolves.toEqual({
+        deps: [
+          {
+            currentValue: '5.0.302',
+            depName: 'dotnet-sdk',
+            depType: 'dotnet-sdk',
+            datasource: DotnetVersionDatasource.id,
+          },
+        ],
+        extractedConstraints: { 'dotnet-sdk': '5.0.302' },
+      });
     });
 
     it('handles malformed global.json', async () => {
       const packageFile = 'msbuild-sdk-files/invalid-json/global.json';
       const contents = Fixtures.get(packageFile);
-      expect(
-        await extractPackageFile(contents, packageFile, config),
-      ).toBeNull();
+      await expect(
+        extractPackageFile(contents, packageFile, config),
+      ).resolves.toBeNull();
     });
 
     it('handles not-a-nuget global.json', async () => {
       const packageFile = 'msbuild-sdk-files/not-nuget/global.json';
       const contents = Fixtures.get(packageFile);
-      expect(
-        await extractPackageFile(contents, packageFile, config),
-      ).toBeNull();
+      await expect(
+        extractPackageFile(contents, packageFile, config),
+      ).resolves.toBeNull();
     });
 
     describe('.config/dotnet-tools.json', () => {
@@ -446,28 +672,29 @@ describe('modules/manager/nuget/extract', () => {
       const contents = Fixtures.get('dotnet-tools.json');
 
       it('works', async () => {
-        expect(await extractPackageFile(contents, packageFile, config)).toEqual(
-          {
-            deps: [
-              {
-                currentValue: '2.0.0',
-                datasource: 'nuget',
-                depName: 'minver-cli',
-                depType: 'nuget',
-              },
-            ],
-          },
-        );
+        await expect(
+          extractPackageFile(contents, packageFile, config),
+        ).resolves.toEqual({
+          deps: [
+            {
+              currentValue: '2.0.0',
+              datasource: 'nuget',
+              depName: 'minver-cli',
+              depType: 'nuget',
+              versioning: 'semver',
+            },
+          ],
+        });
       });
 
       it('with-config', async () => {
-        expect(
-          await extractPackageFile(
+        await expect(
+          extractPackageFile(
             contents,
             `with-config-file/${packageFile}`,
             config,
           ),
-        ).toEqual({
+        ).resolves.toEqual({
           deps: [
             {
               currentValue: '2.0.0',
@@ -478,29 +705,86 @@ describe('modules/manager/nuget/extract', () => {
                 'https://api.nuget.org/v3/index.json#protocolVersion=3',
                 'https://contoso.com/packages/',
               ],
+              versioning: 'semver',
             },
           ],
         });
       });
 
       it('wrong version', async () => {
-        expect(
-          await extractPackageFile(
+        await expect(
+          extractPackageFile(
             contents.replace('"version": 1,', '"version": 2,'),
             packageFile,
             config,
           ),
-        ).toBeNull();
+        ).resolves.toBeNull();
       });
 
       it('returns null for no deps', async () => {
-        expect(
-          await extractPackageFile('{"version": 1}', packageFile, config),
-        ).toBeNull();
+        await expect(
+          extractPackageFile('{"version": 1}', packageFile, config),
+        ).resolves.toBeNull();
       });
 
       it('does not throw', async () => {
-        expect(await extractPackageFile('{{', packageFile, config)).toBeNull();
+        await expect(
+          extractPackageFile('{{', packageFile, config),
+        ).resolves.toBeNull();
+      });
+    });
+
+    describe('single-csharp-file', () => {
+      it('reads sdk and package directives', async () => {
+        const packageFile = 'single-csharp-file/singlefile.cs';
+        const contents = codeBlock`
+          #:sdk Some.Sdk@6.0.0
+          #:package Some.NuGet.Package@3.0.1
+
+          // https://devblogs.microsoft.com/dotnet/announcing-dotnet-run-app/
+
+          Console.WriteLine("Hello World!");
+          `;
+        await expect(
+          extractPackageFile(contents, packageFile, config),
+        ).resolves.toEqual({
+          deps: [
+            {
+              datasource: 'nuget',
+              currentValue: '6.0.0',
+              depName: 'Some.Sdk',
+              depType: 'msbuild-sdk',
+            },
+            {
+              datasource: 'nuget',
+              currentValue: '3.0.1',
+              depName: 'Some.NuGet.Package',
+              depType: 'nuget',
+            },
+          ],
+        });
+      });
+    });
+
+    describe('single-csharp-file-nuget', () => {
+      it('calls applyRegistries to honor nuget.config files if present', async () => {
+        const packageFile = 'single-csharp-file-nuget/singlefile.cs';
+        const contents = codeBlock`
+          #:sdk Some.Sdk@6.0.0
+          #:package Some.NuGet.Package@3.0.1
+
+          // https://devblogs.microsoft.com/dotnet/announcing-dotnet-run-app/
+
+          Console.WriteLine("Hello World!");
+          `;
+
+        const applyRegistriesSpy = vi
+          .spyOn(nugetExtractUtil, 'applyRegistries')
+          .mockImplementation((deps: any) => deps);
+
+        await extractPackageFile(contents, packageFile, config);
+
+        expect(applyRegistriesSpy).toHaveBeenCalled();
       });
     });
   });

@@ -1,35 +1,39 @@
-import { getPkgReleases } from '..';
-import { Fixtures } from '../../../../test/fixtures';
-import * as httpMock from '../../../../test/http-mock';
-import { EXTERNAL_HOST_ERROR } from '../../../constants/error-messages';
-import * as hostRules from '../../../util/host-rules';
-import { id as versioning } from '../../versioning/loose';
-import type { RepologyPackage } from './types';
-import { RepologyDatasource } from './index';
+import { Fixtures } from '~test/fixtures.ts';
+import * as httpMock from '~test/http-mock.ts';
+import { EXTERNAL_HOST_ERROR } from '../../../constants/error-messages.ts';
+import * as hostRules from '../../../util/host-rules.ts';
+import { id as versioning } from '../../versioning/loose/index.ts';
+import { getPkgReleases } from '../index.ts';
+import { RepologyDatasource } from './index.ts';
+import type { RepologyPackage } from './schema.ts';
 
 const datasource = RepologyDatasource.id;
 
 const repologyHost = 'https://repology.org/';
 
-type ResponseMock = { status?: number; body?: string; code?: string };
+interface ResponseMock {
+  status?: number;
+  body?: string;
+  code?: string;
+}
 
-const mockApiCall = (name: string, response: ResponseMock) => {
+function mockApiCall(name: string, response: ResponseMock) {
   const interceptor = httpMock
     .scope(repologyHost)
     .get(`/api/v1/project/${name}`);
   if (response.status) {
     interceptor.reply(response.status, response.body);
   } else {
-    interceptor.replyWithError({ code: response.code });
+    interceptor.replyWithError(httpMock.error({ code: response.code }));
   }
-};
+}
 
-const mockResolverCall = (
+function mockResolverCall(
   repo: string,
   name: string,
   name_type: string,
   response: ResponseMock,
-) => {
+) {
   const query = {
     repo,
     name_type,
@@ -45,9 +49,9 @@ const mockResolverCall = (
   if (response.status) {
     interceptor.reply(response.status, response.body);
   } else {
-    interceptor.replyWithError({ code: response.code });
+    interceptor.replyWithError(httpMock.error({ code: response.code }));
   }
-};
+}
 
 const fixtureNginx = Fixtures.get(`nginx.json`);
 const fixtureGccDefaults = Fixtures.get(`gcc-defaults.json`);
@@ -72,13 +76,13 @@ describe('modules/datasource/repology/index', () => {
         body: '[]',
       });
 
-      expect(
-        await getPkgReleases({
+      await expect(
+        getPkgReleases({
           datasource,
           versioning,
           packageName: 'debian_stable/nginx',
         }),
-      ).toBeNull();
+      ).resolves.toBeNull();
     });
 
     it('returns null for missing repository or package', async () => {
@@ -89,13 +93,13 @@ describe('modules/datasource/repology/index', () => {
         status: 404,
       });
 
-      expect(
-        await getPkgReleases({
+      await expect(
+        getPkgReleases({
           datasource,
           versioning,
           packageName: 'this_should/never-exist',
         }),
-      ).toBeNull();
+      ).resolves.toBeNull();
     });
 
     it('throws error on unexpected API response', async () => {
@@ -149,7 +153,7 @@ describe('modules/datasource/repology/index', () => {
       ).rejects.toThrow(EXTERNAL_HOST_ERROR);
     });
 
-    it('throws error on API request timeout', async () => {
+    it('skips package instead of aborting the run on API request timeout', async () => {
       mockResolverCall('debian_stable', 'nginx', 'binname', {
         status: 200,
         body: '[]',
@@ -165,10 +169,28 @@ describe('modules/datasource/repology/index', () => {
           versioning,
           packageName: 'debian_stable/nginx',
         }),
-      ).rejects.toThrow(EXTERNAL_HOST_ERROR);
+      ).resolves.toBeNull();
     });
 
-    it('throws error on Resolver request timeout', async () => {
+    it('skips package instead of aborting the run on Resolver request timeout', async () => {
+      mockResolverCall('debian_stable', 'nginx', 'binname', {
+        code: 'ETIMEDOUT',
+      });
+
+      await expect(
+        getPkgReleases({
+          datasource,
+          versioning,
+          packageName: 'debian_stable/nginx',
+        }),
+      ).resolves.toBeNull();
+    });
+
+    it('aborts the run on timeout when abortOnError is enabled for the host', async () => {
+      // With hostRules abortOnError: true, the HTTP layer wraps the timeout as
+      // an ExternalHostError, which handleGenericErrors re-throws, so the run
+      // still aborts. This preserves the documented opt-in behavior.
+      hostRules.add({ matchHost: 'repology.org', abortOnError: true });
       mockResolverCall('debian_stable', 'nginx', 'binname', {
         code: 'ETIMEDOUT',
       });
@@ -188,13 +210,13 @@ describe('modules/datasource/repology/index', () => {
         body: '[]',
       });
 
-      expect(
-        await getPkgReleases({
+      await expect(
+        getPkgReleases({
           datasource,
           versioning,
           packageName: 'ubuntu_20_04/git',
         }),
-      ).toBeNull();
+      ).resolves.toBeNull();
     });
 
     it('throws without repository and package name', async () => {
@@ -209,13 +231,13 @@ describe('modules/datasource/repology/index', () => {
 
     it('throws on disabled host', async () => {
       hostRules.add({ matchHost: repologyHost, enabled: false });
-      expect(
-        await getPkgReleases({
+      await expect(
+        getPkgReleases({
           datasource,
           versioning,
           packageName: 'debian_stable/nginx',
         }),
-      ).toBeNull();
+      ).resolves.toBeNull();
     });
 
     it('returns correct version for binary package', async () => {
@@ -229,9 +251,14 @@ describe('modules/datasource/repology/index', () => {
         versioning,
         packageName: 'debian_stable/nginx',
       });
-      expect(res).toMatchSnapshot();
-      expect(res?.releases).toHaveLength(1);
-      expect(res?.releases[0].version).toBe('1.14.2-2+deb10u1');
+      expect(res).toEqual({
+        registryUrl: 'https://repology.org',
+        releases: [
+          {
+            version: '1.14.2-2+deb10u1',
+          },
+        ],
+      });
     });
 
     it('returns correct version for source package', async () => {
@@ -248,9 +275,14 @@ describe('modules/datasource/repology/index', () => {
         versioning,
         packageName: 'debian_stable/gcc-defaults',
       });
-      expect(res).toMatchSnapshot();
-      expect(res?.releases).toHaveLength(1);
-      expect(res?.releases[0].version).toBe('1.181');
+      expect(res).toEqual({
+        registryUrl: 'https://repology.org',
+        releases: [
+          {
+            version: '1.181',
+          },
+        ],
+      });
     });
 
     it('returns correct version for api package', async () => {
@@ -264,9 +296,14 @@ describe('modules/datasource/repology/index', () => {
         versioning,
         packageName: 'debian_stable/gcc-defaults',
       });
-      expect(res).toMatchSnapshot();
-      expect(res?.releases).toHaveLength(1);
-      expect(res?.releases[0].version).toBe('1.181');
+      expect(res).toEqual({
+        registryUrl: 'https://repology.org',
+        releases: [
+          {
+            version: '1.181',
+          },
+        ],
+      });
     });
 
     it('returns correct version for multi-package project with same name', async () => {
@@ -280,9 +317,14 @@ describe('modules/datasource/repology/index', () => {
         versioning,
         packageName: 'alpine_3_12/gcc',
       });
-      expect(res).toMatchSnapshot();
-      expect(res?.releases).toHaveLength(1);
-      expect(res?.releases[0].version).toBe('9.3.0-r2');
+      expect(res).toEqual({
+        registryUrl: 'https://repology.org',
+        releases: [
+          {
+            version: '9.3.0-r2',
+          },
+        ],
+      });
     });
 
     it('returns correct version for multi-package project with different name', async () => {
@@ -296,9 +338,14 @@ describe('modules/datasource/repology/index', () => {
         versioning,
         packageName: 'debian_stable/pulseaudio-utils',
       });
-      expect(res).toMatchSnapshot();
-      expect(res?.releases).toHaveLength(1);
-      expect(res?.releases[0].version).toBe('12.2-4+deb10u1');
+      expect(res).toEqual({
+        registryUrl: 'https://repology.org',
+        releases: [
+          {
+            version: '12.2-4+deb10u1',
+          },
+        ],
+      });
     });
 
     it('returns multiple versions if they are present in repository', async () => {
@@ -315,10 +362,29 @@ describe('modules/datasource/repology/index', () => {
         versioning,
         packageName: 'centos_8/java-11-openjdk',
       });
-      expect(res).toMatchSnapshot();
-      expect(res?.releases).toHaveLength(6);
-      expect(res?.releases[0].version).toBe('1:11.0.7.10-1.el8_1');
-      expect(res?.releases[5].version).toBe('1:11.0.9.11-3.el8_3');
+      expect(res).toEqual({
+        registryUrl: 'https://repology.org',
+        releases: [
+          {
+            version: '1:11.0.7.10-1.el8_1',
+          },
+          {
+            version: '1:11.0.8.10-0.el8_2',
+          },
+          {
+            version: '1:11.0.8.10-6.el8',
+          },
+          {
+            version: '1:11.0.9.11-0.el8_2',
+          },
+          {
+            version: '1:11.0.9.11-2.el8_3',
+          },
+          {
+            version: '1:11.0.9.11-3.el8_3',
+          },
+        ],
+      });
     });
 
     it('returns null for scenario when repo is not in package results', async () => {

@@ -1,8 +1,13 @@
 import type {
   ConstraintsFilter,
   CustomDatasourceConfig,
-} from '../../config/types';
-import type { ModuleApi } from '../../types';
+} from '../../config/types.ts';
+import type { ModuleApi } from '../../types/index.ts';
+import type {
+  AdditionalConstraintName,
+  ConstraintName,
+} from '../../util/exec/types.ts';
+import type { Timestamp } from '../../util/timestamp.ts';
 
 export interface GetDigestInputConfig {
   datasource: string;
@@ -31,6 +36,12 @@ export interface GetReleasesConfig {
   packageName: string;
   registryUrl?: string;
   currentValue?: string;
+  constraints?: Partial<Record<ConstraintName, string>>;
+  /**
+   * Any specific overrides for the versioning for the `AdditionalConstraintName`s.
+   */
+  constraintsVersioning?: Partial<Record<AdditionalConstraintName, string>>;
+  constraintsFiltering?: ConstraintsFilter;
 }
 
 export interface GetPkgReleasesConfig {
@@ -46,36 +57,53 @@ export interface GetPkgReleasesConfig {
   extractVersion?: string;
   versionCompatibility?: string;
   currentCompatibility?: string;
-  constraints?: Record<string, string>;
+  constraints?: Partial<Record<ConstraintName, string>>;
   replacementName?: string;
   replacementVersion?: string;
   constraintsFiltering?: ConstraintsFilter;
+  /**
+   * Any specific overrides for the versioning for the `AdditionalConstraintName`s.
+   */
+  constraintsVersioning?: Partial<Record<AdditionalConstraintName, string>>;
+  registryStrategy?: RegistryStrategy;
 }
 
 export interface Release {
+  changelogContent?: string;
   changelogUrl?: string;
   checksumUrl?: string;
   downloadUrl?: string;
   gitRef?: string;
   isDeprecated?: boolean;
   isStable?: boolean;
-  releaseTimestamp?: string | null;
+  releaseTimestamp?: Timestamp | null;
   version: string;
-  newDigest?: string | undefined;
-  constraints?: Record<string, string[]>;
+  /** The original value to which `extractVersion` was applied */
+  versionOrig?: string;
+  newDigest?: string | null;
+  constraints?: Partial<Record<ConstraintName, string[]>>;
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
   registryUrl?: string;
   sourceUrl?: string | undefined;
   sourceDirectory?: string;
   currentAge?: string;
+  isLatest?: boolean;
+  attestation?: boolean;
+}
+
+export interface ReleaseTags {
+  /** The latest release, according to the datasource **/
+  latest?: string;
+  [key: string]: string | undefined;
 }
 
 export interface ReleaseResult {
   deprecationMessage?: string;
   isPrivate?: boolean;
   releases: Release[];
-  tags?: Record<string, string> | undefined;
+  tags?: ReleaseTags | undefined;
+  changelogContent?: string;
   // URL metadata
   changelogUrl?: string;
   dependencyUrl?: string;
@@ -88,6 +116,9 @@ export interface ReleaseResult {
   replacementVersion?: string;
   lookupName?: string;
   packageScope?: string;
+  mostRecentTimestamp?: Timestamp;
+  isAbandoned?: boolean;
+  respectLatest?: boolean;
 }
 
 export interface PostprocessReleaseConfig {
@@ -97,7 +128,34 @@ export interface PostprocessReleaseConfig {
 
 export type PostprocessReleaseResult = Release | 'reject';
 
-export type RegistryStrategy = 'first' | 'hunt' | 'merge';
+export type RegistryStrategy =
+  /**
+   * Only the first registry URL is queried.
+   *
+   * If multiple URLs are configured a warning is logged and the rest are ignored. Returns whatever the first registry returns, including `null`.
+   */
+  | 'first'
+  /**
+   * Registries are tried in order, returning the first non-null result.
+   *
+   * `null` results and non-fatal errors (HTTP 401/403/404 and generic errors) are skipped and the next registry is tried.
+   * An `ExternalHostError` aborts immediately (unless the cause is `HOST_DISABLED`, which returns `null`).
+   *
+   * Returns `null` when all registries are exhausted without a result.
+   *
+   * The default when `registryStrategy` is `undefined`.
+   */
+  | 'hunt'
+  /**
+   * All registries are queried.
+   *
+   * Releases are merged and deduplicated by version; tags are merged with later registries' values taking precedence for duplicate keys.
+   *
+   * An `ExternalHostError` aborts immediately.
+   *
+   * Returns `null` when all registries fail.
+   */
+  | 'merge';
 export type SourceUrlSupport = 'package' | 'release' | 'none';
 export interface DatasourceApi extends ModuleApi {
   id: string;
@@ -109,9 +167,8 @@ export interface DatasourceApi extends ModuleApi {
 
   /**
    * Strategy to use when multiple registryUrls are available to the datasource.
-   * - `first`: only the first registryUrl will be tried and others ignored
-   * - `hunt`: registryUrls will be tried in order until one returns a result
-   * - `merge`: all registryUrls will be tried and the results merged if more than one returns a result
+   *
+   * @see RegistryStrategy
    */
   registryStrategy?: RegistryStrategy | undefined;
 
@@ -139,9 +196,11 @@ export interface DatasourceApi extends ModuleApi {
   sourceUrlNote?: string;
 
   /**
-   * Whether to perform caching in the datasource index/wrapper or not.
-   * true: datasoure index wrapper should cache all results (based on registryUrl/packageName)
-   * false: caching is not performed, or performed within the datasource implementation
+   * Whether to perform centralized caching in the datasource index/wrapper or not.
+   *
+   * - `true`: datasource index wrapper will cache all results (based on registryUrl/packageName)
+   *   - **Must be set only if datasource is able to determine and return `isPrivate` flag**
+   * - `false`: centralized caching is not performed, implementation still could do caching internally
    */
   caching?: boolean | undefined;
 

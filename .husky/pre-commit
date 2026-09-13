@@ -1,6 +1,9 @@
 #!/bin/sh
 
-pnpm ls-lint
+export PRETTIER_EXPERIMENTAL_CLI=1
+
+ls-lint
+lint-staged
 
 BRANCH_NAME=$(git branch --show-current)
 

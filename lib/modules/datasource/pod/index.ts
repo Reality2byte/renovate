@@ -1,14 +1,18 @@
 import crypto from 'node:crypto';
-import { HOST_DISABLED } from '../../../constants/error-messages';
-import { logger } from '../../../logger';
-import { ExternalHostError } from '../../../types/errors/external-host-error';
-import { cache } from '../../../util/cache/package/decorator';
-import type { HttpError } from '../../../util/http';
-import { GithubHttp } from '../../../util/http/github';
-import { newlineRegex, regEx } from '../../../util/regex';
-import { Datasource } from '../datasource';
-import { massageGithubUrl } from '../metadata';
-import type { GetReleasesConfig, ReleaseResult } from '../types';
+import {
+  HOST_BLOCKED,
+  HOST_DISABLED,
+} from '../../../constants/error-messages.ts';
+import { logger } from '../../../logger/index.ts';
+import { ExternalHostError } from '../../../types/errors/external-host-error.ts';
+import { withCache } from '../../../util/cache/package/with-cache.ts';
+import { GithubHttp } from '../../../util/http/github.ts';
+import type { HttpError } from '../../../util/http/index.ts';
+import { refusedHostMessage } from '../../../util/http/util.ts';
+import { newlineRegex, regEx } from '../../../util/regex.ts';
+import { Datasource } from '../datasource.ts';
+import { massageGithubUrl } from '../metadata.ts';
+import type { GetReleasesConfig, ReleaseResult } from '../types.ts';
 
 type URLFormatOptions =
   | 'withShardWithSpec'
@@ -67,8 +71,8 @@ function handleError(packageName: string, err: HttpError): void {
     logger.debug(errorData, 'Authorization error');
   } else if (statusCode === 404) {
     logger.debug(errorData, 'Package lookup error');
-  } else if (err.message === HOST_DISABLED) {
-    logger.trace(errorData, 'Host disabled');
+  } else if ([HOST_BLOCKED, HOST_DISABLED].includes(err.message)) {
+    logger.trace(errorData, refusedHostMessage(err));
   } else {
     logger.warn(errorData, 'CocoaPods lookup failure: Unknown error');
   }
@@ -109,7 +113,7 @@ export class PodDatasource extends Datasource {
     packageName: string,
   ): Promise<string | null> {
     try {
-      const resp = await this.http.get(url);
+      const resp = await this.http.getText(url);
       if (resp?.body) {
         return resp.body;
       }
@@ -125,7 +129,7 @@ export class PodDatasource extends Datasource {
     packageName: string,
   ): Promise<T | null> {
     try {
-      const resp = await this.githubHttp.getJson<T>(url);
+      const resp = await this.githubHttp.getJsonUnchecked<T>(url);
       if (resp?.body) {
         return resp.body;
       }
@@ -190,8 +194,7 @@ export class PodDatasource extends Datasource {
     const resp = await this.requestCDN(url, packageName);
     if (resp) {
       const lines = resp.split(newlineRegex);
-      for (let idx = 0; idx < lines.length; idx += 1) {
-        const line = lines[idx];
+      for (const line of lines) {
         const [name, ...versions] = line.split('/');
         if (name === packageName.replace(regEx(/\/.*$/), '')) {
           const releases = versions.map((version) => ({ version }));
@@ -202,18 +205,11 @@ export class PodDatasource extends Datasource {
     return null;
   }
 
-  @cache({
-    ttlMinutes: 30,
-    namespace: `datasource-${PodDatasource.id}`,
-    key: ({ packageName, registryUrl }: GetReleasesConfig) =>
-      // TODO: types (#22198)
-      `${registryUrl}:${packageName}`,
-  })
-  async getReleases({
+  private async _getReleases({
     packageName,
     registryUrl,
   }: GetReleasesConfig): Promise<ReleaseResult | null> {
-    // istanbul ignore if
+    /* v8 ignore next -- should never happen */
     if (!registryUrl) {
       return null;
     }
@@ -227,7 +223,9 @@ export class PodDatasource extends Datasource {
 
     let result: ReleaseResult | null = null;
     const match = githubRegex.exec(baseUrl);
-    if (match?.groups) {
+    // We would ideally have a reliable way to differentiate between
+    // a CDN URL and a Github URL, but we'll start with detecting Artifactory
+    if (match?.groups && !baseUrl.includes('/api/pods/')) {
       baseUrl = massageGithubUrl(baseUrl);
       const { hostURL, account, repo } = match.groups;
       const opts = { hostURL, account, repo };
@@ -237,5 +235,18 @@ export class PodDatasource extends Datasource {
     }
 
     return result;
+  }
+
+  getReleases(config: GetReleasesConfig): Promise<ReleaseResult | null> {
+    return withCache(
+      {
+        ttlMinutes: 30,
+        namespace: `datasource-${PodDatasource.id}`,
+        // TODO: types (#22198)
+        key: `${config.registryUrl}:${config.packageName}`,
+        fallback: true,
+      },
+      () => this._getReleases(config),
+    );
   }
 }

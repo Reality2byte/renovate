@@ -1,141 +1,143 @@
 import { DateTime } from 'luxon';
-import type { RenovateConfig } from '../../../config/types';
-import { logger } from '../../../logger';
-import type { Pr } from '../../../modules/platform';
-import { platform } from '../../../modules/platform';
-import { scm } from '../../../modules/platform/scm';
-import { ExternalHostError } from '../../../types/errors/external-host-error';
-import type { BranchConfig } from '../../types';
+import type { RenovateConfig } from '../../../config/types.ts';
+import { instrument } from '../../../instrumentation/index.ts';
+import { logger } from '../../../logger/index.ts';
+import { platform } from '../../../modules/platform/index.ts';
+import { scm } from '../../../modules/platform/scm.ts';
+import { ExternalHostError } from '../../../types/errors/external-host-error.ts';
+import { coerceArray } from '../../../util/array.ts';
+import { getCache } from '../../../util/cache/repository/index.ts';
+import { getInheritedOrGlobal } from '../../../util/common.ts';
+import type { BranchConfig } from '../../types.ts';
 
-export async function getPrHourlyRemaining(
+export async function getPrHourlyCount(
   config: RenovateConfig,
 ): Promise<number> {
-  if (config.prHourlyLimit) {
+  return await instrument('getPrHourlyCount', async () => {
     try {
-      logger.debug('Calculating hourly PRs remaining');
       const prList = await platform.getPrList();
-      const currentHourStart = DateTime.local().startOf('hour');
-      logger.debug(`currentHourStart=${String(currentHourStart)}`);
+      const currentHourStart = DateTime.utc().startOf('hour');
+      logger.debug(
+        `Calculating PRs created so far in this hour currentHourStart=${String(currentHourStart)}`,
+      );
       const soFarThisHour = prList.filter(
         (pr) =>
-          pr.sourceBranch !== config.onboardingBranch &&
+          pr.sourceBranch !== getInheritedOrGlobal('onboardingBranch') &&
           pr.sourceBranch.startsWith(config.branchPrefix!) &&
-          DateTime.fromISO(pr.createdAt!) > currentHourStart,
+          DateTime.fromISO(pr.createdAt!).toUTC() > currentHourStart,
       );
-      const prsRemaining = Math.max(
-        0,
-        config.prHourlyLimit - soFarThisHour.length,
+      logger.debug(
+        `${soFarThisHour.length} PRs have been created so far in this hour.`,
       );
-      logger.debug(`PR hourly limit remaining: ${prsRemaining}`);
-      return prsRemaining;
+      return soFarThisHour.length;
     } catch (err) {
       // istanbul ignore if
       if (err instanceof ExternalHostError) {
         throw err;
       }
       logger.error({ err }, 'Error checking PRs created per hour');
-      return config.prHourlyLimit;
+      return 0;
     }
-  }
-  return Number.MAX_SAFE_INTEGER;
+  });
 }
 
-export async function getConcurrentPrsRemaining(
+export async function getConcurrentPrsCount(
   config: RenovateConfig,
   branches: BranchConfig[],
 ): Promise<number> {
-  if (config.prConcurrentLimit) {
-    logger.debug(`Calculating prConcurrentLimit (${config.prConcurrentLimit})`);
-    try {
-      const openPrs: Pr[] = [];
-      for (const { branchName } of branches) {
-        try {
-          const pr = await platform.getBranchPr(branchName, config.baseBranch);
-          if (
-            pr &&
-            pr.sourceBranch !== config.onboardingBranch &&
-            pr.state === 'open'
-          ) {
-            openPrs.push(pr);
-          }
-        } catch (err) {
-          // istanbul ignore if
-          if (err instanceof ExternalHostError) {
-            throw err;
-          } else {
-            // no-op
-          }
+  return await instrument('getConcurrentPrsCount', async () => {
+    let openPrCount = 0;
+    for (const { branchName } of branches) {
+      try {
+        const pr = await platform.getBranchPr(branchName, config.baseBranch);
+        if (
+          pr &&
+          pr.sourceBranch !== getInheritedOrGlobal('onboardingBranch') &&
+          pr.state === 'open'
+        ) {
+          openPrCount++;
+        }
+      } catch (err) {
+        // istanbul ignore if
+        if (err instanceof ExternalHostError) {
+          throw err;
+        } else {
+          // no-op
         }
       }
-      logger.debug(`${openPrs.length} PRs are currently open`);
-      const concurrentRemaining = Math.max(
-        0,
-        config.prConcurrentLimit - openPrs.length,
-      );
-      logger.debug(`PR concurrent limit remaining: ${concurrentRemaining}`);
-      return concurrentRemaining;
-    } catch (err) /* istanbul ignore next */ {
-      logger.error({ err }, 'Error checking concurrent PRs');
-      return config.prConcurrentLimit;
     }
-  }
-  return Number.MAX_SAFE_INTEGER;
+
+    logger.debug(`${openPrCount} PRs are currently open`);
+    return openPrCount;
+  });
 }
 
-export async function getPrsRemaining(
-  config: RenovateConfig,
+export async function getCommitsHourlyCount(
   branches: BranchConfig[],
 ): Promise<number> {
-  const hourlyRemaining = await getPrHourlyRemaining(config);
-  const concurrentRemaining = await getConcurrentPrsRemaining(config, branches);
-  return Math.min(hourlyRemaining, concurrentRemaining);
-}
-
-export async function getConcurrentBranchesRemaining(
-  config: RenovateConfig,
-  branches: BranchConfig[],
-): Promise<number> {
-  const { branchConcurrentLimit, prConcurrentLimit } = config;
-  const limit =
-    typeof branchConcurrentLimit === 'number'
-      ? branchConcurrentLimit
-      : prConcurrentLimit;
-  if (typeof limit === 'number' && limit) {
-    logger.debug(`Calculating branchConcurrentLimit (${limit})`);
+  return await instrument('getCommitsHourlyCount', async () => {
     try {
-      const existingBranches: string[] = [];
-      for (const branch of branches) {
-        if (await scm.branchExists(branch.branchName)) {
-          existingBranches.push(branch.branchName);
-        }
-      }
-
-      const existingCount = existingBranches.length;
+      const currentHourStart = DateTime.utc().startOf('hour');
       logger.debug(
-        `${existingCount} already existing branches found: ${existingBranches.join()}`,
+        `Calculating commits so far in this hour currentHourStart=${String(currentHourStart)}, for ${branches.length} branches`,
       );
 
-      const concurrentRemaining = Math.max(0, limit - existingCount);
-      logger.debug(`Branch concurrent limit remaining: ${concurrentRemaining}`);
+      const cache = getCache();
+      const cachedBranches = coerceArray(cache.branches);
 
-      return concurrentRemaining;
+      // if we don't have all of our branches in our cache (for instance, if we're not using the Repository Cache, or this is the first run against a repo), we need to fall back to the SCM
+      const needsScmFallback = branches.some(
+        (branch) =>
+          !cachedBranches.find((b) => b.branchName === branch.branchName)
+            ?.commitTimestamp,
+      );
+      const fallbackUpdateDates = needsScmFallback
+        ? await scm.getAllBranchUpdateDates()
+        : {};
+
+      let soFarThisHour = 0;
+      for (const branch of branches) {
+        // First try to get from cache
+        const branchCache = cachedBranches.find(
+          (b) => b.branchName === branch.branchName,
+        );
+
+        if (branchCache?.commitTimestamp) {
+          const commitTime = DateTime.fromISO(
+            branchCache.commitTimestamp,
+          ).toUTC();
+          if (commitTime > currentHourStart) {
+            soFarThisHour++;
+          }
+        } else {
+          // Fallback to SCM if not in cache
+          const updateDate = fallbackUpdateDates[branch.branchName];
+          if (updateDate && updateDate > currentHourStart) {
+            soFarThisHour++;
+          }
+        }
+      }
+      logger.debug(`${soFarThisHour} commits so far in this hour.`);
+      return soFarThisHour;
     } catch (err) {
-      // TODO: #22198 should never throw
-      logger.error({ err }, 'Error checking concurrent branches');
-      return limit;
+      logger.error({ err }, 'Error checking commits per hour');
+      return 0;
     }
-  }
-  return Number.MAX_SAFE_INTEGER;
+  });
 }
 
-export async function getBranchesRemaining(
-  config: RenovateConfig,
+export async function getConcurrentBranchesCount(
   branches: BranchConfig[],
 ): Promise<number> {
-  const hourlyRemaining = await getPrHourlyRemaining(config);
-  const concurrentRemaining = await getConcurrentBranchesRemaining(
-    config,
-    branches,
-  );
-  return Math.min(hourlyRemaining, concurrentRemaining);
+  return await instrument('getConcurrentBranchesCount', async () => {
+    let existingBranchCount = 0;
+    for (const branch of branches) {
+      if (await scm.branchExists(branch.branchName)) {
+        existingBranchCount++;
+      }
+    }
+
+    logger.debug(`${existingBranchCount} already existing branches found.`);
+    return existingBranchCount;
+  });
 }

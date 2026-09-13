@@ -5,6 +5,7 @@
 Renovate global config can be defined via any of these methods:
 
 - Configuration file
+- Additional configuration file
 - Environment variables
 - CLI parameters
 
@@ -13,14 +14,17 @@ The above are listed in **_reverse order_** of preference. e.g. CLI values will 
 ### Default Configuration
 
 The default configuration values can be found in [lib/config/options/index.ts](../../lib/config/options/index.ts).
-Options which have `"globalOnly": true` are reserved only for bot global configuration and cannot be configured within repository config files.
+Options which have `"globalOnly": true` are reserved only for global self-hosted configuration and cannot be configured within repository config files.
 
 ### Configuration File
 
 You can override default configuration using a configuration file, with default name `config.js` in the working directory.
 If you need an alternate location or name, set it in the environment variable `RENOVATE_CONFIG_FILE`.
 
-**Note:** `RENOVATE_CONFIG_FILE` must be provided with an explicit file extension.
+You can also add one more configuration file, with an additional config which overwrites the default config file.
+To use such a file, you need to set the env var `RENOVATE_ADDITIONAL_CONFIG_FILE` as this file does not have a default name.
+
+**Note:** `RENOVATE_CONFIG_FILE` and `RENOVATE_ADDITIONAL_CONFIG_FILE` must be provided with an explicit file extension.
 For example `RENOVATE_CONFIG_FILE=myconfig.js` or `RENOVATE_CONFIG_FILE=myconfig.json` and not `RENOVATE_CONFIG_FILE=myconfig`.
 If none is provided, or the file type is invalid, Renovate will fail.
 
@@ -59,7 +63,7 @@ If you add a `renovate.json` file to the root of your repository, you can use th
 
 If you add configuration options to your `package.json` then these will override any other settings above.
 
-```json
+```json {configType=none}
 {
   "renovate": {
     "labels": ["upgrade", "bot"]

@@ -1,33 +1,38 @@
-import is from '@sindresorhus/is';
-import { lang, query as q } from 'good-enough-parser';
+import { lang, query as q } from '@renovatebot/good-enough-parser';
+import { isTruthy } from '@sindresorhus/is';
 import { quote } from 'shlex';
-import { dirname, join } from 'upath';
-import { TEMPORARY_ERROR } from '../../../constants/error-messages';
-import { logger } from '../../../logger';
-import { exec } from '../../../util/exec';
-import type { ExecOptions } from '../../../util/exec/types';
+import upath from 'upath';
+import { TEMPORARY_ERROR } from '../../../constants/error-messages.ts';
+import { logger } from '../../../logger/index.ts';
+import {
+  exec,
+  getToolSettingsOptions,
+  gradleJvmArg,
+} from '../../../util/exec/index.ts';
+import type { ExecOptions } from '../../../util/exec/types.ts';
 import {
   localPathExists,
   readLocalFile,
   writeLocalFile,
-} from '../../../util/fs';
-import { getRepoStatus } from '../../../util/git';
-import type { StatusResult } from '../../../util/git/types';
-import { Http } from '../../../util/http';
-import { newlineRegex } from '../../../util/regex';
-import { replaceAt } from '../../../util/string';
-import { updateArtifacts as gradleUpdateArtifacts } from '../gradle';
+} from '../../../util/fs/index.ts';
+import { getRepoStatus } from '../../../util/git/index.ts';
+import type { StatusResult } from '../../../util/git/types.ts';
+import { Http } from '../../../util/http/index.ts';
+import { newlineRegex, regEx } from '../../../util/regex.ts';
+import { replaceAt } from '../../../util/string.ts';
+import { isGradleExecutionAllowed } from '../gradle/artifacts.ts';
+import { updateArtifacts as gradleUpdateArtifacts } from '../gradle/index.ts';
 import type {
   UpdateArtifact,
   UpdateArtifactsConfig,
   UpdateArtifactsResult,
-} from '../types';
+} from '../types.ts';
 import {
   extraEnv,
   getJavaConstraint,
   gradleWrapperFileName,
   prepareGradleCommand,
-} from './utils';
+} from './utils.ts';
 
 const http = new Http('gradle-wrapper');
 const groovy = lang.createLang('groovy');
@@ -63,7 +68,7 @@ function getDistributionUrl(newPackageFileContent: string): string | null {
 }
 
 async function getDistributionChecksum(url: string): Promise<string> {
-  const { body } = await http.get(`${url}.sha256`);
+  const { body } = await http.getText(`${url}.sha256`);
   return body;
 }
 
@@ -71,9 +76,9 @@ export async function updateBuildFile(
   localGradleDir: string,
   wrapperProperties: Record<string, string | undefined | null>,
 ): Promise<string> {
-  let buildFileName = join(localGradleDir, 'build.gradle');
+  let buildFileName = upath.join(localGradleDir, 'build.gradle');
   if (!(await localPathExists(buildFileName))) {
-    buildFileName = join(localGradleDir, 'build.gradle.kts');
+    buildFileName = upath.join(localGradleDir, 'build.gradle.kts');
   }
 
   const buildFileContent = await readLocalFile(buildFileName, 'utf8');
@@ -138,27 +143,39 @@ export async function updateArtifacts({
 }: UpdateArtifact): Promise<UpdateArtifactsResult[] | null> {
   try {
     logger.debug({ updatedDeps }, 'gradle-wrapper.updateArtifacts()');
-    const localGradleDir = join(dirname(packageFileName), '../../');
-    const gradlewFile = join(localGradleDir, gradleWrapperFileName());
+    const localGradleDir = upath.join(upath.dirname(packageFileName), '../../');
+    const gradlewFile = upath.join(localGradleDir, gradleWrapperFileName());
 
     let cmd = await prepareGradleCommand(gradlewFile);
     if (!cmd) {
       logger.info('No gradlew found - skipping Artifacts update');
       return null;
     }
+
+    if (!isGradleExecutionAllowed(gradlewFile)) {
+      logger.trace(
+        'Not allowed to execute gradle due to allowedUnsafeExecutions - aborting update',
+      );
+
+      return null;
+    }
+
+    // Limit the Gradle daemon Java heap memory size to prevent OOM errors
+    // leading to Renovate kernel-OOMs and timeouts. See #39558
+    cmd += gradleJvmArg(getToolSettingsOptions(config.toolSettings));
     cmd += ' :wrapper';
 
     let checksum: string | null = null;
     const distributionUrl = getDistributionUrl(newPackageFileContent);
     if (distributionUrl) {
-      cmd += ` --gradle-distribution-url ${distributionUrl}`;
+      cmd += ` --gradle-distribution-url ${quote(distributionUrl)}`;
       if (newPackageFileContent.includes('distributionSha256Sum=')) {
         //update checksum in case of distributionSha256Sum in properties then run wrapper
         checksum = await getDistributionChecksum(distributionUrl);
         await writeLocalFile(
           packageFileName,
           newPackageFileContent.replace(
-            /distributionSha256Sum=.*/,
+            regEx(/distributionSha256Sum=.*/),
             `distributionSha256Sum=${checksum}`,
           ),
         );
@@ -171,7 +188,6 @@ export async function updateArtifacts({
     const execOptions: ExecOptions = {
       cwdFile: gradlewFile,
       docker: {},
-      userConfiguredEnv: config.env,
       extraEnv,
       toolConstraints: [
         {
@@ -191,7 +207,7 @@ export async function updateArtifacts({
       }
       logger.warn(
         { err },
-        'Error executing gradle wrapper update command. It can be not a critical one though.',
+        'Error executing gradle wrapper update command. This may not necessarily be a blocker to the update, so please verify with the gradle wrapper output logs.',
       );
     }
 
@@ -207,7 +223,7 @@ export async function updateArtifacts({
       packageFileName,
       buildFileName,
       ...['gradle/wrapper/gradle-wrapper.jar', 'gradlew', 'gradlew.bat'].map(
-        (filename) => join(localGradleDir, filename),
+        (filename) => upath.join(localGradleDir, filename),
       ),
     ];
     const updateArtifactsResult = (
@@ -216,7 +232,7 @@ export async function updateArtifacts({
           addIfUpdated(status, fileProjectPath),
         ),
       )
-    ).filter(is.truthy);
+    ).filter(isTruthy);
     if (lockFiles) {
       updateArtifactsResult.push(...lockFiles);
     }
@@ -231,7 +247,7 @@ export async function updateArtifacts({
     return [
       {
         artifactError: {
-          lockFile: packageFileName,
+          fileName: packageFileName,
           stderr: err.message,
         },
       },

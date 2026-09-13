@@ -1,22 +1,22 @@
-import type { GitTreeNode } from '../../git';
+import type { GitTreeNode } from '../../git.ts';
 
-export type GithubGitBase = {
+export interface GithubGitBase {
   sha: string;
   url: string;
   size: number;
-};
+}
 
 /**
  * https://docs.github.com/en/rest/reference/git#get-a-tree
  */
 export type GithubGitTreeNode = GithubGitBase & GitTreeNode;
 
-export type GithubGitTree = {
+export interface GithubGitTree {
   sha: string;
   url: string;
   tree: GithubGitTreeNode[];
   truncated: boolean;
-};
+}
 
 /**
  * https://docs.github.com/en/rest/reference/git#get-a-blob

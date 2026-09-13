@@ -1,13 +1,13 @@
-import { cache } from '../../../util/cache/package/decorator';
-import { joinUrlParts } from '../../../util/url';
-import * as glasskubeVersioning from '../../versioning/glasskube';
-import { Datasource } from '../datasource';
-import type { GetReleasesConfig, ReleaseResult } from '../types';
-import type { GlasskubePackageVersions } from './schema';
+import { coerceArray } from '../../../util/array.ts';
+import { withCache } from '../../../util/cache/package/with-cache.ts';
+import { joinUrlParts } from '../../../util/url.ts';
+import * as glasskubeVersioning from '../../versioning/glasskube/index.ts';
+import { Datasource } from '../datasource.ts';
+import type { GetReleasesConfig, ReleaseResult } from '../types.ts';
 import {
-  GlasskubePackageManifestYaml,
-  GlasskubePackageVersionsYaml,
-} from './schema';
+  GlasskubePackageManifest,
+  GlasskubePackageVersions,
+} from './schema.ts';
 
 export class GlasskubePackagesDatasource extends Datasource {
   static readonly id = 'glasskube-packages';
@@ -24,25 +24,21 @@ export class GlasskubePackagesDatasource extends Datasource {
     super(GlasskubePackagesDatasource.id);
   }
 
-  @cache({
-    namespace: `datasource-${GlasskubePackagesDatasource.id}`,
-    key: ({ registryUrl, packageName }: GetReleasesConfig) =>
-      `${registryUrl}:${packageName}`,
-  })
-  override async getReleases({
+  private async _getReleases({
     packageName,
     registryUrl,
   }: GetReleasesConfig): Promise<ReleaseResult | null> {
-    let versions: GlasskubePackageVersions;
     const result: ReleaseResult = { releases: [] };
 
-    try {
-      const response = await this.http.get(
+    const { val: versions, err: versionsErr } = await this.http
+      .getYamlSafe(
         joinUrlParts(registryUrl!, packageName, 'versions.yaml'),
-      );
-      versions = GlasskubePackageVersionsYaml.parse(response.body);
-    } catch (err) {
-      this.handleGenericErrors(err);
+        GlasskubePackageVersions,
+      )
+      .unwrap();
+
+    if (versionsErr) {
+      this.handleGenericErrors(versionsErr);
     }
 
     result.releases = versions.versions.map((it) => ({
@@ -50,27 +46,43 @@ export class GlasskubePackagesDatasource extends Datasource {
     }));
     result.tags = { latest: versions.latestVersion };
 
-    try {
-      const response = await this.http.get(
+    const { val: latestManifest, err: latestManifestErr } = await this.http
+      .getYamlSafe(
         joinUrlParts(
           registryUrl!,
           packageName,
           versions.latestVersion,
           'package.yaml',
         ),
-      );
-      const latestManifest = GlasskubePackageManifestYaml.parse(response.body);
-      for (const ref of latestManifest?.references ?? []) {
-        if (ref.label.toLowerCase() === 'github') {
-          result.sourceUrl = ref.url;
-        } else if (ref.label.toLowerCase() === 'website') {
-          result.homepage = ref.url;
-        }
+        GlasskubePackageManifest,
+      )
+      .unwrap();
+
+    if (latestManifestErr) {
+      this.handleGenericErrors(latestManifestErr);
+    }
+
+    for (const ref of coerceArray(latestManifest?.references)) {
+      if (ref.label.toLowerCase() === 'github') {
+        result.sourceUrl = ref.url;
+      } else if (ref.label.toLowerCase() === 'website') {
+        result.homepage = ref.url;
       }
-    } catch (err) {
-      this.handleGenericErrors(err);
     }
 
     return result;
+  }
+
+  override getReleases(
+    config: GetReleasesConfig,
+  ): Promise<ReleaseResult | null> {
+    return withCache(
+      {
+        namespace: `datasource-${GlasskubePackagesDatasource.id}`,
+        key: `${config.registryUrl}:${config.packageName}`,
+        fallback: true,
+      },
+      () => this._getReleases(config),
+    );
   }
 }

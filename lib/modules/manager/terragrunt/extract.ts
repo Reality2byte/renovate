@@ -1,15 +1,16 @@
-import { logger } from '../../../logger';
-import { newlineRegex, regEx } from '../../../util/regex';
-import type { PackageDependency, PackageFileContent } from '../types';
-import { analyseTerragruntModule, extractTerragruntModule } from './modules';
-import type { ExtractionResult, TerraformManagerData } from './types';
+import { logger } from '../../../logger/index.ts';
+import { newlineRegex, regEx } from '../../../util/regex.ts';
+import type { PackageDependency, PackageFileContent } from '../types.ts';
+import { analyseTerragruntModule, extractTerragruntModule } from './modules.ts';
+import type { ExtractionResult, TerraformManagerData } from './types.ts';
 import {
   checkFileContainsDependency,
   getTerragruntDependencyType,
-} from './util';
+} from './util.ts';
 
 const dependencyBlockExtractionRegex = regEx(/^\s*(?<type>[a-z_]+)\s+{\s*$/);
 const contentCheckList = ['terraform {'];
+const includeBlockCheck = regEx(/include\s*(?:".*")?\s*\{/);
 
 export function extractPackageFile(
   content: string,
@@ -17,6 +18,9 @@ export function extractPackageFile(
 ): PackageFileContent | null {
   logger.trace({ content }, `terragrunt.extractPackageFile(${packageFile!})`);
   if (!checkFileContainsDependency(content, contentCheckList)) {
+    if (content.match(includeBlockCheck)) {
+      return { deps: [] };
+    }
     return null;
   }
   let deps: PackageDependency<TerraformManagerData>[] = [];

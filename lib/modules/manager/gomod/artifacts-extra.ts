@@ -1,7 +1,8 @@
 import { diffLines } from 'diff';
-import markdownTable from 'markdown-table';
-import { parseLine } from './line-parser';
-import type { ExtraDep } from './types';
+import { markdownTable } from 'markdown-table';
+import type { UpdateArtifactsConfig } from '../types.ts';
+import { parseLine } from './line-parser.ts';
+import type { ExtraDep } from './types.ts';
 
 export function getExtraDeps(
   goModBefore: string,
@@ -26,15 +27,23 @@ export function getExtraDeps(
       continue;
     }
 
-    const { depName, currentValue } = res;
+    const { depName, depType, currentValue } = res;
     if (!depName || !currentValue) {
       continue;
     }
 
+    let expandedDepName = depName;
+    // NOTE: Right now the only special depType we care about is 'toolchain' because the table
+    // rendering prior to this change was ambiguous with regards to go version vs toolchain
+    // version updates.
+    if (depType === 'toolchain') {
+      expandedDepName = `${depName} (${depType})`;
+    }
+
     if (added) {
-      addDeps[depName] = currentValue;
+      addDeps[expandedDepName] = currentValue;
     } else {
-      rmDeps[depName] = currentValue;
+      rmDeps[expandedDepName] = currentValue;
     }
   }
 
@@ -76,6 +85,7 @@ export function getExtraDepsNotice(
   goModBefore: string | null,
   goModAfter: string | null,
   excludeDeps: string[],
+  { minimumReleaseAge }: Pick<UpdateArtifactsConfig, 'minimumReleaseAge'>,
 ): string | null {
   if (!goModBefore || !goModAfter) {
     return null;
@@ -92,7 +102,11 @@ export function getExtraDepsNotice(
   ];
 
   const goUpdated = extraDeps.some(({ depName }) => depName === 'go');
-  const otherDepsCount = extraDeps.length - (goUpdated ? 1 : 0);
+  const toolchainUpdated = extraDeps.some(
+    ({ depName }) => depName === 'go (toolchain)',
+  );
+  const otherDepsCount =
+    extraDeps.length - (goUpdated ? 1 : 0) - (toolchainUpdated ? 1 : 0);
 
   if (otherDepsCount === 1) {
     noticeLines.push(`- ${otherDepsCount} additional dependency was updated`);
@@ -105,6 +119,13 @@ export function getExtraDepsNotice(
   if (goUpdated) {
     noticeLines.push(
       '- The `go` directive was updated for compatibility reasons',
+    );
+  }
+
+  if (minimumReleaseAge) {
+    noticeLines.push('\n');
+    noticeLines.push(
+      `Due to Go's usage of [Minimal Version Selection (MVS)](https://go.dev/ref/mod#minimal-version-selection), these packages have been updated to the minimum version available, so will still abide by \`minimumReleaseAge=${minimumReleaseAge}\``,
     );
   }
 

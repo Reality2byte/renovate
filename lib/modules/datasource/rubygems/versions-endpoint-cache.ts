@@ -1,14 +1,17 @@
-import { z } from 'zod';
-import { logger } from '../../../logger';
-import { getElapsedMinutes } from '../../../util/date';
-import type { Http } from '../../../util/http';
-import { HttpError } from '../../../util/http';
-import type { HttpOptions } from '../../../util/http/types';
-import { newlineRegex } from '../../../util/regex';
-import { Result } from '../../../util/result';
-import { LooseArray } from '../../../util/schema-utils';
-import { copystr } from '../../../util/string';
-import { parseUrl } from '../../../util/url';
+import { DateTime } from 'luxon';
+import { z } from 'zod/v4';
+import { logger } from '../../../logger/index.ts';
+import { coerceArray } from '../../../util/array.ts';
+import { getElapsedMinutes } from '../../../util/date.ts';
+import type { Http } from '../../../util/http/index.ts';
+import { HttpError } from '../../../util/http/index.ts';
+import type { HttpOptions } from '../../../util/http/types.ts';
+import { newlineRegex } from '../../../util/regex.ts';
+import { Result } from '../../../util/result.ts';
+import { LooseArray } from '../../../util/schema-utils/index.ts';
+import { copystr } from '../../../util/string.ts';
+import { parseUrl } from '../../../util/url.ts';
+import type { VersionsResult } from './types.ts';
 
 type PackageVersions = Map<string, string[]>;
 
@@ -41,7 +44,7 @@ function reconcilePackageVersions(
 ): PackageVersions {
   for (const line of versionLines) {
     const packageName = copystr(line.packageName);
-    let versions = packageVersions.get(packageName) ?? [];
+    let versions = coerceArray(packageVersions.get(packageName));
 
     const { deletedVersions, addedVersions } = line;
 
@@ -70,7 +73,7 @@ function parseFullBody(body: string): VersionsEndpointResult {
     new Map<string, string[]>(),
     VersionLines.parse(body),
   );
-  const syncedAt = new Date();
+  const syncedAt = DateTime.now().toJSDate();
   const contentLength = body.length;
   const contentTail = getContentTail(body);
 
@@ -129,13 +132,12 @@ function isStale(regCache: VersionsEndpointData): boolean {
   return getElapsedMinutes(regCache.syncedAt) >= 15;
 }
 
-export type VersionsResult = Result<
-  string[],
-  'unsupported-api' | 'package-not-found'
->;
-
 export class VersionsEndpointCache {
-  constructor(private readonly http: Http) {}
+  private readonly http: Http;
+
+  constructor(http: Http) {
+    this.http = http;
+  }
 
   private cacheRequests = new Map<string, Promise<VersionsEndpointResult>>();
 
@@ -209,7 +211,7 @@ export class VersionsEndpointCache {
     try {
       const url = `${registryUrl}/versions`;
       const opts: HttpOptions = { headers: { 'Accept-Encoding': 'gzip' } };
-      const { body } = await this.http.get(url, opts);
+      const { body } = await this.http.getText(url, opts);
       return parseFullBody(body);
     } catch (err) {
       if (err instanceof HttpError && err.response?.statusCode === 404) {
@@ -233,7 +235,7 @@ export class VersionsEndpointCache {
           ['Range']: `bytes=${startByte}-`,
         },
       };
-      const { statusCode, body } = await this.http.get(url, opts);
+      const { statusCode, body } = await this.http.getText(url, opts);
 
       /**
        * Rubygems will return the full body instead of `416 Range Not Satisfiable`.
@@ -262,7 +264,7 @@ export class VersionsEndpointCache {
         oldCache.packageVersions,
         VersionLines.parse(delta),
       );
-      const syncedAt = new Date();
+      const syncedAt = DateTime.now().toJSDate();
       const contentLength = oldCache.contentLength + delta.length;
       const contentTail = getContentTail(body);
 

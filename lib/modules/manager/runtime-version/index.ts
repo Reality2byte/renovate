@@ -1,15 +1,14 @@
-import type { Category } from '../../../constants';
-import { DockerDatasource } from '../../datasource/docker';
+import type { Category } from '../../../constants/index.ts';
+import { DockerDatasource } from '../../datasource/docker/index.ts';
 
-export { extractPackageFile } from './extract';
+export { extractPackageFile } from './extract.ts';
 
-export const displayName = 'Runtime Version';
+export const displayName = 'runtime.txt';
+export const categories: Category[] = ['python'];
 
 export const defaultConfig = {
-  fileMatch: ['(^|/)runtime.txt$'],
+  managerFilePatterns: ['/(^|/)runtime.txt$/'],
   pinDigests: false,
 };
-
-export const categories: Category[] = ['python'];
 
 export const supportedDatasources = [DockerDatasource.id];

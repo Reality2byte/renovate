@@ -1,16 +1,32 @@
-import is from '@sindresorhus/is';
-import { logger } from '../../../logger';
-import { readLocalFile } from '../../../util/fs';
-import { newlineRegex, regEx } from '../../../util/regex';
-import { RubyVersionDatasource } from '../../datasource/ruby-version';
-import { RubygemsDatasource } from '../../datasource/rubygems';
-import type { PackageDependency, PackageFileContent } from '../types';
-import { delimiters, extractRubyVersion, getLockFilePath } from './common';
-import { extractLockFileEntries } from './locked-version';
+import { isString } from '@sindresorhus/is';
+import { logger } from '../../../logger/index.ts';
+import { readLocalFile } from '../../../util/fs/index.ts';
+import { newlineRegex, regEx } from '../../../util/regex.ts';
+import { isHttpUrl } from '../../../util/url.ts';
+import { GitRefsDatasource } from '../../datasource/git-refs/index.ts';
+import { RubyVersionDatasource } from '../../datasource/ruby-version/index.ts';
+import { RubygemsDatasource } from '../../datasource/rubygems/index.ts';
+import type { PackageDependency, PackageFileContent } from '../types.ts';
+import { delimiters, extractRubyVersion, getLockFilePath } from './common.ts';
+import { extractLockFileEntries } from './locked-version.ts';
 
 function formatContent(input: string): string {
-  return input.replace(regEx(/^ {2}/), '') + '\n'; //remove leading whitespace and add a new line at the end
+  return `${input.replace(regEx(/^ {2}/), '')}\n`; //remove leading whitespace and add a new line at the end
 }
+
+const variableMatchRegex = regEx(
+  `^(?<key>\\w+)\\s*=\\s*['"](?<value>[^'"]+)['"]`,
+);
+const gemMatchRegex = regEx(
+  `^\\s*gem\\s+(['"])(?<depName>[^'"]+)(['"])(\\s*,\\s*(?<currentValue>(['"])[^'"]+['"](\\s*,\\s*['"][^'"]+['"])?))?`,
+);
+const sourceMatchRegex = regEx(
+  `source:\\s*((?:['"](?<registryUrl>[^'"]+)['"])|(?<sourceName>\\w+))?`,
+);
+const gitRefsMatchRegex = regEx(
+  `((git:\\s*['"](?<gitUrl>[^'"]+)['"])|(\\s*,\\s*github:\\s*['"](?<repoName>[^'"]+)['"]))(\\s*,\\s*branch:\\s*['"](?<branchName>[^'"]+)['"])?(\\s*,\\s*ref:\\s*['"](?<refName>[^'"]+)['"])?(\\s*,\\s*tag:\\s*['"](?<tagName>[^'"]+)['"])?`,
+);
+const pathMatchRegex = regEx(`path:\\s*['"](?<path>[^'"]+)['"]`);
 
 export async function extractPackageFile(
   content: string,
@@ -20,12 +36,12 @@ export async function extractPackageFile(
   async function processGroupBlock(
     line: string,
     repositoryUrl?: string,
-    trimGroupLine: boolean = false,
+    trimGroupLine = false,
   ): Promise<void> {
-    const groupMatch = regEx(/^group\s+(.*?)\s+do/).exec(line);
+    const groupMatch = regEx(/^group\s+(?<groups>.*?)\s+do/).exec(line);
     if (groupMatch) {
-      const depTypes = groupMatch[1]
-        .split(',')
+      const depTypes = groupMatch
+        .groups!.groups.split(',')
         .map((group) => group.trim())
         .map((group) => group.replace(regEx(/^:/), ''));
 
@@ -41,7 +57,7 @@ export async function extractPackageFile(
         groupLine = lines[lineNumber];
 
         // istanbul ignore if
-        if (!is.string(groupLine)) {
+        if (!isString(groupLine)) {
           logger.debug(
             { content, packageFile, type: 'groupLine' },
             'Bundler parsing error',
@@ -62,7 +78,7 @@ export async function extractPackageFile(
               depTypes,
               managerData: {
                 lineNumber:
-                  Number(dep.managerData?.lineNumber) + groupLineNumber + 1,
+                  (dep.managerData?.lineNumber ?? NaN) + groupLineNumber + 1,
               },
             };
             if (repositoryUrl) {
@@ -78,6 +94,9 @@ export async function extractPackageFile(
     registryUrls: [],
     deps: [],
   };
+
+  const variables: Record<string, string> = {};
+
   const lines = content.split(newlineRegex);
   for (lineNumber = 0; lineNumber < lines.length; lineNumber += 1) {
     const line = lines[lineNumber];
@@ -85,12 +104,20 @@ export async function extractPackageFile(
     for (const delimiter of delimiters) {
       sourceMatch =
         sourceMatch ??
-        regEx(`^source ${delimiter}([^${delimiter}]+)${delimiter}\\s*$`).exec(
-          line,
-        );
+        regEx(
+          `^source ((${delimiter}(?<registryUrl>[^${delimiter}]+)${delimiter})|(?<sourceName>\\w+))\\s*$`,
+        ).exec(line);
     }
     if (sourceMatch) {
-      res.registryUrls?.push(sourceMatch[1]);
+      if (sourceMatch.groups?.registryUrl) {
+        res.registryUrls?.push(sourceMatch.groups.registryUrl);
+      }
+      if (sourceMatch.groups?.sourceName) {
+        const registryUrl = variables[sourceMatch.groups.sourceName];
+        if (registryUrl) {
+          res.registryUrls?.push(registryUrl);
+        }
+      }
     }
 
     const rubyMatch = extractRubyVersion(line);
@@ -103,20 +130,62 @@ export async function extractPackageFile(
       });
     }
 
-    const gemMatchRegex = regEx(
-      `^\\s*gem\\s+(['"])(?<depName>[^'"]+)(['"])(\\s*,\\s*(?<currentValue>(['"])[^'"]+['"](\\s*,\\s*['"][^'"]+['"])?))?`,
-    );
-    const gemMatch = gemMatchRegex.exec(line);
+    const variableMatch = variableMatchRegex.exec(line);
+    if (variableMatch?.groups?.key) {
+      variables[variableMatch.groups?.key] = variableMatch.groups?.value;
+    }
+
+    const gemMatch = gemMatchRegex.exec(line)?.groups;
+
     if (gemMatch) {
       const dep: PackageDependency = {
-        depName: gemMatch.groups?.depName,
+        depName: gemMatch.depName,
         managerData: { lineNumber },
+        datasource: RubygemsDatasource.id,
       };
-      if (gemMatch.groups?.currentValue) {
-        const currentValue = gemMatch.groups.currentValue;
+
+      if (gemMatch.currentValue) {
+        const currentValue = gemMatch.currentValue;
         dep.currentValue = currentValue;
       }
-      dep.datasource = RubygemsDatasource.id;
+
+      const pathMatch = pathMatchRegex.exec(line)?.groups;
+      if (pathMatch) {
+        dep.skipReason = 'internal-package';
+      }
+
+      const sourceMatch = sourceMatchRegex.exec(line)?.groups;
+      if (sourceMatch) {
+        if (sourceMatch.registryUrl) {
+          dep.registryUrls = [sourceMatch.registryUrl];
+        } else if (sourceMatch.sourceName) {
+          dep.registryUrls = [variables[sourceMatch.sourceName]];
+        }
+      }
+
+      const gitRefsMatch = gitRefsMatchRegex.exec(line)?.groups;
+      if (gitRefsMatch) {
+        if (gitRefsMatch.gitUrl) {
+          const gitUrl = gitRefsMatch.gitUrl;
+          dep.packageName = gitUrl;
+
+          if (isHttpUrl(gitUrl)) {
+            dep.sourceUrl = gitUrl.replace(regEx(/\.git$/), '');
+          }
+        } else {
+          // we always have repoName, as `gitRefsMatchRegex`'s first group requires either `gitUrl` or `repoName`
+          dep.packageName = `https://github.com/${gitRefsMatch.repoName}`;
+          dep.sourceUrl = dep.packageName;
+        }
+        if (gitRefsMatch.refName) {
+          dep.currentDigest = gitRefsMatch.refName;
+        } else if (gitRefsMatch.branchName) {
+          dep.currentValue = gitRefsMatch.branchName;
+        } else if (gitRefsMatch.tagName) {
+          dep.currentValue = gitRefsMatch.tagName;
+        }
+        dep.datasource = GitRefsDatasource.id;
+      }
       res.deps.push(dep);
     }
 
@@ -124,10 +193,19 @@ export async function extractPackageFile(
 
     for (const delimiter of delimiters) {
       const sourceBlockMatch = regEx(
-        `^source\\s+${delimiter}(.*?)${delimiter}\\s+do`,
+        `^source\\s+((${delimiter}(?<registryUrl>[^${delimiter}]+)${delimiter})|(?<sourceName>\\w+))\\s+do`,
       ).exec(line);
       if (sourceBlockMatch) {
-        const repositoryUrl = sourceBlockMatch[1];
+        let repositoryUrl = '';
+        if (sourceBlockMatch.groups?.registryUrl) {
+          repositoryUrl = sourceBlockMatch.groups.registryUrl;
+        }
+        if (
+          sourceBlockMatch.groups?.sourceName &&
+          variables[sourceBlockMatch.groups.sourceName]
+        ) {
+          repositoryUrl = variables[sourceBlockMatch.groups.sourceName];
+        }
         const sourceLineNumber = lineNumber;
         let sourceContent = '';
         let sourceLine = '';
@@ -136,7 +214,7 @@ export async function extractPackageFile(
           lineNumber += 1;
           sourceLine = lines[lineNumber];
           // istanbul ignore if
-          if (!is.string(sourceLine)) {
+          if (!isString(sourceLine)) {
             logger.debug(
               { content, packageFile, type: 'sourceLine' },
               'Bundler parsing error',
@@ -160,14 +238,14 @@ export async function extractPackageFile(
               registryUrls: [repositoryUrl],
               managerData: {
                 lineNumber:
-                  Number(dep.managerData?.lineNumber) + sourceLineNumber + 1,
+                  (dep.managerData?.lineNumber ?? NaN) + sourceLineNumber + 1,
               },
             })),
           );
         }
       }
     }
-    const platformsMatch = regEx(/^platforms\s+(.*?)\s+do/).test(line);
+    const platformsMatch = regEx(/^platforms\s+(?:.*?)\s+do/).test(line);
     if (platformsMatch) {
       const platformsLineNumber = lineNumber;
       let platformsContent = '';
@@ -176,7 +254,7 @@ export async function extractPackageFile(
         lineNumber += 1;
         platformsLine = lines[lineNumber];
         // istanbul ignore if
-        if (!is.string(platformsLine)) {
+        if (!isString(platformsLine)) {
           logger.debug(
             { content, packageFile, type: 'platformsLine' },
             'Bundler parsing error',
@@ -194,13 +272,13 @@ export async function extractPackageFile(
             ...dep,
             managerData: {
               lineNumber:
-                Number(dep.managerData?.lineNumber) + platformsLineNumber + 1,
+                (dep.managerData?.lineNumber ?? NaN) + platformsLineNumber + 1,
             },
           })),
         );
       }
     }
-    const ifMatch = regEx(/^if\s+(.*?)/).test(line);
+    const ifMatch = regEx(/^if\s+(?:.*?)/).test(line);
     if (ifMatch) {
       const ifLineNumber = lineNumber;
       let ifContent = '';
@@ -209,7 +287,7 @@ export async function extractPackageFile(
         lineNumber += 1;
         ifLine = lines[lineNumber];
         // istanbul ignore if
-        if (!is.string(ifLine)) {
+        if (!isString(ifLine)) {
           logger.debug(
             { content, packageFile, type: 'ifLine' },
             'Bundler parsing error',
@@ -227,7 +305,7 @@ export async function extractPackageFile(
             ...dep,
             managerData: {
               lineNumber:
-                Number(dep.managerData?.lineNumber) + ifLineNumber + 1,
+                (dep.managerData?.lineNumber ?? NaN) + ifLineNumber + 1,
             },
           })),
         );

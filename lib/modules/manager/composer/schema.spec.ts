@@ -1,4 +1,4 @@
-import { Repos, ReposArray, ReposRecord } from './schema';
+import { Repos, ReposArray, ReposRecord } from './schema.ts';
 
 describe('modules/manager/composer/schema', () => {
   describe('ReposRecord', () => {
@@ -78,7 +78,7 @@ describe('modules/manager/composer/schema', () => {
         pathRepos: {
           somePath: { name: 'somePath', type: 'path', url: '/some/path' },
         },
-        registryUrls: ['https://wpackagist.org', 'https://packagist.org'],
+        registryUrls: ['https://wpackagist.org', 'https://repo.packagist.org'],
         gitRepos: {
           someGit: {
             name: 'someGit',

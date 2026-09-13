@@ -1,16 +1,14 @@
-import { mock } from 'jest-mock-extended';
-import type { RenovateConfig } from '../../../test/util';
-import { partial, platform } from '../../../test/util';
-import { GlobalConfig } from '../../config/global';
-import { CONFIG_VALIDATION } from '../../constants/error-messages';
-import { logger } from '../../logger';
-import type { Pr } from '../../modules/platform';
+import { mock } from 'vitest-mock-extended';
+import type { RenovateConfig } from '~test/util.ts';
+import { partial, platform } from '~test/util.ts';
+import { GlobalConfig } from '../../config/global.ts';
+import { CONFIG_VALIDATION } from '../../constants/error-messages.ts';
+import { logger } from '../../logger/index.ts';
+import type { Pr } from '../../modules/platform/index.ts';
 import {
   raiseConfigWarningIssue,
   raiseCredentialsWarningIssue,
-} from './error-config';
-
-jest.mock('../../modules/platform');
+} from './error-config.ts';
 
 let config: RenovateConfig;
 
@@ -38,6 +36,7 @@ describe('workers/repository/error-config', () => {
       );
 
       expect(res).toBeUndefined();
+
       expect(logger.debug).toHaveBeenCalledWith(
         'Config warning issues are not created, updated or closed when mode=silent',
       );
@@ -59,11 +58,12 @@ Message: some-message
       const res = await raiseCredentialsWarningIssue(config, error);
 
       expect(res).toBeUndefined();
+
       expect(logger.warn).toHaveBeenCalledWith(
         { configError: error, res: 'created' },
         'Configuration Warning',
       );
-      expect(platform.ensureIssue).toHaveBeenCalledWith(
+      expect(platform.ensureIssue).toHaveBeenCalledExactlyOnceWith(
         expect.objectContaining({ body: expectedBody }),
       );
     });
@@ -78,6 +78,7 @@ Message: some-message
       const res = await raiseConfigWarningIssue(config, error);
 
       expect(res).toBeUndefined();
+
       expect(logger.info).toHaveBeenCalledWith(
         { configError: error },
         'DRY-RUN: Would ensure configuration error issue',
@@ -98,7 +99,7 @@ Message: some-message
       const res = await raiseConfigWarningIssue(config, error);
 
       expect(res).toBeUndefined();
-      expect(platform.updatePr).toHaveBeenCalledWith(
+      expect(platform.updatePr).toHaveBeenCalledExactlyOnceWith(
         expect.objectContaining({ prTitle: pr.title, number: pr.number }),
       );
     });
@@ -117,6 +118,7 @@ Message: some-message
       const res = await raiseConfigWarningIssue(config, error);
 
       expect(res).toBeUndefined();
+
       expect(logger.info).toHaveBeenCalledWith(
         `DRY-RUN: Would update PR #${pr.number}`,
       );
@@ -137,6 +139,7 @@ Message: some-message
       const res = await raiseConfigWarningIssue(config, error);
 
       expect(res).toBeUndefined();
+
       expect(logger.info).toHaveBeenCalledWith(
         { notificationName },
         'Configuration failure, issues will be suppressed',

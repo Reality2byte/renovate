@@ -1,5 +1,5 @@
-import { ExternalHostError } from '../../types/errors/external-host-error';
-import { Http, HttpError } from '../../util/http';
+import { ExternalHostError } from '../../types/errors/external-host-error.ts';
+import { Http, HttpError } from '../../util/http/index.ts';
 import type {
   DatasourceApi,
   DigestConfig,
@@ -10,10 +10,13 @@ import type {
   Release,
   ReleaseResult,
   SourceUrlSupport,
-} from './types';
+} from './types.ts';
 
 export abstract class Datasource implements DatasourceApi {
-  protected constructor(public readonly id: string) {
+  public readonly id: string;
+
+  protected constructor(id: string) {
+    this.id = id;
     this.http = new Http(id);
   }
 
@@ -43,10 +46,11 @@ export abstract class Datasource implements DatasourceApi {
 
   getDigest?(config: DigestConfig, newValue?: string): Promise<string | null>;
 
-  handleHttpErrors(err: HttpError): void {}
+  handleHttpErrors(_err: HttpError): void {
+    // intentionally empty
+  }
 
   protected handleGenericErrors(err: Error): never {
-    // istanbul ignore if: not easy testable with nock
     if (err instanceof ExternalHostError) {
       throw err;
     }
@@ -55,10 +59,11 @@ export abstract class Datasource implements DatasourceApi {
       this.handleHttpErrors(err);
 
       const statusCode = err.response?.statusCode;
-      if (statusCode) {
-        if (statusCode === 429 || (statusCode >= 500 && statusCode < 600)) {
-          throw new ExternalHostError(err);
-        }
+      if (
+        statusCode &&
+        (statusCode === 429 || (statusCode >= 500 && statusCode < 600))
+      ) {
+        throw new ExternalHostError(err);
       }
     }
 

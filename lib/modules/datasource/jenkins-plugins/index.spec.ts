@@ -1,11 +1,12 @@
-import { getPkgReleases } from '..';
-import * as httpMock from '../../../../test/http-mock';
-import * as versioning from '../../versioning/docker';
+import * as httpMock from '~test/http-mock.ts';
+import type { Timestamp } from '../../../util/timestamp.ts';
+import * as versioning from '../../versioning/maven/index.ts';
+import { getPkgReleases } from '../index.ts';
+import { JenkinsPluginsDatasource } from './index.ts';
 import type {
   JenkinsPluginsInfoResponse,
   JenkinsPluginsVersionsResponse,
-} from './types';
-import { JenkinsPluginsDatasource } from '.';
+} from './schema.ts';
 
 const jenkinsPluginsInfo: JenkinsPluginsInfoResponse = {
   plugins: {
@@ -31,7 +32,7 @@ const jenkinsPluginsVersions: JenkinsPluginsVersionsResponse = {
       '3.0.0': {
         version: '3.0.0',
         url: 'https://download.example.com',
-        releaseTimestamp: '2020-05-13T00:11:40.00Z',
+        releaseTimestamp: '2020-05-13T00:11:40.00Z' as Timestamp,
         requiredCore: '2.164.3',
       },
     },
@@ -62,7 +63,7 @@ describe('modules/datasource/jenkins-plugins/index', () => {
         .get('/current/update-center.actual.json')
         .reply(200, jenkinsPluginsInfo);
 
-      expect(await getPkgReleases(newparams)).toBeNull();
+      await expect(getPkgReleases(newparams)).resolves.toBeNull();
     });
 
     it('returns package releases for a hit for info and releases', async () => {
@@ -87,12 +88,12 @@ describe('modules/datasource/jenkins-plugins/index', () => {
           },
           {
             downloadUrl: 'https://download.example.com',
-            releaseTimestamp: '2020-01-02T00:00:00.000Z',
+            releaseTimestamp: '2020-01-02T00:00:00.000Z' as Timestamp,
             version: '2.0.0',
           },
           {
             downloadUrl: 'https://download.example.com',
-            releaseTimestamp: '2020-05-13T00:11:40.000Z',
+            releaseTimestamp: '2020-05-13T00:11:40.000Z' as Timestamp,
             version: '3.0.0',
           },
         ],
@@ -124,7 +125,7 @@ describe('modules/datasource/jenkins-plugins/index', () => {
         .get('/current/update-center.actual.json')
         .reply(200, {});
 
-      expect(await getPkgReleases(params)).toBeNull();
+      await expect(getPkgReleases(params)).resolves.toBeNull();
     });
 
     it('returns package releases from a custom registry', async () => {
@@ -155,12 +156,12 @@ describe('modules/datasource/jenkins-plugins/index', () => {
           },
           {
             downloadUrl: 'https://download.example.com',
-            releaseTimestamp: '2020-01-02T00:00:00.000Z',
+            releaseTimestamp: '2020-01-02T00:00:00.000Z' as Timestamp,
             version: '2.0.0',
           },
           {
             downloadUrl: 'https://download.example.com',
-            releaseTimestamp: '2020-05-13T00:11:40.000Z',
+            releaseTimestamp: '2020-05-13T00:11:40.000Z' as Timestamp,
             version: '3.0.0',
           },
         ],

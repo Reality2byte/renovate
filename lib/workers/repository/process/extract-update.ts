@@ -1,22 +1,29 @@
-import is from '@sindresorhus/is';
-import type { RenovateConfig } from '../../../config/types';
-import { logger } from '../../../logger';
-import { hashMap } from '../../../modules/manager';
-import type { PackageFile } from '../../../modules/manager/types';
-import { scm } from '../../../modules/platform/scm';
-import { getCache } from '../../../util/cache/repository';
-import type { BaseBranchCache } from '../../../util/cache/repository/types';
-import { checkGithubToken as ensureGithubToken } from '../../../util/check-token';
-import { fingerprint } from '../../../util/fingerprint';
-import type { BranchConfig } from '../../types';
-import { extractAllDependencies } from '../extract';
-import { generateFingerprintConfig } from '../extract/extract-fingerprint-config';
-import { branchifyUpgrades } from '../updates/branchify';
-import { fetchUpdates } from './fetch';
-import { sortBranches } from './sort';
-import { Vulnerabilities } from './vulnerabilities';
-import type { WriteUpdateResult } from './write';
-import { writeUpdates } from './write';
+import { isNonEmptyArray } from '@sindresorhus/is';
+import type { RenovateConfig } from '../../../config/types.ts';
+import { instrument } from '../../../instrumentation/index.ts';
+import { logger } from '../../../logger/index.ts';
+import { hashMap } from '../../../modules/manager/index.ts';
+import type { PackageFile } from '../../../modules/manager/types.ts';
+import { scm } from '../../../modules/platform/scm.ts';
+import { isNotNullOrUndefined } from '../../../util/array.ts';
+import * as memCache from '../../../util/cache/memory/index.ts';
+import { getCache } from '../../../util/cache/repository/index.ts';
+import type { BaseBranchCache } from '../../../util/cache/repository/types.ts';
+import { checkGithubToken as ensureGithubToken } from '../../../util/check-token.ts';
+import { fingerprint } from '../../../util/fingerprint.ts';
+import type { BranchConfig } from '../../types.ts';
+import { generateFingerprintConfig } from '../extract/extract-fingerprint-config.ts';
+import { extractAllDependencies } from '../extract/index.ts';
+import { branchifyUpgrades } from '../updates/branchify.ts';
+import { fetchUpdates } from './fetch.ts';
+import { calculateLibYears } from './libyear.ts';
+import { sortBranches } from './sort.ts';
+import { Vulnerabilities } from './vulnerabilities.ts';
+import type { WriteUpdateResult } from './write.ts';
+import { writeUpdates } from './write.ts';
+
+// Increment this if needing to cache bust ALL extract caches
+export const EXTRACT_CACHE_REVISION = 1;
 
 export interface ExtractResult {
   branches: BranchConfig[];
@@ -69,7 +76,23 @@ export function isCacheExtractValid(
   configHash: string,
   cachedExtract?: BaseBranchCache,
 ): boolean {
-  if (!(cachedExtract?.sha && cachedExtract.configHash)) {
+  if (!cachedExtract) {
+    return false;
+  }
+
+  if (!cachedExtract.revision) {
+    logger.debug('Cached extract is missing revision, so cannot be used');
+    return false;
+  }
+
+  if (cachedExtract.revision !== EXTRACT_CACHE_REVISION) {
+    logger.debug(
+      `Extract cache revision has changed (old=${cachedExtract.revision}, new=${EXTRACT_CACHE_REVISION})`,
+    );
+    return false;
+  }
+
+  if (!(cachedExtract.sha && cachedExtract.configHash)) {
     return false;
   }
   if (cachedExtract.sha !== baseBranchSha) {
@@ -111,17 +134,23 @@ export function isCacheExtractValid(
 
 export async function extract(
   config: RenovateConfig,
+  overwriteCache = true,
 ): Promise<Record<string, PackageFile[]>> {
   logger.debug('extract()');
   const { baseBranch } = config;
   const baseBranchSha = await scm.getBranchCommit(baseBranch!);
   let packageFiles: Record<string, PackageFile[]>;
   const cache = getCache();
-  cache.scan ||= {};
+  cache.scan ??= {};
   const cachedExtract = cache.scan[baseBranch!];
-  const configHash = fingerprint(generateFingerprintConfig(config));
+  const configHash = instrument('fingerprint', () =>
+    fingerprint(generateFingerprintConfig(config)),
+  );
   // istanbul ignore if
-  if (isCacheExtractValid(baseBranchSha!, configHash, cachedExtract)) {
+  if (
+    overwriteCache &&
+    isCacheExtractValid(baseBranchSha!, configHash, cachedExtract)
+  ) {
     packageFiles = cachedExtract.packageFiles;
     try {
       for (const files of Object.values(packageFiles)) {
@@ -136,19 +165,30 @@ export async function extract(
       logger.info({ err }, 'Error deleting cached dep updates');
     }
   } else {
-    await scm.checkoutBranch(baseBranch!);
-    const extractResult = (await extractAllDependencies(config)) || {};
+    await instrument(
+      'checkoutBranch',
+      async () => await scm.checkoutBranch(baseBranch!),
+    );
+    const extractResult = await instrument(
+      'extractAllDependencies',
+      async () => (await extractAllDependencies(config)) || {},
+    );
     packageFiles = extractResult.packageFiles;
     const { extractionFingerprints } = extractResult;
-    // TODO: fix types (#22198)
-    cache.scan[baseBranch!] = {
-      sha: baseBranchSha!,
-      configHash,
-      extractionFingerprints,
-      packageFiles,
-    };
+
+    if (overwriteCache) {
+      // TODO: fix types (#22198)
+      cache.scan[baseBranch!] = {
+        revision: EXTRACT_CACHE_REVISION,
+        sha: baseBranchSha!,
+        configHash,
+        extractionFingerprints,
+        packageFiles,
+      };
+    }
+
     // Clean up cached branch extracts
-    const baseBranches = is.nonEmptyArray(config.baseBranches)
+    const baseBranches = isNonEmptyArray(config.baseBranches)
       ? config.baseBranches
       : [baseBranch];
     Object.keys(cache.scan).forEach((branchName) => {
@@ -191,10 +231,16 @@ export async function lookup(
 ): Promise<ExtractResult> {
   await fetchVulnerabilities(config, packageFiles);
   await fetchUpdates(config, packageFiles);
+  // call this twice, as the second time, the updates will be availalbe for malicious package checks
+  // TODO: this will be refactored as part of #42423
+  await fetchVulnerabilities(config, packageFiles);
+  memCache.cleanDatasourceKeys();
+  calculateLibYears(config, packageFiles);
   const { branches, branchList } = await branchifyUpgrades(
     config,
     packageFiles,
   );
+  reportMaliciousSkippedDependencies(packageFiles);
   logger.debug(
     { baseBranch: config.baseBranch, config: packageFiles },
     'packageFiles with updates',
@@ -203,15 +249,55 @@ export async function lookup(
   return { branches, branchList, packageFiles };
 }
 
-export async function update(
-  config: RenovateConfig,
-  branches: BranchConfig[],
-): Promise<WriteUpdateResult | undefined> {
-  let res: WriteUpdateResult | undefined;
-  // istanbul ignore else
-  if (config.repoIsOnboarded) {
-    res = await writeUpdates(config, branches);
+export function reportMaliciousSkippedDependencies(
+  allPackageFiles: Record<string, PackageFile[]>,
+): void {
+  if (allPackageFiles === undefined) {
+    return;
   }
 
-  return res;
+  for (const [manager, packageFiles] of Object.entries(allPackageFiles)) {
+    for (const packageFile of packageFiles) {
+      for (const dep of packageFile.deps) {
+        if (dep.skipReason === 'malicious-version-in-use') {
+          logger.warn(
+            {
+              packageFile: packageFile.packageFile,
+              depName: dep.depName,
+              packageName: dep.packageName,
+              manager: manager,
+              datasource: dep.datasource,
+            },
+            'Dependency is currently using a malicious version',
+          );
+
+          // and make sure that it then gets updates proposed in the update phase
+          delete dep.skipReason;
+          delete dep.skipStage;
+        } else if (dep.skipReason === 'malicious-update-proposed') {
+          const newVersions = dep.updates
+            ?.map((u) => u.newVersion ?? u.newValue)
+            .filter(isNotNullOrUndefined);
+          logger.warn(
+            {
+              packageFile: packageFile.packageFile,
+              depName: dep.depName,
+              packageName: dep.packageName,
+              manager: manager,
+              datasource: dep.datasource,
+              newVersions,
+            },
+            'Dependency has update(s) proposed which would update you to a malicious version - skipping',
+          );
+        }
+      }
+    }
+  }
+}
+
+export function update(
+  config: RenovateConfig,
+  branches: BranchConfig[],
+): Promise<WriteUpdateResult> {
+  return writeUpdates(config, branches);
 }

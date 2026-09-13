@@ -1,16 +1,16 @@
 import ini from 'ini';
-import { mocked } from '../../../../test/util';
-import { GlobalConfig } from '../../../config/global';
-import * as _sanitize from '../../../util/sanitize';
+import { GlobalConfig } from '../../../config/global.ts';
+import * as _sanitize from '../../../util/sanitize.ts';
+import { defaultRegistryUrl } from './common.ts';
 import {
   convertNpmrcToRules,
   getMatchHostFromNpmrcHost,
   setNpmrc,
-} from './npmrc';
+} from './npmrc.ts';
 
-jest.mock('../../../util/sanitize');
+vi.mock('../../../util/sanitize.ts');
 
-const sanitize = mocked(_sanitize);
+const sanitize = vi.mocked(_sanitize);
 
 describe('modules/datasource/npm/npmrc', () => {
   beforeEach(() => {
@@ -32,8 +32,8 @@ describe('modules/datasource/npm/npmrc', () => {
     });
 
     it('parses https://host', () => {
-      expect(getMatchHostFromNpmrcHost('https://registry.npmjs.org')).toBe(
-        'https://registry.npmjs.org',
+      expect(getMatchHostFromNpmrcHost(defaultRegistryUrl)).toBe(
+        defaultRegistryUrl,
       );
     });
   });
@@ -173,13 +173,18 @@ describe('modules/datasource/npm/npmrc', () => {
 
   it('sanitize _auth', () => {
     setNpmrc('_auth=test');
-    expect(sanitize.addSecretForSanitizing).toHaveBeenCalledWith('test');
-    expect(sanitize.addSecretForSanitizing).toHaveBeenCalledTimes(1);
+    expect(sanitize.addSecretForSanitizing).toHaveBeenCalledExactlyOnceWith(
+      'test',
+    );
   });
 
   it('sanitize _authtoken', () => {
     setNpmrc('//registry.test.com:_authToken=test\n_authToken=${NPM_TOKEN}');
-    expect(sanitize.addSecretForSanitizing).toHaveBeenCalledWith('test');
+    expect(sanitize.addSecretForSanitizing).toHaveBeenNthCalledWith(1, 'test');
+    expect(sanitize.addSecretForSanitizing).toHaveBeenNthCalledWith(
+      2,
+      '${NPM_TOKEN}',
+    );
     expect(sanitize.addSecretForSanitizing).toHaveBeenCalledTimes(2);
   });
 
@@ -197,12 +202,13 @@ describe('modules/datasource/npm/npmrc', () => {
 
   it('sanitize _authtoken with high trust', () => {
     GlobalConfig.set({ exposeAllEnv: true });
-    process.env.TEST_TOKEN = 'test';
+    vi.stubEnv('TEST_TOKEN', 'test');
     setNpmrc(
       '//registry.test.com:_authToken=${TEST_TOKEN}\n_authToken=\nregistry=http://localhost',
     );
-    expect(sanitize.addSecretForSanitizing).toHaveBeenCalledWith('test');
-    expect(sanitize.addSecretForSanitizing).toHaveBeenCalledTimes(1);
+    expect(sanitize.addSecretForSanitizing).toHaveBeenCalledExactlyOnceWith(
+      'test',
+    );
   });
 
   it('ignores localhost', () => {

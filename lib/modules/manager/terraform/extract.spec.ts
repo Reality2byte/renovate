@@ -1,11 +1,14 @@
 import { codeBlock } from 'common-tags';
-import { join } from 'upath';
-import { Fixtures } from '../../../../test/fixtures';
-import { fs } from '../../../../test/util';
-import { GlobalConfig } from '../../../config/global';
-import type { RepoGlobalConfig } from '../../../config/types';
-import * as hashicorp from '../../versioning/hashicorp';
-import { extractPackageFile } from '.';
+import upath from 'upath';
+import { Fixtures } from '~test/fixtures.ts';
+import { fs } from '~test/util.ts';
+import { GlobalConfig } from '../../../config/global.ts';
+import type {
+  InternalGlobalConfigOptions,
+  RepoGlobalConfig,
+} from '../../../config/types.ts';
+import * as hashicorp from '../../versioning/hashicorp/index.ts';
+import { extractPackageFile } from './index.ts';
 
 const modules = Fixtures.get('modules.tf');
 const bitbucketModules = Fixtures.get('bitbucketModules.tf');
@@ -20,15 +23,15 @@ const lockedVersionLockfile = Fixtures.get('rangeStrategy.hcl');
 const terraformBlock = Fixtures.get('terraformBlock.tf');
 const tfeWorkspaceBlock = Fixtures.get('tfeWorkspace.tf');
 
-const adminConfig: RepoGlobalConfig = {
+const adminConfig: RepoGlobalConfig & InternalGlobalConfigOptions = {
   // `join` fixes Windows CI
-  localDir: join('/tmp/github/some/repo'),
-  cacheDir: join('/tmp/cache'),
-  containerbaseDir: join('/tmp/cache/containerbase'),
+  localDir: upath.join('/tmp/github/some/repo'),
+  cacheDir: upath.join('/tmp/cache'),
+  containerbaseDir: upath.join('/tmp/cache/containerbase'),
 };
 
 // auto-mock fs
-jest.mock('../../../util/fs');
+vi.mock('../../../util/fs/index.ts');
 
 describe('modules/manager/terraform/extract', () => {
   beforeEach(() => {
@@ -37,7 +40,9 @@ describe('modules/manager/terraform/extract', () => {
 
   describe('extractPackageFile()', () => {
     it('returns null for empty', async () => {
-      expect(await extractPackageFile('nothing here', '1.tf', {})).toBeNull();
+      await expect(
+        extractPackageFile('nothing here', '1.tf', {}),
+      ).resolves.toBeNull();
     });
 
     it('returns null for no deps', async () => {
@@ -48,12 +53,12 @@ describe('modules/manager/terraform/extract', () => {
         }
         `;
 
-      expect(await extractPackageFile(src, '1.tf', {})).toBeNull();
+      await expect(extractPackageFile(src, '1.tf', {})).resolves.toBeNull();
     });
 
     it('extracts  modules', async () => {
       const res = await extractPackageFile(modules, 'modules.tf', {});
-      expect(res?.deps).toHaveLength(19);
+      expect(res?.deps).toHaveLength(23);
       expect(res?.deps.filter((dep) => dep.skipReason)).toHaveLength(3);
       expect(res?.deps).toIncludeAllPartialMembers([
         {
@@ -151,6 +156,34 @@ describe('modules/manager/terraform/extract', () => {
           depName: 'github.com/tieto-cem/terraform-aws-ecs-task-definition',
           currentValue: 'v0.1.0',
           datasource: 'github-tags',
+        },
+        {
+          packageName: 'git@git.example.com:group/repo/foo',
+          currentValue: 'v1.0.0',
+          depType: 'module',
+          depName: 'git.example.com:group/repo/foo',
+          datasource: 'git-tags',
+        },
+        {
+          packageName: 'git@git.example.com:group/repo/foo',
+          currentValue: 'v1.0.0',
+          depType: 'module',
+          depName: 'git.example.com:group/repo/foo',
+          datasource: 'git-tags',
+        },
+        {
+          packageName: 'git@git.example.com:group/repo/foo',
+          currentValue: 'bar-v1.0.0',
+          depType: 'module',
+          depName: 'git.example.com:group/repo/foo',
+          datasource: 'git-tags',
+        },
+        {
+          packageName: 'git@git.example.com:group/repo/foo',
+          currentValue: 'bar-v1.0.0',
+          depType: 'module',
+          depName: 'git.example.com:group/repo/foo',
+          datasource: 'git-tags',
         },
         {
           depType: 'module',
@@ -307,6 +340,131 @@ describe('modules/manager/terraform/extract', () => {
       ]);
     });
 
+    it('resolves OCI registry aliases', async () => {
+      const src = codeBlock`
+        module "aliased_oci" {
+          source = "oci://hub.proxy.test/terraform-modules/vpc?tag=1.0.0"
+        }
+      `;
+      const res = await extractPackageFile(src, 'oci.tf', {
+        registryAliases: { 'hub.proxy.test': 'index.docker.io' },
+      });
+      expect(res?.deps).toIncludeAllPartialMembers([
+        {
+          currentValue: '1.0.0',
+          datasource: 'docker',
+          depName: 'aliased_oci',
+          depType: 'module',
+          packageName: 'index.docker.io/terraform-modules/vpc',
+        },
+      ]);
+    });
+
+    it('handles invalid OCI source URL', async () => {
+      const src = codeBlock`
+        module "bad_oci" {
+          source = "oci://not a valid url"
+        }
+      `;
+      const res = await extractPackageFile(src, 'oci.tf', {});
+      expect(res?.deps).toIncludeAllPartialMembers([
+        {
+          depName: 'bad_oci',
+          depType: 'module',
+          skipReason: 'invalid-url',
+        },
+      ]);
+    });
+
+    it('extracts OCI modules and providers', async () => {
+      const src = codeBlock`
+        module "vpc_oci" {
+          source = "oci://registry.example.com/terraform-modules/vpc?tag=1.2.3"
+        }
+
+        module "storage_oci_tagged" {
+          source = "oci://ghcr.io/terraform-modules/storage?tag=3.1.0"
+        }
+
+        module "digest_oci" {
+          source = "oci://ghcr.io/terraform-modules/pinned?digest=sha256:abc123"
+        }
+
+        module "no_version_oci" {
+          source = "oci://registry.example.com/terraform-modules/noversion"
+        }
+
+        terraform {
+          required_providers {
+            custom_oci = {
+              source = "oci://registry.example.com/providers/custom?tag=1.0.0"
+            }
+
+            tagged_oci = {
+              source = "oci://ghcr.io/providers/tagged?tag=4.2.0"
+            }
+
+            no_version_oci = {
+              source = "oci://registry.example.com/providers/noversion"
+            }
+          }
+        }
+      `;
+      const res = await extractPackageFile(src, 'oci.tf', {});
+      expect(res?.deps).toHaveLength(7);
+      expect(res?.deps).toIncludeAllPartialMembers([
+        {
+          currentValue: '1.2.3',
+          datasource: 'docker',
+          depName: 'vpc_oci',
+          depType: 'module',
+          packageName: 'registry.example.com/terraform-modules/vpc',
+        },
+        {
+          currentValue: '3.1.0',
+          datasource: 'docker',
+          depName: 'storage_oci_tagged',
+          depType: 'module',
+          packageName: 'ghcr.io/terraform-modules/storage',
+        },
+        {
+          currentDigest: 'sha256:abc123',
+          datasource: 'docker',
+          depName: 'digest_oci',
+          depType: 'module',
+          packageName: 'ghcr.io/terraform-modules/pinned',
+        },
+        {
+          datasource: 'docker',
+          depName: 'no_version_oci',
+          depType: 'module',
+          packageName: 'registry.example.com/terraform-modules/noversion',
+          skipReason: 'unspecified-version',
+        },
+        {
+          currentValue: '1.0.0',
+          datasource: 'docker',
+          depName: 'custom_oci',
+          depType: 'required_provider',
+          packageName: 'registry.example.com/providers/custom',
+        },
+        {
+          currentValue: '4.2.0',
+          datasource: 'docker',
+          depName: 'tagged_oci',
+          depType: 'required_provider',
+          packageName: 'ghcr.io/providers/tagged',
+        },
+        {
+          datasource: 'docker',
+          depName: 'no_version_oci',
+          depType: 'required_provider',
+          packageName: 'registry.example.com/providers/noversion',
+          skipReason: 'unspecified-version',
+        },
+      ]);
+    });
+
     it('extracts providers', async () => {
       const res = await extractPackageFile(providers, 'providers.tf', {});
       expect(res?.deps).toHaveLength(15);
@@ -427,7 +585,7 @@ describe('modules/manager/terraform/extract', () => {
       const res = await extractPackageFile(docker, 'docker.tf', {
         registryAliases: { 'hub.proxy.test': 'index.docker.io' },
       });
-      expect(res?.deps).toHaveLength(7);
+      expect(res?.deps).toHaveLength(8);
       expect(res?.deps.filter((dep) => dep.skipReason)).toHaveLength(3);
       expect(res?.deps).toMatchObject([
         {
@@ -456,7 +614,8 @@ describe('modules/manager/terraform/extract', () => {
             'hub.proxy.test/bitnami/nginx:{{#if newValue}}{{newValue}}{{/if}}{{#if newDigest}}@{{newDigest}}{{/if}}',
           currentValue: '1.24.0',
           datasource: 'docker',
-          depName: 'index.docker.io/bitnami/nginx',
+          depName: 'hub.proxy.test/bitnami/nginx',
+          packageName: 'index.docker.io/bitnami/nginx',
           depType: 'docker_image',
           replaceString: 'hub.proxy.test/bitnami/nginx:1.24.0',
         },
@@ -482,6 +641,18 @@ describe('modules/manager/terraform/extract', () => {
           depName: 'repo.mycompany.com:8080/foo-service',
           depType: 'docker_service',
           replaceString: 'repo.mycompany.com:8080/foo-service:v1',
+        },
+        {
+          autoReplaceStringTemplate:
+            '{{depName}}{{#if newValue}}:{{newValue}}{{/if}}{{#if newDigest}}@{{newDigest}}{{/if}}',
+          currentDigest: undefined,
+          currentValue: 'precise',
+          datasource: 'docker',
+          depName: 'ubuntu',
+          depType: 'docker_registry_image',
+          packageName: 'ubuntu',
+          replaceString: 'ubuntu:precise',
+          versioning: 'ubuntu',
         },
       ]);
     });
@@ -593,7 +764,7 @@ describe('modules/manager/terraform/extract', () => {
           source = "../fe"
         }
       `;
-      expect(await extractPackageFile(src, '2.tf', {})).toMatchObject({
+      await expect(extractPackageFile(src, '2.tf', {})).resolves.toMatchObject({
         deps: [{ skipReason: 'local' }],
       });
     });
@@ -604,7 +775,7 @@ describe('modules/manager/terraform/extract', () => {
           source = "../fe"
         }
       `;
-      expect(await extractPackageFile(src, '2.tf', {})).toBeNull();
+      await expect(extractPackageFile(src, '2.tf', {})).resolves.toBeNull();
     });
 
     it('extract helm releases', async () => {
@@ -639,6 +810,7 @@ describe('modules/manager/terraform/extract', () => {
           datasource: 'docker',
           depName: 'public.ecr.aws/karpenter/karpenter',
           depType: 'helm_release',
+          pinDigests: false,
         },
         {
           currentValue: 'v0.22.1',
@@ -646,6 +818,7 @@ describe('modules/manager/terraform/extract', () => {
           depName: 'karpenter',
           depType: 'helm_release',
           packageName: 'public.ecr.aws/karpenter/karpenter',
+          pinDigests: false,
         },
         {
           datasource: 'helm',
@@ -659,6 +832,7 @@ describe('modules/manager/terraform/extract', () => {
           depName: 'kube-prometheus',
           depType: 'helm_release',
           packageName: 'index.docker.io/bitnamicharts/kube-prometheus',
+          pinDigests: false,
         },
         {
           currentValue: '1.0.1',
@@ -672,6 +846,28 @@ describe('modules/manager/terraform/extract', () => {
           depName: 'redis',
           depType: 'helm_release',
           registryUrls: ['https://charts.helm.sh/stable'],
+        },
+      ]);
+    });
+
+    it('extracts helm releases from OCI registries with a port', async () => {
+      const src = codeBlock`
+        resource "helm_release" "redis" {
+          name       = "redis"
+          repository = "oci://registry.example.com:5000/charts"
+          chart      = "redis"
+          version    = "1.0.1"
+        }
+      `;
+      const res = await extractPackageFile(src, 'helm.tf', {});
+      expect(res?.deps).toEqual([
+        {
+          currentValue: '1.0.1',
+          datasource: 'docker',
+          depName: 'redis',
+          depType: 'helm_release',
+          packageName: 'registry.example.com:5000/charts/redis',
+          pinDigests: false,
         },
       ]);
     });

@@ -1,9 +1,10 @@
-import { query as q } from 'good-enough-parser';
-import { CpanDatasource } from '../../datasource/cpan';
-import { GithubTagsDatasource } from '../../datasource/github-tags';
-import * as perlVersioning from '../../versioning/perl';
-import type { PackageDependency } from '../types';
-import { cpanfile } from './language';
+import { query as q } from '@renovatebot/good-enough-parser';
+import { regEx } from '../../../util/regex.ts';
+import { CpanDatasource } from '../../datasource/cpan/index.ts';
+import { GithubTagsDatasource } from '../../datasource/github-tags/index.ts';
+import * as perlVersioning from '../../versioning/perl/index.ts';
+import type { PackageDependency } from '../types.ts';
+import { cpanfile } from './language.ts';
 
 interface Ctx {
   deps: PackageDependency[];
@@ -42,12 +43,16 @@ const perlVersionMatch = q
     return ctx;
   });
 
-const requirementMatch = q.sym<Ctx>(/^(?:requires|recommends|suggests)$/);
+const requirementMatch = q.sym<Ctx>(
+  regEx(/^(?:requires|recommends|suggests)$/),
+);
 
 const phasedRequiresMatch = q.sym<Ctx>(
-  /^(?:configure|build|test|author)_requires$/,
+  regEx(/^(?:configure|build|test|author)_requires$/),
   (ctx, { value: phase }) => {
-    ctx.tempPhase = phase.replace(/_requires/, '').replace(/author/, 'develop');
+    ctx.tempPhase = phase
+      .replace(regEx(/_requires/), '')
+      .replace(regEx(/author/), 'develop');
     return ctx;
   },
 );
@@ -69,7 +74,10 @@ const moduleMatch = q
     q.alt<Ctx>(q.op(','), q.op('=>')).alt(
       q.num<Ctx>((ctx, { value: currentValue }) => ({ ...ctx, currentValue })),
       q.str<Ctx>((ctx, { value }) => {
-        const currentValue = value.replace(/^(?:\s*(?:==|>=|>))?\s*v?/, '');
+        const currentValue = value.replace(
+          regEx(/^(?:\s*(?:==|>=|>))?\s*v?/),
+          '',
+        );
         return { ...ctx, currentValue };
       }),
     ),
@@ -104,7 +112,7 @@ const moduleMatch = q
     return ctx;
   });
 
-const phaseRegex = /^(?:configure|build|test|runtime|develop)/;
+const phaseRegex = regEx(/^(?:configure|build|test|runtime|develop)/);
 
 const phaseMatch = q.alt<Ctx>(
   q.sym(phaseRegex, (ctx, { value: phase }) => ({ ...ctx, phase })),

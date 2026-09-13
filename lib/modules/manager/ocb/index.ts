@@ -1,13 +1,18 @@
-import type { Category } from '../../../constants';
-import { GoDatasource } from '../../datasource/go';
+import type { Category } from '../../../constants/index.ts';
+import { GoDatasource } from '../../datasource/go/index.ts';
 
-export { extractPackageFile } from './extract';
-export { bumpPackageVersion } from './update';
+export { extractPackageFile } from './extract.ts';
+export { bumpPackageVersion } from './update.ts';
 
-export const supportedDatasources = [GoDatasource.id];
-
+export const displayName = 'OpenTelemetry Collector Builder (ocb)';
+export const url =
+  'https://github.com/open-telemetry/opentelemetry-collector/tree/main/cmd/builder';
 export const categories: Category[] = ['golang'];
 
 export const defaultConfig = {
-  fileMatch: [],
+  managerFilePatterns: [],
 };
+
+export const supportedDatasources = [GoDatasource.id];
+
+export { knownDepTypes } from './dep-types.ts';

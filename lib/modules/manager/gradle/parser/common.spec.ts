@@ -1,6 +1,6 @@
-import type { lexer } from 'good-enough-parser';
-import { partial } from '../../../../../test/util';
-import type { Ctx } from '../types';
+import type { lexer } from '@renovatebot/good-enough-parser';
+import { partial } from '~test/util.ts';
+import type { Ctx } from '../types.ts';
 import {
   cleanupTempVars,
   coalesceVariable,
@@ -13,7 +13,7 @@ import {
   storeInTokenMap,
   storeVarToken,
   stripReservedPrefixFromKeyTokens,
-} from './common';
+} from './common.ts';
 
 describe('modules/manager/gradle/parser/common', () => {
   let ctx: Ctx;
@@ -32,6 +32,7 @@ describe('modules/manager/gradle/parser/common', () => {
       varTokens: [],
       tmpKotlinImportStore: [],
       tmpNestingDepth: [],
+      tmpRegistryContent: [],
       tmpTokenStore: {},
       tokenMap: {},
     };
@@ -86,7 +87,7 @@ describe('modules/manager/gradle/parser/common', () => {
   });
 
   it('cleanupTempVars', () => {
-    ctx.tokenMap['some'] = [token];
+    ctx.tokenMap.some = [token];
     ctx.varTokens.push(token);
 
     cleanupTempVars(ctx);
@@ -139,7 +140,7 @@ describe('modules/manager/gradle/parser/common', () => {
     expect(findVariable('foo', ctx)).toStrictEqual(ctx.globalVars['test.foo']);
 
     ctx.tmpNestingDepth = [];
-    expect(findVariable('foo', ctx)).toStrictEqual(ctx.globalVars['foo']);
+    expect(findVariable('foo', ctx)).toStrictEqual(ctx.globalVars.foo);
 
     ctx.tmpKotlinImportStore = [[token, token]];
     expect(findVariable('test.foo3', ctx)).toStrictEqual(

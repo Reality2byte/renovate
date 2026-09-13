@@ -1,13 +1,13 @@
-import { logger, mocked } from '../../../../../test/util';
-import * as _cache from '../../../../util/cache/repository';
+import { logger } from '~test/util.ts';
+import * as _cache from '../../../../util/cache/repository/index.ts';
 import type {
   BranchCache,
   RepoCacheData,
-} from '../../../../util/cache/repository/types';
-import { getPrCache, setPrCache } from './pr-cache';
+} from '../../../../util/cache/repository/types.ts';
+import { getPrCache, setPrCache } from './pr-cache.ts';
 
-jest.mock('../../../../util/cache/repository');
-const cache = mocked(_cache);
+vi.mock('../../../../util/cache/repository/index.ts');
+const cache = vi.mocked(_cache);
 
 describe('workers/repository/update/pr/pr-cache', () => {
   const branchCache: BranchCache = {
@@ -52,6 +52,7 @@ describe('workers/repository/update/pr/pr-cache', () => {
     it('logs if branch not found', () => {
       cache.getCache.mockReturnValue(dummyCache);
       setPrCache('branch_1', 'fingerprint_hash', false);
+
       expect(logger.logger.debug).toHaveBeenCalledWith(
         'setPrCache(): Branch cache not present',
       );
@@ -59,7 +60,7 @@ describe('workers/repository/update/pr/pr-cache', () => {
 
     it('updates cache', () => {
       cache.getCache.mockReturnValue(dummyCache);
-      jest.useFakeTimers().setSystemTime(new Date('2020-01-01'));
+      vi.useFakeTimers().setSystemTime(new Date('2020-01-01'));
       setPrCache('branch_name', 'fingerprint_hash', true);
       expect(dummyCache).toStrictEqual({
         branches: [
@@ -87,7 +88,7 @@ describe('workers/repository/update/pr/pr-cache', () => {
         ],
       };
       cache.getCache.mockReturnValue(dummyCache);
-      jest.useFakeTimers().setSystemTime(new Date('2020-01-02'));
+      vi.useFakeTimers().setSystemTime(new Date('2020-01-02'));
       setPrCache('branch_name', 'fingerprint_hash', false);
       expect(dummyCache2).toStrictEqual({
         branches: [

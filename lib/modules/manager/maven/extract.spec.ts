@@ -1,16 +1,15 @@
 import { codeBlock } from 'common-tags';
-import { Fixtures } from '../../../../test/fixtures';
-import { fs } from '../../../../test/util';
-import { logger } from '../../../logger';
+import { Fixtures } from '~test/fixtures.ts';
+import { fs, logger } from '~test/util.ts';
 import {
   extractAllPackageFiles,
   extractExtensions,
   extractPackage,
   extractRegistries,
   resolveParents,
-} from './extract';
+} from './extract.ts';
 
-jest.mock('../../../util/fs');
+vi.mock('../../../util/fs/index.ts');
 
 const simpleContent = Fixtures.get('simple.pom.xml');
 const mirrorSettingsContent = Fixtures.get('mirror.settings.xml');
@@ -21,14 +20,14 @@ const profileSettingsContent = Fixtures.get('profile.settings.xml');
 describe('modules/manager/maven/extract', () => {
   describe('extractPackage', () => {
     it('returns null for invalid XML', () => {
-      expect(extractPackage('', 'some-file')).toBeNull();
-      expect(extractPackage('invalid xml content', 'some-file')).toBeNull();
-      expect(extractPackage('<foobar></foobar>', 'some-file')).toBeNull();
-      expect(extractPackage('<project></project>', 'some-file')).toBeNull();
+      expect(extractPackage('', 'some-file', {})).toBeNull();
+      expect(extractPackage('invalid xml content', 'some-file', {})).toBeNull();
+      expect(extractPackage('<foobar></foobar>', 'some-file', {})).toBeNull();
+      expect(extractPackage('<project></project>', 'some-file', {})).toBeNull();
     });
 
     it('extract dependencies from any XML position', () => {
-      const res = extractPackage(simpleContent, 'some-file');
+      const res = extractPackage(simpleContent, 'some-file', {});
       expect(res).toMatchObject({
         datasource: 'maven',
         deps: [
@@ -236,18 +235,23 @@ describe('modules/manager/maven/extract', () => {
     });
 
     it('extract dependencies with windows line endings', () => {
-      const logSpy = jest.spyOn(logger, 'warn');
       extractPackage(
         '<?xml version="1.0" encoding="UTF-8"?> \r\n',
         'some-file',
+        {},
       );
-      expect(logSpy).toHaveBeenCalledWith(
+
+      expect(logger.logger.warn).toHaveBeenCalledWith(
         'Your pom.xml contains windows line endings. This is not supported and may result in parsing issues.',
       );
     });
 
     it('tries minimum manifests', () => {
-      const res = extractPackage(Fixtures.get('minimum.pom.xml'), 'some-file');
+      const res = extractPackage(
+        Fixtures.get('minimum.pom.xml'),
+        'some-file',
+        {},
+      );
       expect(res).toEqual({
         datasource: 'maven',
         deps: [],
@@ -261,6 +265,7 @@ describe('modules/manager/maven/extract', () => {
       const res = extractPackage(
         Fixtures.get(`minimum_snapshot.pom.xml`),
         'some-file',
+        {},
       );
       expect(res).toEqual({
         datasource: 'maven',
@@ -270,6 +275,143 @@ describe('modules/manager/maven/extract', () => {
         packageFileVersion: '0.0.1-SNAPSHOT',
       });
     });
+
+    it('extracts builder and buildpack images from spring-boot plugin', () => {
+      const res = extractPackage(
+        Fixtures.get('full_cnb.pom.xml'),
+        'full_cnb.pom.xml',
+        {},
+      );
+      expect(res?.deps).toEqual([
+        {
+          currentValue: '3.2.2',
+          datasource: 'maven',
+          depName: 'org.springframework.boot:spring-boot-starter-parent',
+          depType: 'parent',
+          fileReplacePosition: 404,
+          registryUrls: [],
+        },
+        {
+          autoReplaceStringTemplate:
+            '{{depName}}{{#if newValue}}:{{newValue}}{{/if}}{{#if newDigest}}@{{newDigest}}{{/if}}',
+          currentValue: '0.4.316',
+          datasource: 'docker',
+          depName: 'paketobuildpacks/builder-jammy-base',
+          packageName: 'paketobuildpacks/builder-jammy-base',
+          replaceString: 'paketobuildpacks/builder-jammy-base:0.4.316',
+          fileReplacePosition: 1273,
+        },
+        {
+          autoReplaceStringTemplate:
+            '{{depName}}{{#if newValue}}:{{newValue}}{{/if}}{{#if newDigest}}@{{newDigest}}{{/if}}',
+          currentValue: '0.0.28',
+          datasource: 'docker',
+          depName: 'paketobuildpacks/run-noble-full',
+          packageName: 'paketobuildpacks/run-noble-full',
+          replaceString: 'paketobuildpacks/run-noble-full:0.0.28',
+          fileReplacePosition: 1343,
+        },
+        {
+          autoReplaceStringTemplate:
+            '{{depName}}{{#if newValue}}:{{newValue}}{{/if}}{{#if newDigest}}@{{newDigest}}{{/if}}',
+          currentValue: '6.1.1',
+          datasource: 'buildpacks-registry',
+          packageName: 'paketo-buildpacks/nodejs',
+          fileReplacePosition: 1430,
+        },
+        {
+          autoReplaceStringTemplate:
+            '{{depName}}{{#if newValue}}:{{newValue}}{{/if}}{{#if newDigest}}@{{newDigest}}{{/if}}',
+          currentValue: '1.8.0',
+          datasource: 'docker',
+          depName: 'gcr.io/paketo-buildpacks/nodejs',
+          fileReplacePosition: 1566,
+          packageName: 'gcr.io/paketo-buildpacks/nodejs',
+          replaceString: 'gcr.io/paketo-buildpacks/nodejs:1.8.0',
+        },
+        {
+          autoReplaceStringTemplate:
+            '{{depName}}{{#if newValue}}:{{newValue}}{{/if}}{{#if newDigest}}@{{newDigest}}{{/if}}',
+          currentDigest:
+            'sha256:2c27cd0b4482a4aa5aeb38104f6d934511cd87c1af34a10d1d6cdf2d9d16f138',
+          currentValue: '2.22.1',
+          datasource: 'docker',
+          depName: 'docker.io/paketobuildpacks/python',
+          fileReplacePosition: 1634,
+          packageName: 'docker.io/paketobuildpacks/python',
+          replaceString:
+            'docker.io/paketobuildpacks/python:2.22.1@sha256:2c27cd0b4482a4aa5aeb38104f6d934511cd87c1af34a10d1d6cdf2d9d16f138',
+        },
+        {
+          autoReplaceStringTemplate:
+            '{{depName}}{{#if newValue}}:{{newValue}}{{/if}}{{#if newDigest}}@{{newDigest}}{{/if}}',
+          currentDigest:
+            'sha256:080f4cfa5c8fe43837b2b83f69ae16e320ea67c051173e4934a015590b2ca67a',
+          datasource: 'docker',
+          depName: 'docker.io/paketobuildpacks/ruby',
+          fileReplacePosition: 1795,
+          packageName: 'docker.io/paketobuildpacks/ruby',
+          replaceString:
+            'docker.io/paketobuildpacks/ruby@sha256:080f4cfa5c8fe43837b2b83f69ae16e320ea67c051173e4934a015590b2ca67a',
+        },
+        {
+          autoReplaceStringTemplate:
+            '{{depName}}{{#if newValue}}:{{newValue}}{{/if}}{{#if newDigest}}@{{newDigest}}{{/if}}',
+          currentValue: '12.1.0',
+          datasource: 'docker',
+          depName: 'paketobuildpacks/java',
+          packageName: 'paketobuildpacks/java',
+          replaceString: 'paketobuildpacks/java:12.1.0',
+          fileReplacePosition: 2001,
+        },
+      ]);
+    });
+
+    it('extracts only builder if defaults are used in spring-boot plugin', () => {
+      const res = extractPackage(
+        Fixtures.get('basic_cnb.pom.xml'),
+        'basic_cnb.pom.xml',
+        {},
+      );
+      expect(res?.deps).toEqual([
+        {
+          currentValue: '3.2.2',
+          datasource: 'maven',
+          depName: 'org.springframework.boot:spring-boot-starter-parent',
+          depType: 'parent',
+          fileReplacePosition: 404,
+          registryUrls: [],
+        },
+        {
+          autoReplaceStringTemplate:
+            '{{depName}}{{#if newValue}}:{{newValue}}{{/if}}{{#if newDigest}}@{{newDigest}}{{/if}}',
+          currentValue: '0.4.316',
+          datasource: 'docker',
+          depName: 'paketobuildpacks/builder-jammy-base',
+          packageName: 'paketobuildpacks/builder-jammy-base',
+          replaceString: 'paketobuildpacks/builder-jammy-base:0.4.316',
+          fileReplacePosition: 1273,
+        },
+      ]);
+    });
+
+    it('returns no buildpack dependencies when image tag is missing in spring boot plugin configuration', () => {
+      const res = extractPackage(
+        Fixtures.get('empty_cnb.pom.xml'),
+        'empty_cnb.pom.xml',
+        {},
+      );
+      expect(res?.deps).toEqual([]);
+    });
+
+    it('returns no buildpack dependencies when dependencies are invalid in spring boot plugin', () => {
+      const res = extractPackage(
+        Fixtures.get('invalid_cnb.pom.xml'),
+        'invalid_cnb.pom.xml',
+        {},
+      );
+      expect(res?.deps).toEqual([]);
+    });
   });
 
   describe('resolveParents', () => {
@@ -277,6 +419,7 @@ describe('modules/manager/maven/extract', () => {
       const packages = extractPackage(
         Fixtures.get('recursive_props.pom.xml'),
         'some-file',
+        {},
       );
       const [{ deps }] = resolveParents([packages!]);
       expect(deps).toMatchObject([
@@ -291,6 +434,7 @@ describe('modules/manager/maven/extract', () => {
       const packages = extractPackage(
         Fixtures.get('multiple_usages_props.pom.xml'),
         'some-file',
+        {},
       );
       const [{ deps }] = resolveParents([packages!]);
       expect(deps).toMatchObject([
@@ -305,6 +449,7 @@ describe('modules/manager/maven/extract', () => {
       const packages = extractPackage(
         Fixtures.get('infinite_recursive_props.pom.xml'),
         'some-file',
+        {},
       );
       const [{ deps }] = resolveParents([packages!]);
       expect(deps).toMatchObject([
@@ -449,7 +594,7 @@ describe('modules/manager/maven/extract', () => {
       ]);
       for (const packageFile of res) {
         for (const dep of packageFile.deps) {
-          const depUrls = new Set([...dep.registryUrls!]);
+          const depUrls = new Set(dep.registryUrls);
           expect(depUrls).toStrictEqual(unorderedUrls);
         }
       }
@@ -476,7 +621,7 @@ describe('modules/manager/maven/extract', () => {
               depType: 'compile',
               editFile: 'parent.pom.xml',
               fileReplacePosition: 470,
-              groupName: 'quuxVersion',
+              sharedVariableName: 'quuxVersion',
               registryUrls: [
                 'http://example.com/',
                 'http://example.com/nexus/xyz',
@@ -697,12 +842,12 @@ describe('modules/manager/maven/extract', () => {
             {
               depName: 'org.example:quux',
               currentValue: '1.2.3.4',
-              groupName: 'quuxVersion',
+              sharedVariableName: 'quuxVersion',
             },
             {
               depName: 'org.example:quux-test',
               currentValue: '1.2.3.4',
-              groupName: 'quuxVersion',
+              sharedVariableName: 'quuxVersion',
             },
             {
               depName: 'org.example:quuz',
@@ -769,16 +914,97 @@ describe('modules/manager/maven/extract', () => {
       ]);
     });
 
+    it('should extract from pom.template.xml file', async () => {
+      fs.readLocalFile.mockResolvedValueOnce(codeBlock`
+      <?xml version="1.0" encoding="UTF-8"?>
+      <project xmlns="http://maven.apache.org/POM/4.0.0">
+        <modelVersion>4.0.0</modelVersion>
+        <groupId>org.example</groupId>
+        <artifactId>template-project</artifactId>
+        <version>1.0.0</version>
+
+        <properties>
+          <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+          <manifold.version>2021.1.12</manifold.version>
+          <scala.version>{{scala_version}}</scala.version>
+          <scala.binary.version>{{scala_binary_version}}</scala.binary.version>
+        </properties>
+
+        <dependencies>
+          <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+            <version>3.2.0</version>
+          </dependency>
+          <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>5.10.1</version>
+            <scope>test</scope>
+          </dependency>
+          <dependency>
+            <groupId>org.example</groupId>
+            <artifactId>templated-dep</artifactId>
+            <version>\${templateVersion}</version>
+          </dependency>
+          <dependency>
+            <groupId>org.scala-lang</groupId>
+            <artifactId>scala-library</artifactId>
+            <version>\${scala.version}</version>
+          </dependency>
+        </dependencies>
+      </project>
+    `);
+      const res = await extractAllPackageFiles({}, ['pom.template.xml']);
+      expect(res).toMatchObject([
+        {
+          packageFile: 'pom.template.xml',
+          deps: [
+            {
+              datasource: 'maven',
+              depName: 'org.springframework.boot:spring-boot-starter-web',
+              currentValue: '3.2.0',
+              depType: 'compile',
+              registryUrls: ['https://repo.maven.apache.org/maven2'],
+            },
+            {
+              datasource: 'maven',
+              depName: 'org.junit.jupiter:junit-jupiter',
+              currentValue: '5.10.1',
+              depType: 'test',
+              registryUrls: ['https://repo.maven.apache.org/maven2'],
+            },
+            {
+              datasource: 'maven',
+              depName: 'org.example:templated-dep',
+              currentValue: '${templateVersion}',
+              depType: 'compile',
+              skipReason: 'version-placeholder',
+              registryUrls: ['https://repo.maven.apache.org/maven2'],
+            },
+            {
+              datasource: 'maven',
+              depName: 'org.scala-lang:scala-library',
+              currentValue: '{{scala_version}}',
+              depType: 'compile',
+              skipReason: 'version-placeholder',
+              registryUrls: ['https://repo.maven.apache.org/maven2'],
+            },
+          ],
+        },
+      ]);
+    });
+
     it('should return empty array if extensions file is invalid or empty', async () => {
       fs.readLocalFile
         .mockResolvedValueOnce('')
         .mockResolvedValueOnce('invalid xml content');
-      expect(
-        await extractAllPackageFiles({}, [
+      await expect(
+        extractAllPackageFiles({}, [
           '.mvn/extensions.xml',
           'grp/.mvn/extensions.xml',
         ]),
-      ).toBeEmptyArray();
+      ).resolves.toBeEmptyArray();
     });
 
     describe('root pom handling', () => {
@@ -809,6 +1035,48 @@ describe('modules/manager/maven/extract', () => {
         ]);
         expect(res).toMatchObject([
           { packageFile: 'pom.xml', deps: [] },
+          {
+            packageFile: 'foo.bar/pom.xml',
+            deps: [{ depName: 'org.example:root', depType: 'parent-root' }],
+          },
+        ]);
+      });
+
+      it('should skip root pom.xml when it has an external parent', async () => {
+        fs.readLocalFile.mockResolvedValueOnce(codeBlock`
+          <project>
+            <modelVersion>4.0.0</modelVersion>
+            <groupId>org.example</groupId>
+            <artifactId>root</artifactId>
+            <version>1.0.0</version>
+            <parent>
+              <groupId>org.acme</groupId>
+              <artifactId>external-parent</artifactId>
+              <version>1.0.0</version>
+            </parent>
+          </project>
+        `);
+        fs.readLocalFile.mockResolvedValueOnce(codeBlock`
+          <project>
+            <parent>
+              <groupId>org.example</groupId>
+              <artifactId>root</artifactId>
+              <version>1.0.0</version>
+            </parent>
+            <modelVersion>4.0.0</modelVersion>
+            <groupId>org.example</groupId>
+            <artifactId>child</artifactId>
+          </project>
+        `);
+        const res = await extractAllPackageFiles({}, [
+          'pom.xml',
+          'foo.bar/pom.xml',
+        ]);
+        expect(res).toMatchObject([
+          {
+            packageFile: 'pom.xml',
+            deps: [{ depName: 'org.acme:external-parent', depType: 'parent' }],
+          },
           {
             packageFile: 'foo.bar/pom.xml',
             deps: [{ depName: 'org.example:root', depType: 'parent-root' }],

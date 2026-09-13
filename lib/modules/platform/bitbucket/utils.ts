@@ -1,20 +1,21 @@
-import type { MergeStrategy } from '../../../config/types';
-import type { BranchStatus } from '../../../types';
-import { getPrBodyStruct } from '../pr-body';
-import type { Pr } from '../types';
+import type { MergeStrategy } from '../../../config/types.ts';
+import type { BranchStatus } from '../../../types/index.ts';
+import { getPrBodyStruct } from '../pr-body.ts';
+import type { Pr } from '../types.ts';
 import type {
   BitbucketBranchState,
   BitbucketMergeStrategy,
   MergeRequestBody,
   PrResponse,
-} from './types';
+} from './types.ts';
 
-const bitbucketMergeStrategies: Map<MergeStrategy, BitbucketMergeStrategy> =
-  new Map([
+const bitbucketMergeStrategies = new Map<MergeStrategy, BitbucketMergeStrategy>(
+  [
     ['squash', 'squash'],
     ['merge-commit', 'merge_commit'],
     ['fast-forward', 'fast_forward'],
-  ]);
+  ],
+);
 
 export function mergeBodyTransformer(
   mergeStrategy: MergeStrategy | undefined,
@@ -52,9 +53,11 @@ export function prInfo(pr: PrResponse): Pr {
     sourceBranch: pr.source?.branch?.name,
     targetBranch: pr.destination?.branch?.name,
     title: pr.title,
+    // v8 ignore start -- TODO: add test #40625
     state: prStates.closed?.includes(pr.state)
-      ? /* istanbul ignore next */ 'closed'
+      ? 'closed'
       : pr.state?.toLowerCase(),
+    // v8 ignore stop
     createdAt: pr.created_on,
   };
 }

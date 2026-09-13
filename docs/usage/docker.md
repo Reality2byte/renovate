@@ -16,7 +16,7 @@ Renovate supports upgrading dependencies in various types of Docker definition f
 
 ## How It Works
 
-1. Renovate searches in each repository for any files matching each manager's configured `fileMatch` pattern(s)
+1. Renovate searches in each repository for any files matching each manager's configured `managerFilePatterns`
 1. Matching files are parsed, Renovate checks if the file(s) has any Docker image references (e.g. `FROM` lines in a `Dockerfile`)
 1. If the image tag in use "looks" like a version (e.g. `myimage:1`, `myimage:1.1`, `myimage:1.1.0`, `myimage:1-onbuild`) then Renovate checks the Docker registry for upgrades (e.g. from `myimage:1.1.0` to `myimage:1.2.0`)
 
@@ -110,8 +110,8 @@ We recommend you use the `major.minor.patch` tagging scheme, so change `myimage:
 This way you can see the changes in Renovate PRs.
 You can see the difference between a PR that upgrades `myimage` from `1.1.1` to `1.1.2` and a PR that changes the contents of the version you already use (`1.1.1`).
 
-By default, Renovate will upgrade `minor` and `patch` versions, so from `1.2.0` to `1.2.1`, but _not_ upgrade `major` versions.
-If you wish to enable `major` versions: add the preset `docker:enableMajor` to the `extends` array in your `renovate.json` file.
+By default, Renovate will upgrade `major`, `minor` and `patch` versions.
+If you do _not_ want `major` updates: add the preset `docker:disableMajor` to the `extends` array in your `renovate.json` file.
 
 Renovate has some Docker-specific intelligence when it comes to versions.
 For example:
@@ -135,6 +135,9 @@ For example, Renovate will offer to upgrade the following `Dockerfile` layer:
 Renovate understands [Debian release code names and rolling updates schedule](https://wiki.debian.org/DebianReleases) and will offer upgrades to the latest stable release.
 For example from `debian:bullseye` to `debian:bookworm`.
 
+Renovate also supports dated container image versions for Debian, such as `debian:bookworm-20230816` or `debian:bullseye-20220101.2`.
+These are commonly used in Debian Docker images to pin to specific snapshots.
+
 The Debian codename must be in _lowercase_.
 
 For example, Renovate will offer to upgrade the following `Dockerfile` layer:
@@ -142,6 +145,13 @@ For example, Renovate will offer to upgrade the following `Dockerfile` layer:
 ```diff
 - FROM debian:bullseye
 + FROM debian:bookworm
+```
+
+Or for dated versions:
+
+```diff
+- FROM debian:bookworm-20230816
++ FROM debian:bookworm-20230901
 ```
 
 ## Configuring/Disabling
@@ -179,13 +189,31 @@ Add all paths to ignore into the `ignorePaths` configuration field. e.g.
 }
 ```
 
-### Enable Docker major updates
+### Disable Docker major updates
 
-Add `"docker:enableMajor"` to your `extends` array.
+Add `"docker:disableMajor"` to your `extends` array.
 
 ### Disable digest pinning
 
 Add `"default:pinDigestsDisabled"` to your `extends` array.
+
+<!-- markdownlint-disable MD046 -->
+!!! note
+  This preset only sets the global default for the [digest pinning flag](./configuration-options.md#pindigests) to `false`.
+  If you have configured package rules that set `pinDigests` to `true`, those will still apply.
+  This is also the case if you use the [`docker:pinDigests` preset](./presets-docker.md#dockerpindigests), which adds a package rule that sets `pinDigests` to `true` for all packages from the docker datasource.
+
+If you want to disable the `docker:pinDigests` preset (e.g. if you want to use `config:best-practices` but not have digest pinning enabled),
+ignore the preset like this:
+
+```json
+{
+  "extends": ["config:best-practices"],
+  "ignorePresets": ["docker:pinDigests"]
+}
+```
+
+<!-- markdownlint-enable MD046 -->
 
 ### Automerge digest updates
 
@@ -197,9 +225,9 @@ If you want Renovate to commit directly to your base branch without opening a PR
 There are many different registries, and many ways to authenticate to those registries.
 We will explain how to authenticate for the most common registries.
 
-#### DockerHub
+#### Docker Hub
 
-Here is an example of configuring a default Docker username/password in `config.js`.
+Here is an example of configuring a Docker username/password for Docker Hub in `config.js`.
 The Docker Hub password is stored in a process environment variable.
 
 ```js title="config.js"
@@ -207,6 +235,7 @@ module.exports = {
   hostRules: [
     {
       hostType: 'docker',
+      matchHost: 'docker.io',
       username: '<your-username>',
       password: process.env.DOCKER_HUB_PASSWORD,
     },
@@ -300,14 +329,14 @@ Renovate will get the credentials with the [`google-auth-library`](https://www.n
 ```yaml title="Example for Workload Identity plus Renovate host rules"
 - name: authenticate to google cloud
   id: auth
-  uses: google-github-actions/auth@v2.1.7
+  uses: google-github-actions/auth@v3.0.0
   with:
     token_format: 'access_token'
     workload_identity_provider: ${{ env.WORKLOAD_IDENTITY_PROVIDER }}
     service_account: ${{ env.SERVICE_ACCOUNT }}
 
 - name: renovate
-  uses: renovatebot/github-action@v40.3.6
+  uses: renovatebot/github-action@v46.2.5
   env:
     RENOVATE_HOST_RULES: |
       [
@@ -341,7 +370,6 @@ If all your dependencies are on the Google Artifact Registry, you can base64 enc
 1. Download your JSON service account and store it on your machine. Make sure that the service account has `read` (and only `read`) permissions to your artifacts
 1. Base64 encode the service account credentials by running `cat service-account.json | base64`
 1. Add the encoded service account to your configuration file
-
    1. If you want to add it to your self-hosted configuration file:
 
       ```json
@@ -394,7 +422,6 @@ If you have dependencies on Google Container Registry (and Artifact Registry) yo
 
 1. Base64 encode the prefixed service account credentials by running `cat prefixed-service-account.json | base64`
 1. Add the prefixed and encoded service account to your configuration file
-
    1. If you want to add it to your self-hosted configuration file:
 
       ```json
@@ -478,7 +505,7 @@ Make sure to install the Google Cloud SDK into the custom image, as you need the
 For example:
 
 ```Dockerfile
-FROM renovate/renovate:38.142.5
+FROM renovate/renovate:44.52.1
 # Include the "Docker tip" which you can find here https://cloud.google.com/sdk/docs/install
 # under "Installation" for "Debian/Ubuntu"
 RUN ...
@@ -501,7 +528,7 @@ hostRules: [
 One way to give Renovate the short-lived Google Access Token is to:
 
 1. Write a script that generates a `config.js` file, with the token, in your `gitlab-ci.yml` file
-1. Run the `config.js` creation scrip just before you start Renovate
+1. Run the `config.js` creation script just before you start Renovate
 
 For example:
 

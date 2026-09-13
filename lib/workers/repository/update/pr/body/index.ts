@@ -1,19 +1,20 @@
-import type { RenovateConfig } from '../../../../../config/types';
-import type { PrDebugData } from '../../../../../modules/platform';
-import { platform } from '../../../../../modules/platform';
-import { regEx } from '../../../../../util/regex';
-import { toBase64 } from '../../../../../util/string';
-import * as template from '../../../../../util/template';
-import { joinUrlParts } from '../../../../../util/url';
-import type { BranchConfig } from '../../../../types';
-import { getDepWarningsPR, getWarnings } from '../../../errors-warnings';
-import { getChangelogs } from './changelogs';
-import { getPrConfigDescription } from './config-description';
-import { getControls } from './controls';
-import { getPrFooter } from './footer';
-import { getPrHeader } from './header';
-import { getPrExtraNotes, getPrNotes } from './notes';
-import { getPrUpdatesTable } from './updates-table';
+import type { RenovateConfig } from '../../../../../config/types.ts';
+import type { PrDebugData } from '../../../../../modules/platform/index.ts';
+import { platform } from '../../../../../modules/platform/index.ts';
+import { detectPlatform } from '../../../../../util/common.ts';
+import { regEx } from '../../../../../util/regex.ts';
+import { toBase64 } from '../../../../../util/string.ts';
+import * as template from '../../../../../util/template/index.ts';
+import { joinUrlParts } from '../../../../../util/url.ts';
+import type { BranchConfig } from '../../../../types.ts';
+import { getDepWarningsPR, getWarnings } from '../../../errors-warnings.ts';
+import { getChangelogs } from './changelogs.ts';
+import { getPrConfigDescription } from './config-description.ts';
+import { getControls } from './controls.ts';
+import { getPrFooter } from './footer.ts';
+import { getPrHeader } from './header.ts';
+import { getPrExtraNotes, getPrNotes } from './notes.ts';
+import { getPrUpdatesTable } from './updates-table.ts';
 
 function massageUpdateMetadata(config: BranchConfig): void {
   config.upgrades.forEach((upgrade) => {
@@ -26,44 +27,67 @@ function massageUpdateMetadata(config: BranchConfig): void {
     } = upgrade;
     // TODO: types (#22198)
     let depNameLinked = upgrade.depName!;
+    let newNameLinked = upgrade.newName!;
     const primaryLink = homepage ?? sourceUrl ?? dependencyUrl;
     if (primaryLink) {
       depNameLinked = `[${depNameLinked}](${primaryLink})`;
+      newNameLinked = `[${newNameLinked}](${primaryLink})`;
+    }
+
+    let sourceRootPath = 'tree/HEAD';
+    if (sourceUrl) {
+      const sourcePlatform = detectPlatform(sourceUrl);
+      if (sourcePlatform === 'bitbucket') {
+        sourceRootPath = 'src/HEAD';
+      } else if (sourcePlatform === 'bitbucket-server') {
+        sourceRootPath = 'browse';
+      }
     }
 
     const otherLinks = [];
     if (sourceUrl && (!!sourceDirectory || homepage)) {
       otherLinks.push(
-        `[source](${
-          sourceDirectory
-            ? joinUrlParts(sourceUrl, 'tree/HEAD/', sourceDirectory)
-            : sourceUrl
-        })`,
+        `[source](${getFullSourceUrl(sourceUrl, sourceRootPath, sourceDirectory)})`,
       );
     }
-    if (changelogUrl) {
-      otherLinks.push(`[changelog](${changelogUrl})`);
+    const templatedChangelogUrl = changelogUrl
+      ? template.compile(changelogUrl, upgrade, true)
+      : undefined;
+    if (templatedChangelogUrl) {
+      otherLinks.push(`[changelog](${templatedChangelogUrl})`);
     }
     if (otherLinks.length) {
       depNameLinked += ` (${otherLinks.join(', ')})`;
     }
     upgrade.depNameLinked = depNameLinked;
+    upgrade.newNameLinked = newNameLinked;
     const references: string[] = [];
     if (homepage) {
       references.push(`[homepage](${homepage})`);
     }
     if (sourceUrl) {
-      let fullUrl = sourceUrl;
-      if (sourceDirectory) {
-        fullUrl = joinUrlParts(sourceUrl, 'tree/HEAD/', sourceDirectory);
-      }
-      references.push(`[source](${fullUrl})`);
+      references.push(
+        `[source](${getFullSourceUrl(sourceUrl, sourceRootPath, sourceDirectory)})`,
+      );
     }
-    if (changelogUrl) {
-      references.push(`[changelog](${changelogUrl})`);
+    if (templatedChangelogUrl) {
+      references.push(`[changelog](${templatedChangelogUrl})`);
     }
     upgrade.references = references.join(', ');
   });
+}
+
+function getFullSourceUrl(
+  sourceUrl: string,
+  sourceRootPath: string,
+  sourceDirectory?: string,
+): string {
+  let fullUrl = sourceUrl;
+  if (sourceDirectory) {
+    fullUrl = joinUrlParts(sourceUrl, sourceRootPath, sourceDirectory);
+  }
+
+  return fullUrl;
 }
 
 interface PrBodyConfig {
@@ -74,6 +98,7 @@ interface PrBodyConfig {
 
 const rebasingRegex = regEx(/\*\*Rebasing\*\*: .*/);
 
+// TODO: `branchConfig` and `config`are the same object
 export function getPrBody(
   branchConfig: BranchConfig,
   prBodyConfig: PrBodyConfig,
@@ -108,7 +133,7 @@ export function getPrBody(
     prBody = prBody.replace(regEx(/\n\n\n+/g), '\n\n');
     const prDebugData64 = toBase64(JSON.stringify(prBodyConfig.debugData));
     prBody += `\n<!--renovate-debug:${prDebugData64}-->\n`;
-    prBody = platform.massageMarkdown(prBody);
+    prBody = platform.massageMarkdown(prBody, config.rebaseLabel);
 
     if (prBodyConfig?.rebasingNotice) {
       prBody = prBody.replace(

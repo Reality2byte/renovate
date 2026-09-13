@@ -1,9 +1,9 @@
-import type { RangeStrategy } from '../../../types/versioning';
-import { regEx } from '../../../util/regex';
-import { coerceString } from '../../../util/string';
-import { api as npm } from '../npm';
-import { api as pep440 } from '../pep440';
-import type { NewValueConfig, VersioningApi } from '../types';
+import type { RangeStrategy } from '../../../types/versioning.ts';
+import { regEx } from '../../../util/regex.ts';
+import { coerceString } from '../../../util/string.ts';
+import { api as npm } from '../npm/index.ts';
+import { api as pep440 } from '../pep440/index.ts';
+import type { NewValueConfig, VersioningApi } from '../types.ts';
 
 import {
   ascendingRange,
@@ -11,25 +11,25 @@ import {
   exactVersion,
   inclusiveBound,
   lowerBound,
+  matchVersion,
   upperBound,
   versionGroup,
-} from './pattern';
+} from './pattern.ts';
 import {
   npm2rezplus,
   padZeroes,
   pep4402rezInclusiveBound,
   rez2npm,
   rez2pep440,
-} from './transform';
+} from './transform.ts';
 
 export const id = 'rez';
 export const displayName = 'rez';
-export const urls = ['https://github.com/nerdvegas/rez'];
+export const urls = ['[Rez package manager](https://github.com/nerdvegas/rez)'];
 export const supportsRanges = true;
 export const supportedRangeStrategies: RangeStrategy[] = [
   'bump',
   'widen',
-  'pin',
   'replace',
 ];
 
@@ -125,12 +125,30 @@ function sortVersions(a: string, b: string): number {
   return npm.sortVersions(padZeroes(a), padZeroes(b));
 }
 
+function matchVersionPrecision(
+  currentValue: string,
+  newVersion: string,
+): string | null {
+  if (!matchVersion.test(currentValue) || !isVersion(newVersion)) {
+    return null;
+  }
+  const precision = currentValue.split('.').length;
+  return newVersion.split('.').slice(0, precision).join('.');
+}
+
 function getNewValue({
   currentValue,
   rangeStrategy,
   currentVersion,
   newVersion,
 }: NewValueConfig): string | null {
+  const precisionMatchedVersion = matchVersionPrecision(
+    currentValue,
+    newVersion,
+  );
+  if (precisionMatchedVersion) {
+    return precisionMatchedVersion;
+  }
   const pep440Value = pep440.getNewValue({
     currentValue: rez2pep440(currentValue),
     rangeStrategy,

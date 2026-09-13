@@ -1,44 +1,64 @@
 import type { IncomingHttpHeaders } from 'node:http';
 import type {
+  OptionsInit,
   OptionsOfBufferResponseBody,
   OptionsOfJSONResponseBody,
-  ParseJsonFunction,
+  OptionsOfTextResponseBody,
+  RequestError,
 } from 'got';
-import type { HttpCacheProvider } from './cache/types';
+import type { ZodError } from 'zod/v4';
+import type { HttpCacheProvider } from './cache/types.ts';
+import type { EmptyResultError } from './errors.ts';
 
 export type GotContextOptions = {
   authType?: string;
 } & Record<string, unknown>;
 
 // TODO: Move options to context
-export type GotOptions = GotBufferOptions | GotJSONOptions;
+export type GotOptions = GotBufferOptions | GotTextOptions | GotJSONOptions;
 export type GotBufferOptions = OptionsOfBufferResponseBody & GotExtraOptions;
+export type GotTextOptions = OptionsOfTextResponseBody & GotExtraOptions;
 export type GotJSONOptions = OptionsOfJSONResponseBody & GotExtraOptions;
 
-export type GotExtraOptions = {
+export type GotStreamOptions = OptionsInit & GotExtraOptions;
+
+/**
+ * Renovate extra options.
+ */
+export interface GotExtraOptions {
   abortOnError?: boolean;
   abortIgnoreStatusCodes?: number[];
+
   token?: string;
   hostType?: string;
   enabled?: boolean;
   memCache?: boolean;
   noAuth?: boolean;
   context?: GotContextOptions;
-};
 
-export interface RequestStats {
-  method: string;
-  url: string;
-  duration: number;
-  queueDuration: number;
-  statusCode: number;
+  /**
+   * Got request timeout, overrides got interface.
+   * Do not delete in `normalizeGotOptions`.
+   */
+  timeout?: number;
 }
+
+/**
+ * Renovate extra options that are not part of `got` options.
+ */
+export const GotExtraOptionKeys: (keyof GotExtraOptions)[] = [
+  'abortOnError',
+  'abortIgnoreStatusCodes',
+  'enabled',
+  'hostType',
+  'memCache',
+  'noAuth',
+  'token',
+];
 
 export type OutgoingHttpHeaders = Record<string, string | string[] | undefined>;
 
-export interface GraphqlVariables {
-  [k: string]: unknown;
-}
+export type GraphqlVariables = Record<string, unknown>;
 
 export interface GraphqlOptions {
   variables?: GraphqlVariables;
@@ -51,6 +71,10 @@ export interface GraphqlOptions {
   readOnly?: boolean;
 }
 
+/**
+ * Renovate http options that are partly not part of `got` options.
+ * Remember to delete these in `normalizeGotOptions` before passing to `got`.
+ */
 export interface HttpOptions {
   body?: any;
   username?: string;
@@ -69,28 +93,31 @@ export interface HttpOptions {
   memCache?: boolean;
   cacheProvider?: HttpCacheProvider;
   readOnly?: boolean;
-}
 
-export interface InternalHttpOptions extends HttpOptions {
-  json?: HttpOptions['body'];
-  responseType?: 'json' | 'buffer';
-  method?: 'get' | 'post' | 'put' | 'patch' | 'delete' | 'head';
-  parseJson?: ParseJsonFunction;
+  /**
+   * The response body becomes Renovate configuration, so an internal host must be permitted by a deliberately-scoped `allowInternal` grant rather than an implicit one - see `applyHostGuard`.
+   *
+   * Set it on any request whose response is interpreted as config, no matter which `hostType` the request is made with.
+   */
+  responseBecomesConfig?: boolean;
 }
 
 export interface HttpHeaders extends IncomingHttpHeaders {
   link?: string | undefined;
 }
 
+export type HttpMethod = 'get' | 'post' | 'put' | 'patch' | 'delete' | 'head';
+
 export interface HttpResponse<T = string> {
   statusCode: number;
   body: T;
   headers: HttpHeaders;
   authorization?: boolean;
+  cached?: boolean;
 }
 
 export type Task<T> = () => Promise<T>;
-export type GotTask<T> = Task<HttpResponse<T>>;
+export type GotTask<T = unknown> = Task<HttpResponse<T>>;
 
 export interface ThrottleLimitRule {
   matchHost: string;
@@ -101,3 +128,5 @@ export interface ConcurrencyLimitRule {
   matchHost: string;
   concurrency: number;
 }
+
+export type SafeJsonError = RequestError | ZodError | EmptyResultError;

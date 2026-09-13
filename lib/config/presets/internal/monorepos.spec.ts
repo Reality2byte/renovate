@@ -1,4 +1,5 @@
-import { presets } from './monorepos';
+import { regEx } from '../../../util/regex.ts';
+import { presets } from './monorepos.preset.ts';
 
 const todo = new Set([
   'arcus.background-jobs',
@@ -12,7 +13,6 @@ const todo = new Set([
   'azure azure-libraries-for-net',
   'azure azure-sdk-for-net',
   'azure azure-storage-net',
-  'Hangfire',
   'system.io.abstractions',
   'vaadinWebComponents',
 ]);
@@ -20,7 +20,7 @@ const todo = new Set([
 describe('config/presets/internal/monorepos', () => {
   it('presets should have right name', () => {
     for (const name of Object.keys(presets).filter((name) => !todo.has(name))) {
-      expect(name).toMatch(/^[a-z0-9-]+$/);
+      expect(name).toMatch(regEx(/^[a-z0-9-]+$/));
     }
   });
 });

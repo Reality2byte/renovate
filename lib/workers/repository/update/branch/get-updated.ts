@@ -1,21 +1,21 @@
-/* eslint-disable @typescript-eslint/no-unnecessary-type-assertion */
-import is from '@sindresorhus/is';
-import { WORKER_FILE_UPDATE_FAILED } from '../../../../constants/error-messages';
-import { logger } from '../../../../logger';
-import { get } from '../../../../modules/manager';
+import { isNonEmptyArray } from '@sindresorhus/is';
+import { GlobalConfig } from '../../../../config/global.ts';
+import { WORKER_FILE_UPDATE_FAILED } from '../../../../constants/error-messages.ts';
+import { logger } from '../../../../logger/index.ts';
+import { extractPackageFile, get } from '../../../../modules/manager/index.ts';
 import type {
   ArtifactError,
   ArtifactNotice,
-  PackageDependency,
   PackageFile,
   UpdateArtifact,
+  UpdateArtifactsConfig,
   UpdateArtifactsResult,
-} from '../../../../modules/manager/types';
-import { getFile } from '../../../../util/git';
-import type { FileAddition, FileChange } from '../../../../util/git/types';
-import { coerceString } from '../../../../util/string';
-import type { BranchConfig } from '../../../types';
-import { doAutoReplace } from './auto-replace';
+} from '../../../../modules/manager/types.ts';
+import { getFile } from '../../../../util/git/index.ts';
+import type { FileAddition, FileChange } from '../../../../util/git/types.ts';
+import { coerceString } from '../../../../util/string.ts';
+import type { BranchConfig, BranchUpgradeConfig } from '../../../types.ts';
+import { doAutoReplace } from './auto-replace.ts';
 
 export interface PackageFilesResult {
   artifactErrors: ArtifactError[];
@@ -103,11 +103,11 @@ export async function getUpdatedPackageFiles(
   let updatedFileContents: Record<string, string> = {};
   const nonUpdatedFileContents: Record<string, string> = {};
   const managerPackageFiles: Record<string, Set<string>> = {};
-  const packageFileUpdatedDeps: Record<string, PackageDependency[]> = {};
+  const packageFileUpdatedDeps: Record<string, BranchUpgradeConfig[]> = {};
   const lockFileMaintenanceFiles: string[] = [];
   let firstUpdate = true;
   for (const upgrade of config.upgrades) {
-    const manager = upgrade.manager!;
+    const manager = upgrade.manager;
     const packageFile = upgrade.packageFile!;
     const depName = upgrade.depName!;
     // TODO: fix types, can be undefined (#22198)
@@ -231,7 +231,6 @@ export async function getUpdatedPackageFiles(
         }
       }
     } else {
-      const bumpPackageVersion = get(manager, 'bumpPackageVersion');
       const updateDependency = get(manager, 'updateDependency');
       if (!updateDependency) {
         let res = await doAutoReplace(
@@ -242,19 +241,7 @@ export async function getUpdatedPackageFiles(
         );
         firstUpdate = false;
         if (res) {
-          if (
-            bumpPackageVersion &&
-            upgrade.bumpVersion &&
-            upgrade.packageFileVersion
-          ) {
-            const { bumpedContent } = await bumpPackageVersion(
-              res,
-              upgrade.packageFileVersion,
-              upgrade.bumpVersion,
-              packageFile,
-            );
-            res = bumpedContent;
-          }
+          res = await applyManagerBumpPackageVersion(res, upgrade);
           if (res === packageFileContent) {
             logger.debug({ packageFile, depName }, 'No content changed');
           } else {
@@ -273,23 +260,11 @@ export async function getUpdatedPackageFiles(
         throw new Error(WORKER_FILE_UPDATE_FAILED);
       }
       let newContent = await updateDependency({
+        packageFile,
         fileContent: packageFileContent!,
         upgrade,
       });
-      if (
-        newContent &&
-        bumpPackageVersion &&
-        upgrade.bumpVersion &&
-        upgrade.packageFileVersion
-      ) {
-        const { bumpedContent } = await bumpPackageVersion(
-          newContent,
-          upgrade.packageFileVersion,
-          upgrade.bumpVersion,
-          packageFile,
-        );
-        newContent = bumpedContent;
-      }
+      newContent = await applyManagerBumpPackageVersion(newContent, upgrade);
       if (!newContent) {
         if (reuseExistingBranch) {
           logger.debug(
@@ -309,7 +284,7 @@ export async function getUpdatedPackageFiles(
       }
       if (newContent !== packageFileContent) {
         if (reuseExistingBranch) {
-          // This ensure it's always 1 commit from the bot
+          // This ensure it's always 1 commit from Renovate
           logger.debug(
             { packageFile, depName },
             'Need to update package file so will rebase first',
@@ -325,11 +300,12 @@ export async function getUpdatedPackageFiles(
         updatedFileContents[packageFile] = newContent;
         delete nonUpdatedFileContents[packageFile];
       }
-      if (newContent === packageFileContent) {
-        if (upgrade.manager === 'git-submodules') {
-          updatedFileContents[packageFile] = newContent;
-          delete nonUpdatedFileContents[packageFile];
-        }
+      if (
+        newContent === packageFileContent &&
+        upgrade.manager === 'git-submodules'
+      ) {
+        updatedFileContents[packageFile] = newContent;
+        delete nonUpdatedFileContents[packageFile];
       }
     }
   }
@@ -343,7 +319,7 @@ export async function getUpdatedPackageFiles(
   const updatedArtifacts: FileChange[] = [];
   const artifactErrors: ArtifactError[] = [];
   const artifactNotices: ArtifactNotice[] = [];
-  if (is.nonEmptyArray(updatedPackageFiles)) {
+  if (isNonEmptyArray(updatedPackageFiles)) {
     logger.debug('updateArtifacts for updatedPackageFiles');
     const updatedPackageFileManagers = getManagersForPackageFiles(
       updatedPackageFiles,
@@ -374,6 +350,16 @@ export async function getUpdatedPackageFiles(
           artifactErrors,
           artifactNotices,
         );
+        if (isNonEmptyArray(results)) {
+          await checkForPendingVersions(
+            manager,
+            packageFile.path,
+            packageFile.contents!.toString(),
+            updatedDeps,
+            artifactErrors,
+            config,
+          );
+        }
       }
     }
   }
@@ -384,7 +370,7 @@ export async function getUpdatedPackageFiles(
     path: name,
     contents: nonUpdatedFileContents[name],
   }));
-  if (is.nonEmptyArray(nonUpdatedPackageFiles)) {
+  if (isNonEmptyArray(nonUpdatedPackageFiles)) {
     logger.debug('updateArtifacts for nonUpdatedPackageFiles');
     const nonUpdatedPackageFileManagers = getManagersForPackageFiles(
       nonUpdatedPackageFiles,
@@ -415,8 +401,16 @@ export async function getUpdatedPackageFiles(
           artifactErrors,
           artifactNotices,
         );
-        if (is.nonEmptyArray(results)) {
+        if (isNonEmptyArray(results)) {
           updatedPackageFiles.push(packageFile);
+          await checkForPendingVersions(
+            manager,
+            packageFile.path,
+            packageFile.contents!.toString(),
+            updatedDeps,
+            artifactErrors,
+            config,
+          );
         }
       }
     }
@@ -427,7 +421,7 @@ export async function getUpdatedPackageFiles(
         path: name,
       }));
     // Only perform lock file maintenance if it's a fresh commit
-    if (is.nonEmptyArray(lockFileMaintenanceFiles)) {
+    if (isNonEmptyArray(lockFileMaintenanceFiles)) {
       logger.debug('updateArtifacts for lockFileMaintenanceFiles');
       const lockFileMaintenanceManagers = getManagersForPackageFiles(
         lockFileMaintenancePackageFiles,
@@ -477,19 +471,17 @@ function patchConfigForArtifactsUpdate(
   config: BranchConfig,
   manager: string,
   packageFileName: string,
-): BranchConfig {
+): UpdateArtifactsConfig {
+  // drop any lockFiles that happen to be defined on the branch config
   const updatedConfig = { ...config };
-  if (is.nonEmptyArray(updatedConfig.packageFiles?.[manager])) {
+  delete updatedConfig.lockFiles;
+  if (isNonEmptyArray(updatedConfig.packageFiles?.[manager])) {
     const managerPackageFiles: PackageFile[] =
       updatedConfig.packageFiles?.[manager];
     const packageFile = managerPackageFiles.find(
       (p) => p.packageFile === packageFileName,
     );
-    if (
-      packageFile &&
-      is.nonEmptyArray(updatedConfig.lockFiles) &&
-      is.nonEmptyArray(packageFile.lockFiles)
-    ) {
+    if (packageFile && isNonEmptyArray(packageFile.lockFiles)) {
       updatedConfig.lockFiles = packageFile.lockFiles;
     }
   }
@@ -501,10 +493,19 @@ async function managerUpdateArtifacts(
   updateArtifact: UpdateArtifact,
 ): Promise<UpdateArtifactsResult[] | null> {
   const updateArtifacts = get(manager, 'updateArtifacts');
-  if (updateArtifacts) {
-    return await updateArtifacts(updateArtifact);
+  if (!updateArtifacts) {
+    return null;
   }
-  return null;
+
+  if (updateArtifact.config.skipArtifactsUpdate) {
+    logger.debug(
+      { manager, packageFileName: updateArtifact.packageFileName },
+      'Skipping artifact update',
+    );
+    return null;
+  }
+
+  return await updateArtifacts(updateArtifact);
 }
 
 function processUpdateArtifactResults(
@@ -513,7 +514,7 @@ function processUpdateArtifactResults(
   artifactErrors: ArtifactError[],
   artifactNotices: ArtifactNotice[],
 ): void {
-  if (is.nonEmptyArray(results)) {
+  if (isNonEmptyArray(results)) {
     for (const res of results) {
       const { file, notice, artifactError } = res;
       if (file) {
@@ -529,4 +530,164 @@ function processUpdateArtifactResults(
       }
     }
   }
+}
+
+/**
+ * When using Minimum Release Age, and a package manager that doesn't support being told an explicit version to update to (#41624) it is possible that an artifact update leads to a different version of a dependency being used compared to what Renovate is expecting.
+ *
+ * We should report these cases more explicitly with an Artifact Error, to allow the reviewers to decide what to do with the changes.
+ */
+async function checkForPendingVersions(
+  manager: string,
+  packageFileName: string,
+  packageFileContent: string,
+  updatedDeps: BranchUpgradeConfig[],
+  artifactErrors: ArtifactError[],
+  config: BranchConfig,
+): Promise<void> {
+  const depNameToUpgradeInfo = new Map<
+    string,
+    {
+      pendingVersions: Set<string>;
+      newVersion: string | undefined;
+    }
+  >();
+  for (const dep of updatedDeps) {
+    if (dep.depName && isNonEmptyArray(dep.pendingVersions)) {
+      depNameToUpgradeInfo.set(dep.depName, {
+        pendingVersions: new Set(dep.pendingVersions),
+        newVersion: dep.newVersion,
+      });
+    }
+  }
+  if (!depNameToUpgradeInfo.size) {
+    return;
+  }
+
+  const extracted = await extractPackageFile(
+    manager,
+    packageFileContent,
+    packageFileName,
+    config,
+  );
+  if (!extracted) {
+    logger.warn(
+      { packageFile: packageFileName, manager },
+      'Could not re-extract the packageFile after updating it',
+    );
+    return;
+  }
+
+  for (const dep of extracted.deps) {
+    const depName = dep.depName ?? dep.packageName;
+    // shouldn't ever happen
+    if (!depName) {
+      logger.error(
+        {
+          packageFile: packageFileName,
+          manager,
+          branchName: config.branchName,
+          depName: dep.depName,
+        },
+        'No depName found after updating package file',
+      );
+      throw new Error(WORKER_FILE_UPDATE_FAILED);
+    }
+
+    const upgradeInfo = depNameToUpgradeInfo.get(depName);
+    if (!upgradeInfo) {
+      continue;
+    }
+    const resolvedVersion =
+      dep.lockedVersion ??
+      dep.newVersion ??
+      dep.currentVersion ??
+      dep.currentValue;
+    if (!resolvedVersion) {
+      logger.warn(
+        {
+          packageFile: packageFileName,
+          manager,
+          branchName: config.branchName,
+          depName,
+        },
+        'Could not determine resolved version after updating package file; skipping pending-version check',
+      );
+      continue;
+    }
+
+    if (resolvedVersion && upgradeInfo.pendingVersions.has(resolvedVersion)) {
+      const expectedVersion = upgradeInfo.newVersion;
+      /* v8 ignore next if -- should not happen */
+      if (!expectedVersion) {
+        logger.error(
+          {
+            packageFile: packageFileName,
+            manager,
+            branchName: config.branchName,
+            depName,
+            newVersion: resolvedVersion,
+            expectedVersion,
+          },
+          'No expectedVersion found after updating package file',
+        );
+        continue;
+      }
+
+      if (config.minimumReleaseAgeBehaviour === 'timestamp-optional') {
+        logger.once.warn(
+          {
+            packageFileName,
+            depName,
+            expectedVersion,
+            resolvedVersion,
+          },
+          "Artifact error would be reported due to a pending version in use which hasn't passed Minimum Release Age, but as we're running with minimumReleaseAgeBehaviour=timestamp-optional, proceeding. See debug logs for more information",
+        );
+        continue;
+      }
+
+      logger.debug(
+        {
+          packageFileName,
+          depName,
+          expectedVersion,
+          resolvedVersion,
+        },
+        'Artifact update introduced a pending version',
+      );
+      let stderr = `Artifact update for ${depName} resolved to version ${resolvedVersion}, which is a pending version that has not yet passed the Minimum Release Age threshold.`;
+      stderr += `\nRenovate was attempting to update to ${expectedVersion}`;
+      stderr += `\nThis is (likely) not a bug in Renovate, but due to the way your project pins dependencies, _and_ how Renovate calls your package manager to update them.\nUntil Renovate supports specifying an exact update to your package manager (https://github.com/renovatebot/renovate/issues/41624), it is recommended to directly pin your dependencies (with \`rangeStrategy=pin\` for apps, or \`rangeStrategy=widen\` for libraries)\nSee also: ${GlobalConfig.get('productLinks').documentation}dependency-pinning/`;
+
+      artifactErrors.push({
+        fileName: packageFileName,
+        stderr,
+      });
+    }
+  }
+}
+
+async function applyManagerBumpPackageVersion(
+  packageFileContent: string | null,
+  upgrade: BranchUpgradeConfig,
+): Promise<string | null> {
+  const bumpPackageVersion = get(upgrade.manager, 'bumpPackageVersion');
+  if (
+    !bumpPackageVersion ||
+    !packageFileContent ||
+    !upgrade.bumpVersion ||
+    !upgrade.packageFileVersion
+  ) {
+    return packageFileContent;
+  }
+
+  const result = await bumpPackageVersion(
+    packageFileContent,
+    upgrade.packageFileVersion,
+    upgrade.bumpVersion,
+    upgrade.packageFile!,
+  );
+
+  return result.bumpedContent;
 }

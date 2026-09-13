@@ -90,6 +90,7 @@ Use [this search](https://github.com/renovatebot/renovate/issues?q=is%3Aissue+is
     platform:bitbucket
     platform:bitbucket-server
     platform:codecommit
+    platform:forgejo
     platform:gitea
     platform:github
     platform:gitlab
@@ -203,7 +204,7 @@ Add a label `auto:logs` to indicate that there's a problem with the logs, and th
 
 Add a label `auto:needs-details` to discussions which need more details to move forward.
 
-Add a label `auto:no-coverage-ignore` if PR authors avoid needed unit tests by istanbul ignoring code with the `// istanbul ignore` comment.
+Add a label `auto:no-coverage-ignore` if PR authors avoid needed unit tests by v8 ignoring code with the `/* v8 ignore ... */` comment.
 
 Add a label `auto:no-done-comments` if PR authors unnecessary "Done" comments, or type comments to ask for a review instead of requesting a new review through GitHub's UI.
 
@@ -220,4 +221,22 @@ Add a label `auto:retry-latest` to any Discussion where the user should retry th
 
 </details>
 
-Apply the `self-hosted` label when an issue is applicable only to users who self-administer their own bot.
+Apply the `self-hosted` label when an issue is applicable only to users who self-administer their own Renovate instance.
+
+## Automated check for Issues with missing labels
+
+We have a GitHub Action (`find-issues-with-missing-labels.yml`) to find issues on our repository that are missing labels.
+Any Issues with missing labels will be put in a list in a new "error" Issue.
+
+The Action runs each week.
+
+## Checking Module Label Coverage
+
+Run `pnpm labels:check` to check whether all datasource, manager, and platform modules have matching GitHub labels.
+
+Run `pnpm labels:show-commands` to print copy-pasteable `gh label create ...` commands for any missing labels.
+
+### Apply the correct labels manually
+
+The Action will _not_ fix any badly labeled issues.
+This means that you, or we, must apply the correct labels to any affected Issue.

@@ -1,22 +1,17 @@
-import type { RenovateConfig } from '../../../../test/util';
-import { git, partial, platform, scm } from '../../../../test/util';
-import { GlobalConfig } from '../../../config/global';
-import type { Pr } from '../../../modules/platform/types';
-import * as cleanup from './prune';
-
-jest.mock('../../../util/git');
+import type { RenovateConfig } from '~test/util.ts';
+import { git, partial, platform, scm } from '~test/util.ts';
+import { GlobalConfig } from '../../../config/global.ts';
+import type { Pr } from '../../../modules/platform/types.ts';
+import * as cleanup from './prune.ts';
 
 let config: RenovateConfig;
 
 beforeEach(() => {
   config = partial<RenovateConfig>({
     repoIsOnboarded: true,
+    defaultBranch: 'main',
     branchPrefix: `renovate/`,
     pruneStaleBranches: true,
-    ignoredAuthors: [],
-    platform: 'github',
-    errors: [],
-    warnings: [],
   });
 });
 
@@ -36,6 +31,21 @@ describe('workers/repository/finalize/prune', () => {
       delete config.branchList;
       await cleanup.pruneStaleBranches(config, config.branchList);
       expect(git.getBranchList).toHaveBeenCalledTimes(0);
+    });
+
+    it('returns if no defaultBranch', async () => {
+      delete config.defaultBranch;
+      config.branchList = [];
+      await cleanup.pruneStaleBranches(config, config.branchList);
+      expect(git.getBranchList).toHaveBeenCalledTimes(0);
+    });
+
+    it('returns if branchPrefix is empty', async () => {
+      config.branchPrefix = '';
+      config.branchList = ['main/quality/renovate-a'];
+      await cleanup.pruneStaleBranches(config, config.branchList);
+      expect(git.getBranchList).toHaveBeenCalledTimes(0);
+      expect(scm.deleteBranch).toHaveBeenCalledTimes(0);
     });
 
     it('returns if no renovate branches', async () => {
@@ -84,6 +94,7 @@ describe('workers/repository/finalize/prune', () => {
 
     it('deletes with base branches', async () => {
       config.branchList = ['renovate/main-a'];
+      config.baseBranchPatterns = ['/main.*/'];
       config.baseBranches = ['main', 'maint/v7'];
       git.getBranchList.mockReturnValueOnce(
         config.branchList.concat([
@@ -97,20 +108,72 @@ describe('workers/repository/finalize/prune', () => {
       scm.isBranchModified.mockResolvedValueOnce(true);
       await cleanup.pruneStaleBranches(config, config.branchList);
       expect(git.getBranchList).toHaveBeenCalledTimes(1);
-      expect(scm.deleteBranch).toHaveBeenCalledTimes(1);
-      expect(scm.deleteBranch).toHaveBeenCalledWith('renovate/maint/v7-a');
+      expect(scm.deleteBranch).toHaveBeenCalledExactlyOnceWith(
+        'renovate/maint/v7-a',
+      );
       expect(scm.isBranchModified).toHaveBeenCalledTimes(3);
+
       expect(scm.isBranchModified).toHaveBeenCalledWith(
         'renovate/main-b',
         'main',
       );
+
       expect(scm.isBranchModified).toHaveBeenCalledWith(
         'renovate/maint/v7-a',
         'maint/v7',
       );
+
       expect(scm.isBranchModified).toHaveBeenCalledWith(
         'renovate/maint/v7-b',
         'maint/v7',
+      );
+    });
+
+    it('uses single configured base branch instead of defaultBranch', async () => {
+      config.branchList = [];
+      config.baseBranchPatterns = ['renovate-updates'];
+      config.baseBranches = ['renovate-updates'];
+      config.defaultBranch = 'main';
+      git.getBranchList.mockReturnValueOnce(['renovate/dayjs-1.x']);
+      platform.findPr.mockResolvedValueOnce(null);
+
+      await cleanup.pruneStaleBranches(config, config.branchList);
+
+      expect(platform.findPr).toHaveBeenCalledExactlyOnceWith({
+        branchName: 'renovate/dayjs-1.x',
+        state: 'open',
+        targetBranch: 'renovate-updates',
+      });
+      expect(scm.isBranchModified).toHaveBeenCalledExactlyOnceWith(
+        'renovate/dayjs-1.x',
+        'renovate-updates',
+      );
+    });
+
+    it('uses defaultBranch when baseBranchPatterns exist but baseBranches are not computed yet', async () => {
+      config.branchList = [];
+      config.baseBranchPatterns = ['/^release\\/.*/'];
+      config.defaultBranch = 'main';
+      git.getBranchList.mockReturnValueOnce([
+        'renovate/release/1.x-dependency',
+      ]);
+      platform.findPr.mockResolvedValueOnce(null);
+
+      await expect(
+        cleanup.pruneStaleBranches(config, config.branchList),
+      ).resolves.not.toThrow();
+
+      expect(platform.findPr).toHaveBeenCalledExactlyOnceWith({
+        branchName: 'renovate/release/1.x-dependency',
+        state: 'open',
+        targetBranch: 'main',
+      });
+      expect(scm.isBranchModified).toHaveBeenCalledExactlyOnceWith(
+        'renovate/release/1.x-dependency',
+        'main',
+      );
+      expect(scm.deleteBranch).toHaveBeenCalledExactlyOnceWith(
+        'renovate/release/1.x-dependency',
       );
     });
 
@@ -191,7 +254,7 @@ describe('workers/repository/finalize/prune', () => {
       git.getBranchList.mockReturnValueOnce(
         config.branchList.concat(['renovate/c']),
       );
-      platform.findPr.mockResolvedValueOnce(null as never);
+      platform.findPr.mockResolvedValueOnce(null);
       await cleanup.pruneStaleBranches(config, config.branchList);
       expect(git.getBranchList).toHaveBeenCalledTimes(1);
       expect(scm.deleteBranch).toHaveBeenCalledTimes(0);
@@ -203,7 +266,7 @@ describe('workers/repository/finalize/prune', () => {
       git.getBranchList.mockReturnValueOnce(
         config.branchList.concat(['renovate/c']),
       );
-      platform.findPr.mockResolvedValueOnce(null as never);
+      platform.findPr.mockResolvedValueOnce(null);
       await cleanup.pruneStaleBranches(config, config.branchList);
       expect(git.getBranchList).toHaveBeenCalledTimes(1);
       expect(scm.deleteBranch).toHaveBeenCalledTimes(1);
@@ -216,7 +279,7 @@ describe('workers/repository/finalize/prune', () => {
         config.branchList.concat(['renovate/c']),
       );
       scm.isBranchModified.mockResolvedValueOnce(true);
-      platform.findPr.mockResolvedValueOnce(null as never);
+      platform.findPr.mockResolvedValueOnce(null);
       await cleanup.pruneStaleBranches(config, config.branchList);
       expect(git.getBranchList).toHaveBeenCalledTimes(1);
       expect(scm.deleteBranch).toHaveBeenCalledTimes(0);

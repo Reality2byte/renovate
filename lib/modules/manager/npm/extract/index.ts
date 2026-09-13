@@ -1,34 +1,46 @@
-import is from '@sindresorhus/is';
-import { GlobalConfig } from '../../../../config/global';
-import { logger } from '../../../../logger';
+import {
+  isArray,
+  isNonEmptyObject,
+  isNonEmptyStringAndNotWhitespace,
+  isString,
+} from '@sindresorhus/is';
+import upath from 'upath';
+import { logger } from '../../../../logger/index.ts';
 import {
   findLocalSiblingOrParent,
   getSiblingFileName,
   readLocalFile,
-} from '../../../../util/fs';
-import { newlineRegex, regEx } from '../../../../util/regex';
-import { NpmDatasource } from '../../../datasource/npm';
+} from '../../../../util/fs/index.ts';
+import { NpmDatasource } from '../../../datasource/npm/index.ts';
 
 import type {
   ExtractConfig,
   PackageFile,
   PackageFileContent,
-} from '../../types';
-import type { NpmLockFiles, NpmManagerData } from '../types';
-import { getExtractedConstraints } from './common/dependency';
-import { extractPackageJson } from './common/package-file';
-import { postExtract } from './post';
-import type { NpmPackage } from './types';
-import { isZeroInstall } from './yarn';
-import type { YarnConfig } from './yarnrc';
+} from '../../types.ts';
+import { resolveNpmrc } from '../npmrc.ts';
+import { PnpmWorkspaceFile, type YarnConfig } from '../schema.ts';
+import type { NpmLockFiles, NpmManagerData } from '../types.ts';
+import { getExtractedConstraints } from './common/dependency.ts';
+import {
+  extractPackageJson,
+  hasPackageManager,
+} from './common/package-file.ts';
+import {
+  applyPnpmWorkspaceRegistries,
+  extractPnpmWorkspaceFile,
+} from './pnpm.ts';
+import { postExtract } from './post/index.ts';
+import type { NpmPackage } from './types.ts';
+import { extractYarnCatalogs, isZeroInstall } from './yarn.ts';
 import {
   loadConfigFromLegacyYarnrc,
   loadConfigFromYarnrcYml,
   resolveRegistryUrl,
-} from './yarnrc';
+} from './yarnrc.ts';
 
 function hasMultipleLockFiles(lockFiles: NpmLockFiles): boolean {
-  return Object.values(lockFiles).filter(is.string).length > 1;
+  return Object.values(lockFiles).filter(isString).length > 1;
 }
 
 export async function extractPackageFile(
@@ -52,7 +64,7 @@ export async function extractPackageFile(
   }
 
   let workspacesPackages: string[] | undefined;
-  if (is.array(packageJson.workspaces)) {
+  if (isArray(packageJson.workspaces)) {
     workspacesPackages = packageJson.workspaces;
   } else {
     workspacesPackages = packageJson.workspaces?.packages;
@@ -62,11 +74,11 @@ export async function extractPackageFile(
     yarnLock: 'yarn.lock',
     packageLock: 'package-lock.json',
     shrinkwrapJson: 'npm-shrinkwrap.json',
-    pnpmShrinkwrap: 'pnpm-lock.yaml',
+    pnpmLockFile: 'pnpm-lock.yaml',
   };
 
   for (const [key, val] of Object.entries(lockFiles) as [
-    'yarnLock' | 'packageLock' | 'shrinkwrapJson' | 'pnpmShrinkwrap',
+    'yarnLock' | 'packageLock' | 'shrinkwrapJson' | 'pnpmLockFile',
     string,
   ][]) {
     const filePath = getSiblingFileName(packageFile, val);
@@ -86,45 +98,7 @@ export async function extractPackageFile(
     );
   }
 
-  let npmrc: string | undefined;
-  const npmrcFileName = getSiblingFileName(packageFile, '.npmrc');
-  let repoNpmrc = await readLocalFile(npmrcFileName, 'utf8');
-  if (is.string(repoNpmrc)) {
-    if (is.string(config.npmrc) && !config.npmrcMerge) {
-      logger.debug(
-        { npmrcFileName },
-        'Repo .npmrc file is ignored due to config.npmrc with config.npmrcMerge=false',
-      );
-      npmrc = config.npmrc;
-    } else {
-      npmrc = config.npmrc ?? '';
-      if (npmrc.length) {
-        if (!npmrc.endsWith('\n')) {
-          npmrc += '\n';
-        }
-      }
-      if (repoNpmrc?.includes('package-lock')) {
-        logger.debug('Stripping package-lock setting from .npmrc');
-        repoNpmrc = repoNpmrc.replace(
-          regEx(/(^|\n)package-lock.*?(\n|$)/g),
-          '\n',
-        );
-      }
-      if (repoNpmrc.includes('=${') && !GlobalConfig.get('exposeAllEnv')) {
-        logger.debug(
-          { npmrcFileName },
-          'Stripping .npmrc file of lines with variables',
-        );
-        repoNpmrc = repoNpmrc
-          .split(newlineRegex)
-          .filter((line) => !line.includes('=${'))
-          .join('\n');
-      }
-      npmrc += repoNpmrc;
-    }
-  } else if (is.string(config.npmrc)) {
-    npmrc = config.npmrc;
-  }
+  const { npmrc, npmrcFileName } = await resolveNpmrc(packageFile, config);
 
   const yarnrcYmlFileName = await findLocalSiblingOrParent(
     packageFile,
@@ -134,12 +108,12 @@ export async function extractPackageFile(
     ? await isZeroInstall(yarnrcYmlFileName)
     : false;
 
-  let yarnConfig: YarnConfig | null = null;
+  let yarnrcConfig: YarnConfig | null = null;
   const repoYarnrcYml = yarnrcYmlFileName
     ? await readLocalFile(yarnrcYmlFileName, 'utf8')
     : null;
-  if (is.string(repoYarnrcYml) && repoYarnrcYml.trim().length > 0) {
-    yarnConfig = loadConfigFromYarnrcYml(repoYarnrcYml);
+  if (isString(repoYarnrcYml) && repoYarnrcYml.trim().length > 0) {
+    yarnrcConfig = loadConfigFromYarnrcYml(repoYarnrcYml);
   }
 
   const legacyYarnrcFileName = await findLocalSiblingOrParent(
@@ -149,20 +123,42 @@ export async function extractPackageFile(
   const repoLegacyYarnrc = legacyYarnrcFileName
     ? await readLocalFile(legacyYarnrcFileName, 'utf8')
     : null;
-  if (is.string(repoLegacyYarnrc) && repoLegacyYarnrc.trim().length > 0) {
-    yarnConfig = loadConfigFromLegacyYarnrc(repoLegacyYarnrc);
+  if (isString(repoLegacyYarnrc) && repoLegacyYarnrc.trim().length > 0) {
+    yarnrcConfig = loadConfigFromLegacyYarnrc(repoLegacyYarnrc);
+  }
+
+  let pnpmWorkspaceRegistry: string | undefined;
+  let pnpmWorkspaceRegistries: Record<string, string> | undefined;
+  const pnpmWorkspaceYamlFileName = await findLocalSiblingOrParent(
+    packageFile,
+    'pnpm-workspace.yaml',
+  );
+  const repoPnpmWorkspaceYaml = pnpmWorkspaceYamlFileName
+    ? await readLocalFile(pnpmWorkspaceYamlFileName, 'utf8')
+    : null;
+  if (isNonEmptyStringAndNotWhitespace(repoPnpmWorkspaceYaml)) {
+    const parsed = await PnpmWorkspaceFile.safeParseAsync(
+      repoPnpmWorkspaceYaml,
+    );
+    if (parsed.success) {
+      pnpmWorkspaceRegistry = parsed.data.registry;
+      pnpmWorkspaceRegistries = parsed.data.registries;
+    } else {
+      logger.debug(
+        { packageFile: pnpmWorkspaceYamlFileName, err: parsed.error },
+        'Failed to parse pnpm-workspace.yaml',
+      );
+    }
   }
 
   if (res.deps.length === 0) {
     logger.debug('Package file has no deps');
-    if (
-      !(
-        !!res.managerData?.packageJsonName ||
-        !!res.packageFileVersion ||
-        !!npmrc ||
-        workspacesPackages
-      )
-    ) {
+    if (!(
+      !!res.managerData?.packageJsonName ||
+      !!res.packageFileVersion ||
+      !!npmrc ||
+      workspacesPackages
+    )) {
       logger.debug('Skipping file');
       return null;
     }
@@ -189,19 +185,30 @@ export async function extractPackageFile(
 
   const extractedConstraints = getExtractedConstraints(res.deps);
 
-  if (yarnConfig) {
+  if (yarnrcConfig) {
     for (const dep of res.deps) {
+      // v8 ignore else -- TODO: add tests #40625
       if (dep.depName) {
-        const registryUrlFromYarnConfig = resolveRegistryUrl(
+        const registryUrlFromYarnrcConfig = resolveRegistryUrl(
           dep.packageName ?? dep.depName,
-          yarnConfig,
+          yarnrcConfig,
         );
-        if (registryUrlFromYarnConfig && dep.datasource === NpmDatasource.id) {
-          dep.registryUrls = [registryUrlFromYarnConfig];
+        if (
+          registryUrlFromYarnrcConfig &&
+          dep.datasource === NpmDatasource.id
+        ) {
+          dep.registryUrls = [registryUrlFromYarnrcConfig];
         }
       }
     }
   }
+
+  // Applied after the yarnrc resolution so pnpm-workspace.yaml wins in pnpm repos
+  applyPnpmWorkspaceRegistries(
+    res.deps,
+    pnpmWorkspaceRegistries,
+    pnpmWorkspaceRegistry,
+  );
 
   return {
     ...res,
@@ -210,10 +217,11 @@ export async function extractPackageFile(
       ...res.managerData,
       ...lockFiles,
       yarnZeroInstall,
-      hasPackageManager: is.nonEmptyStringAndNotWhitespace(
-        packageJson.packageManager,
-      ),
+      hasPackageManager:
+        isNonEmptyStringAndNotWhitespace(packageJson.packageManager) ||
+        isNonEmptyObject(packageJson.devEngines?.packageManager),
       workspacesPackages,
+      npmrcFileName, // store npmrc file name so we can later tell if it came from the workspace or not
     },
     skipInstalls,
     extractedConstraints,
@@ -227,14 +235,73 @@ export async function extractAllPackageFiles(
   const npmFiles: PackageFile<NpmManagerData>[] = [];
   for (const packageFile of packageFiles) {
     const content = await readLocalFile(packageFile, 'utf8');
-    // istanbul ignore else
     if (content) {
-      const deps = await extractPackageFile(content, packageFile, config);
-      if (deps) {
-        npmFiles.push({
-          ...deps,
-          packageFile,
-        });
+      // pnpm workspace files are their own package file, defined via managerFilePatterns.
+      if (packageFile.endsWith('pnpm-workspace.yaml')) {
+        logger.trace(
+          { packageFile },
+          `Extracting as a pnpm-workspace.yaml file`,
+        );
+        const parsedPnpmWorkspaceYaml =
+          await PnpmWorkspaceFile.safeParseAsync(content);
+        if (parsedPnpmWorkspaceYaml.success) {
+          logger.trace(
+            { packageFile },
+            `Extracting file as a pnpm workspace YAML file`,
+          );
+          const deps = await extractPnpmWorkspaceFile(
+            parsedPnpmWorkspaceYaml.data,
+            packageFile,
+          );
+          // v8 ignore else -- TODO: add test #40625
+          if (deps) {
+            npmFiles.push({
+              ...deps,
+              packageFile,
+            });
+          }
+        } else {
+          logger.warn(
+            { packageFile, err: parsedPnpmWorkspaceYaml.error },
+            `Failed to parse pnpm-workspace.yaml file`,
+          );
+        }
+      } else {
+        if (packageFile.endsWith('json')) {
+          logger.trace({ packageFile }, `Extracting as a package.json file`);
+
+          const deps = await extractPackageFile(content, packageFile, config);
+          // v8 ignore else -- TODO: add tests #40625
+          if (deps) {
+            npmFiles.push({
+              ...deps,
+              packageFile,
+            });
+          }
+        } else {
+          logger.trace({ packageFile }, `Extracting as a .yarnrc.yml file`);
+
+          const yarnConfig = loadConfigFromYarnrcYml(content);
+
+          // v8 ignore else -- TODO: add tests #40625
+          if (yarnConfig?.catalogs || yarnConfig?.catalog) {
+            const hasPackageManagerResult = await hasPackageManager(
+              upath.dirname(packageFile),
+            );
+            const catalogsDeps = await extractYarnCatalogs(
+              { catalog: yarnConfig.catalog, catalogs: yarnConfig.catalogs },
+              packageFile,
+              hasPackageManagerResult,
+            );
+            // v8 ignore else -- TODO: add tests #40625
+            if (catalogsDeps) {
+              npmFiles.push({
+                ...catalogsDeps,
+                packageFile,
+              });
+            }
+          }
+        }
       }
     } else {
       logger.debug({ packageFile }, `No content found`);

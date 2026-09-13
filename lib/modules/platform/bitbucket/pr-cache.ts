@@ -1,29 +1,30 @@
 import { dequal } from 'dequal';
 import { DateTime } from 'luxon';
-import { logger } from '../../../logger';
-import * as memCache from '../../../util/cache/memory';
-import { getCache } from '../../../util/cache/repository';
-import { clone } from '../../../util/clone';
-import type { BitbucketHttp } from '../../../util/http/bitbucket';
-import { repoCacheProvider } from '../../../util/http/cache/repository-http-cache-provider';
-import type { Pr } from '../types';
-import type { BitbucketPrCacheData, PagedResult, PrResponse } from './types';
-import { prFieldsFilter, prInfo, prStates } from './utils';
+import { logger } from '../../../logger/index.ts';
+import * as memCache from '../../../util/cache/memory/index.ts';
+import { getCache } from '../../../util/cache/repository/index.ts';
+import { clone } from '../../../util/clone.ts';
+import type { BitbucketHttp } from '../../../util/http/bitbucket.ts';
+import { repoCacheProvider } from '../../../util/http/cache/repository-http-cache-provider.ts';
+import type { Pr } from '../types.ts';
+import type { BitbucketPrCacheData, PagedResult, PrResponse } from './types.ts';
+import { prFieldsFilter, prInfo, prStates } from './utils.ts';
 
 export class BitbucketPrCache {
+  private items: Pr[] = [];
   private cache: BitbucketPrCacheData;
+  private repo: string;
+  private author: string | null;
 
-  private constructor(
-    private repo: string,
-    private author: string | null,
-  ) {
+  private constructor(repo: string, author: string | null) {
+    this.repo = repo;
+    this.author = author;
     const repoCache = getCache();
     repoCache.platform ??= {};
     repoCache.platform.bitbucket ??= {};
 
     let pullRequestCache = repoCache.platform.bitbucket.pullRequestsCache as
-      | BitbucketPrCacheData
-      | undefined;
+      BitbucketPrCacheData | undefined;
     if (!pullRequestCache) {
       logger.debug('Initializing new PR cache at repository cache');
       pullRequestCache = {
@@ -41,6 +42,7 @@ export class BitbucketPrCache {
     }
     repoCache.platform.bitbucket.pullRequestsCache = pullRequestCache;
     this.cache = pullRequestCache;
+    this.updateItems();
   }
 
   private static async init(
@@ -62,7 +64,7 @@ export class BitbucketPrCache {
   }
 
   private getPrs(): Pr[] {
-    return Object.values(this.cache.items);
+    return this.items;
   }
 
   static async getPrs(
@@ -74,19 +76,20 @@ export class BitbucketPrCache {
     return prCache.getPrs();
   }
 
-  private addPr(pr: Pr): void {
+  private setPr(pr: Pr): void {
     logger.debug(`Adding PR #${pr.number} to the PR cache`);
     this.cache.items[pr.number] = pr;
+    this.updateItems();
   }
 
-  static async addPr(
+  static async setPr(
     http: BitbucketHttp,
     repo: string,
     author: string | null,
     item: Pr,
   ): Promise<void> {
     const prCache = await BitbucketPrCache.init(http, repo, author);
-    prCache.addPr(item);
+    prCache.setPr(item);
   }
 
   private reconcile(rawItems: PrResponse[]): void {
@@ -106,6 +109,7 @@ export class BitbucketPrCache {
       }
 
       const cacheOldTime = updated_on ? DateTime.fromISO(updated_on) : null;
+      // v8 ignore else -- TODO: add test #40625
       if (!cacheOldTime || itemNewTime > cacheOldTime) {
         updated_on = rawItem.updated_on;
       }
@@ -144,7 +148,7 @@ export class BitbucketPrCache {
       pagelen: 50,
       cacheProvider: repoCacheProvider,
     };
-    const res = await http.getJson<PagedResult<PrResponse>>(url, opts);
+    const res = await http.getJsonUnchecked<PagedResult<PrResponse>>(url, opts);
 
     const items = res.body.values;
     logger.debug(`Fetched ${items.length} PRs to sync with cache`);
@@ -161,6 +165,16 @@ export class BitbucketPrCache {
       },
       `PR cache sync finished`,
     );
+
+    this.updateItems();
     return this;
+  }
+
+  /**
+   * Ensure the pr cache starts with the most recent PRs.
+   * JavaScript ensures that the cache is sorted by PR number.
+   */
+  private updateItems(): void {
+    this.items = Object.values(this.cache.items).reverse();
   }
 }

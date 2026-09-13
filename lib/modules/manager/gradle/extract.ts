@@ -1,21 +1,32 @@
 import upath from 'upath';
-import { logger } from '../../../logger';
-import { getLocalFiles } from '../../../util/fs';
-import { MavenDatasource } from '../../datasource/maven';
-import type { ExtractConfig, PackageDependency, PackageFile } from '../types';
-import { parseCatalog } from './extract/catalog';
+import { logger } from '../../../logger/index.ts';
+import { coerceArray } from '../../../util/array.ts';
+import { getLocalFiles } from '../../../util/fs/index.ts';
+import { regEx } from '../../../util/regex.ts';
+import { MavenDatasource } from '../../datasource/maven/index.ts';
+import gradleVersioning from '../../versioning/gradle/index.ts';
+import type {
+  ExtractConfig,
+  PackageDependency,
+  PackageFile,
+} from '../types.ts';
+import {
+  parseCatalog,
+  unifyCatalogSharedVariableNames,
+} from './extract/catalog.ts';
 import {
   isGcvPropsFile,
   parseGcv,
   usesGcv,
-} from './extract/consistent-versions-plugin';
-import { parseGradle, parseKotlinSource, parseProps } from './parser';
-import { REGISTRY_URLS } from './parser/common';
+} from './extract/consistent-versions-plugin.ts';
+import { REGISTRY_URLS } from './parser/common.ts';
+import { parseGradle, parseKotlinSource, parseProps } from './parser.ts';
 import type {
+  ContentDescriptorSpec,
   GradleManagerData,
   PackageRegistry,
   VariableRegistry,
-} from './types';
+} from './types.ts';
 import {
   getVars,
   isGradleScriptFile,
@@ -25,7 +36,8 @@ import {
   reorderFiles,
   toAbsolutePath,
   updateVars,
-} from './utils';
+  updateVarsFromDefaultCatalog,
+} from './utils.ts';
 
 const mavenDatasource = MavenDatasource.id;
 
@@ -36,12 +48,100 @@ function updatePackageRegistries(
   for (const url of urls) {
     const registryAlreadyKnown = packageRegistries.some(
       (item) =>
-        item.registryUrl === url.registryUrl && item.scope === url.scope,
+        item.registryUrl === url.registryUrl &&
+        item.scope === url.scope &&
+        item.registryType === url.registryType &&
+        item.content === url.content,
     );
     if (!registryAlreadyKnown) {
       packageRegistries.push(url);
     }
   }
+}
+
+export function matchesContentDescriptor(
+  dep: PackageDependency<GradleManagerData>,
+  contentDescriptors?: ContentDescriptorSpec[],
+): boolean {
+  const [groupId, artifactId] = (dep.packageName ?? dep.depName!).split(':');
+  let hasIncludes = false;
+  let hasExcludes = false;
+  let matchesInclude = false;
+  let matchesExclude = false;
+
+  for (const content of coerceArray(contentDescriptors)) {
+    const {
+      mode,
+      matcher,
+      groupId: contentGroupId,
+      artifactId: contentArtifactId,
+      version: contentVersion,
+    } = content;
+
+    // group matching
+    let groupMatch = false;
+    if (matcher === 'regex') {
+      groupMatch = regEx(contentGroupId).test(groupId);
+    } else if (matcher === 'subgroup') {
+      groupMatch =
+        groupId === contentGroupId || `${groupId}.`.startsWith(contentGroupId);
+    } else {
+      groupMatch = groupId === contentGroupId;
+    }
+
+    // artifact matching (optional)
+    let artifactMatch = true;
+    if (groupMatch && contentArtifactId) {
+      if (matcher === 'regex') {
+        artifactMatch = regEx(contentArtifactId).test(artifactId);
+      } else {
+        artifactMatch = artifactId === contentArtifactId;
+      }
+    }
+
+    // version matching (optional)
+    let versionMatch = true;
+    if (groupMatch && artifactMatch && contentVersion && dep.currentValue) {
+      if (matcher === 'regex') {
+        versionMatch = regEx(contentVersion).test(dep.currentValue);
+      } else {
+        // contentVersion can be an exact version or a gradle-supported version range
+        versionMatch = gradleVersioning.matches(
+          dep.currentValue,
+          contentVersion,
+        );
+      }
+    }
+
+    const isMatch = groupMatch && artifactMatch && versionMatch;
+    if (mode === 'include') {
+      hasIncludes = true;
+      if (isMatch) {
+        matchesInclude = true;
+      }
+    } else if (mode === 'exclude') {
+      hasExcludes = true;
+      if (isMatch) {
+        matchesExclude = true;
+      }
+    }
+  }
+
+  if (hasIncludes && hasExcludes) {
+    // if both includes and excludes exist, dep must match include and not match exclude
+    return matchesInclude && !matchesExclude;
+  }
+  if (hasIncludes) {
+    // if only includes exist, dep must match at least one include
+    return matchesInclude;
+  }
+  if (hasExcludes) {
+    // if only excludes exist, dep must not match any exclude
+    return !matchesExclude;
+  }
+
+  // by default, repositories include everything and exclude nothing
+  return true;
 }
 
 function getRegistryUrlsForDep(
@@ -50,9 +150,18 @@ function getRegistryUrlsForDep(
 ): string[] {
   const scope = dep.depType === 'plugin' ? 'plugin' : 'dep';
 
-  const registryUrls = packageRegistries
-    .filter((item) => item.scope === scope)
-    .map((item) => item.registryUrl);
+  const matchingRegistries = packageRegistries.filter(
+    (item) =>
+      item.scope === scope && matchesContentDescriptor(dep, item.content),
+  );
+
+  const exclusiveRegistries = matchingRegistries.filter(
+    (item) => item.registryType === 'exclusive',
+  );
+
+  const registryUrls = (
+    exclusiveRegistries.length ? exclusiveRegistries : matchingRegistries
+  ).map((item) => item.registryUrl);
 
   if (!registryUrls.length && scope === 'plugin') {
     registryUrls.push(REGISTRY_URLS.gradlePluginPortal);
@@ -88,7 +197,13 @@ async function parsePackageFiles(
         updateVars(varRegistry, packageFileDir, vars);
         extractedDeps.push(...deps);
       } else if (isTOMLFile(packageFile)) {
-        const deps = parseCatalog(packageFile, content);
+        const { vars, deps } = parseCatalog(packageFile, content);
+        updateVarsFromDefaultCatalog(
+          varRegistry,
+          packageFileDir,
+          packageFile,
+          vars,
+        );
         extractedDeps.push(...deps);
       } else if (
         isGcvPropsFile(packageFile) &&
@@ -151,6 +266,8 @@ export async function extractAllPackageFiles(
     return null;
   }
 
+  unifyCatalogSharedVariableNames(extractedDeps);
+
   for (const dep of extractedDeps) {
     dep.fileReplacePosition = dep?.managerData?.fileReplacePosition; // #8224
 
@@ -167,19 +284,15 @@ export async function extractAllPackageFiles(
         };
       }
 
-      if (!dep.datasource) {
-        dep.datasource = mavenDatasource;
-      }
+      dep.datasource ??= mavenDatasource;
 
       if (dep.datasource === mavenDatasource) {
         dep.registryUrls = getRegistryUrlsForDep(packageRegistries, dep);
 
-        if (!dep.depType) {
-          dep.depType =
-            key.startsWith('buildSrc') && !kotlinSourceFiles.length
-              ? 'devDependencies'
-              : 'dependencies';
-        }
+        dep.depType ??=
+          key.startsWith('buildSrc') && !kotlinSourceFiles.length
+            ? 'devDependencies'
+            : 'dependencies';
       }
 
       const depAlreadyInPkgFile = pkgFile.deps.some(

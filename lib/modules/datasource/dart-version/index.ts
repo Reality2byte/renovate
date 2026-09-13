@@ -1,10 +1,16 @@
-import is from '@sindresorhus/is';
-import { regEx } from '../../../util/regex';
-import { Datasource } from '../datasource';
-import type { GetReleasesConfig, Release, ReleaseResult } from '../types';
-import type { DartResponse } from './types';
+import { isString } from '@sindresorhus/is';
+import { regEx } from '../../../util/regex.ts';
+import { Datasource } from '../datasource.ts';
+import type { GetReleasesConfig, Release, ReleaseResult } from '../types.ts';
+import { DartResponse } from './schema.ts';
 
 export const stableVersionRegex = regEx(/^\d+\.\d+\.\d+$/);
+/**
+ * The server returns old svn versions which would need mapping to a version.
+ * They are very old, so we skip them instead.
+ * https://github.com/dart-lang/site-www/blob/7d4409c87bb6570b2d8870b20283f81f2b7e08fc/tool/get-dart/dart_sdk_archive/lib/src/svn_versions.dart#L2
+ */
+export const svnVersionRegex = regEx(/^\d+$/);
 
 export class DartVersionDatasource extends Datasource {
   static readonly id = 'dart-version';
@@ -28,7 +34,7 @@ export class DartVersionDatasource extends Datasource {
   async getReleases({
     registryUrl,
   }: GetReleasesConfig): Promise<ReleaseResult | null> {
-    // istanbul ignore if
+    /* v8 ignore next -- should never happen */
     if (!registryUrl) {
       return null;
     }
@@ -41,8 +47,9 @@ export class DartVersionDatasource extends Datasource {
     try {
       for (const channel of this.channels) {
         const resp = (
-          await this.http.getJson<DartResponse>(
+          await this.http.getJson(
             `${registryUrl}/storage/v1/b/dart-archive/o?delimiter=%2F&prefix=channels%2F${channel}%2Frelease%2F&alt=json`,
+            DartResponse,
           )
         ).body;
         const releases = this.getReleasesFromResponse(channel, resp.prefixes);
@@ -61,10 +68,12 @@ export class DartVersionDatasource extends Datasource {
   ): Release[] {
     return prefixes
       .map((prefix) => this.getVersionFromPrefix(prefix))
-      .filter(is.string)
+      .filter(isString)
       .filter((version) => {
         if (
           version === 'latest' ||
+          // skip old svn versions
+          svnVersionRegex.test(version) ||
           // The API response contains a stable version being released as a non-stable
           // release. So we filter out these releases here.
           (channel !== 'stable' && stableVersionRegex.test(version))
@@ -79,6 +88,6 @@ export class DartVersionDatasource extends Datasource {
   // Prefix should have a format of "channels/stable/release/2.9.3/"
   private getVersionFromPrefix(prefix: string): string | undefined {
     const parts = prefix.split('/');
-    return parts[parts.length - 2];
+    return parts.at(-2);
   }
 }

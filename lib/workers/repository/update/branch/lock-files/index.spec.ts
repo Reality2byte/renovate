@@ -1,25 +1,18 @@
-import { fs, git, mocked } from '../../../../../../test/util';
-import { GlobalConfig } from '../../../../../config/global';
-import * as lockFiles from '../../../../../modules/manager/npm/post-update';
-import * as npm from '../../../../../modules/manager/npm/post-update/npm';
-import * as pnpm from '../../../../../modules/manager/npm/post-update/pnpm';
-import * as yarn from '../../../../../modules/manager/npm/post-update/yarn';
-import type { PostUpdateConfig } from '../../../../../modules/manager/types';
-import * as _hostRules from '../../../../../util/host-rules';
+import { hostRules } from '~test/host-rules.ts';
+import { fs, git } from '~test/util.ts';
+import { GlobalConfig } from '../../../../../config/global.ts';
+import * as lockFiles from '../../../../../modules/manager/npm/post-update/index.ts';
+import * as npm from '../../../../../modules/manager/npm/post-update/npm.ts';
+import * as pnpm from '../../../../../modules/manager/npm/post-update/pnpm.ts';
+import * as yarn from '../../../../../modules/manager/npm/post-update/yarn.ts';
+import type { PostUpdateConfig } from '../../../../../modules/manager/types.ts';
 
 const config: PostUpdateConfig = {
   upgrades: [],
   branchName: 'some-branch',
 };
 
-const hostRules = mocked(_hostRules);
-
-jest.mock('../../../../../util/git');
-jest.mock('../../../../../util/fs');
-
-hostRules.find = jest.fn((_) => ({
-  token: 'abc',
-}));
+vi.mock('../../../../../util/fs/index.ts');
 
 const { writeUpdatedPackageFiles, getAdditionalFiles } = lockFiles;
 
@@ -29,6 +22,7 @@ describe('workers/repository/update/branch/lock-files/index', () => {
       GlobalConfig.set({
         localDir: 'some-tmp-dir',
       });
+      hostRules.add({ token: 'abc' });
     });
 
     it('returns if no updated packageFiles', async () => {
@@ -79,22 +73,26 @@ describe('workers/repository/update/branch/lock-files/index', () => {
         localDir: 'some-tmp-dir',
       });
       git.getFile.mockResolvedValueOnce('some lock file contents');
-      jest.spyOn(npm, 'generateLockFile').mockResolvedValueOnce({
+      vi.spyOn(npm, 'generateLockFile').mockResolvedValueOnce({
         lockFile: 'some lock file contents',
       });
-      jest.spyOn(yarn, 'generateLockFile').mockResolvedValueOnce({
+      vi.spyOn(yarn, 'generateLockFile').mockResolvedValueOnce({
         lockFile: 'some lock file contents',
       });
-      jest.spyOn(pnpm, 'generateLockFile').mockResolvedValueOnce({
+      vi.spyOn(pnpm, 'generateLockFile').mockResolvedValueOnce({
         lockFile: 'some lock file contents',
       });
-      jest.spyOn(lockFiles, 'determineLockFileDirs');
+      vi.spyOn(lockFiles, 'determineLockFileDirs');
     });
 
-    it('returns no error and empty lockfiles if updateLockFiles false', async () => {
-      config.updateLockFiles = false;
+    it('returns no error and empty lockfiles if skipArtifactsUpdate is true', async () => {
+      config.skipArtifactsUpdate = true;
       const res = await getAdditionalFiles(config, { npm: [{}] });
-      expect(res).toEqual({ artifactErrors: [], updatedArtifacts: [] });
+      expect(res).toEqual({
+        artifactErrors: [],
+        artifactNotices: [],
+        updatedArtifacts: [],
+      });
     });
 
     it('returns no error and empty lockfiles if lock file maintenance exists', async () => {
@@ -102,7 +100,11 @@ describe('workers/repository/update/branch/lock-files/index', () => {
       config.reuseExistingBranch = true;
       git.branchExists.mockReturnValueOnce(true);
       const res = await getAdditionalFiles(config, { npm: [{}] });
-      expect(res).toEqual({ artifactErrors: [], updatedArtifacts: [] });
+      expect(res).toEqual({
+        artifactErrors: [],
+        artifactNotices: [],
+        updatedArtifacts: [],
+      });
     });
   });
 });

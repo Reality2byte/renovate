@@ -1,10 +1,16 @@
-import { logger } from '../../../logger';
-import type { BranchStatus } from '../../../types';
-import { parseJson } from '../../../util/common';
-import * as git from '../../../util/git';
-import { setBaseUrl } from '../../../util/http/gerrit';
-import { regEx } from '../../../util/regex';
-import { ensureTrailingSlash } from '../../../util/url';
+import { isTruthy, isUndefined } from '@sindresorhus/is';
+import semver from 'semver';
+import { logger } from '../../../logger/index.ts';
+import type { BranchStatus } from '../../../types/index.ts';
+import { parseJson } from '../../../util/common.ts';
+import { getEnv } from '../../../util/env.ts';
+import * as git from '../../../util/git/index.ts';
+import type { VirtualBranch } from '../../../util/git/types.ts';
+import { setBaseUrl } from '../../../util/http/gerrit.ts';
+import { coerceObject } from '../../../util/object.ts';
+import { regEx } from '../../../util/regex.ts';
+import { toLongCommitSha } from '../../../util/schema-utils/git.ts';
+import { ensureTrailingSlash } from '../../../util/url.ts';
 import type {
   BranchStatusConfig,
   CreatePRConfig,
@@ -22,22 +28,25 @@ import type {
   RepoParams,
   RepoResult,
   UpdatePrConfig,
-} from '../types';
-import { repoFingerprint } from '../util';
-
-import { smartTruncate } from '../utils/pr-body';
-import { readOnlyIssueBody } from '../utils/read-only-issue-body';
-import { client } from './client';
-import { configureScm } from './scm';
-import type { GerritLabelTypeInfo, GerritProjectInfo } from './types';
+} from '../types.ts';
+import { repoFingerprint } from '../util.ts';
+import { smartTruncate } from '../utils/pr-body.ts';
+import { readOnlyIssueBody } from '../utils/read-only-issue-body.ts';
+import { client } from './client.ts';
+import type { GerritLabels, GerritProjectInfo } from './schema.ts';
+import { configureScm, pushForReview } from './scm.ts';
 import {
+  MAX_GERRIT_COMMENT_SIZE,
+  REQUEST_DETAILS_FOR_PRS,
   TAG_PULL_REQUEST_BODY,
+  extractSourceBranch,
   getGerritRepoUrl,
   mapBranchStatusToLabel,
   mapGerritChangeToPr,
-} from './utils';
+} from './utils.ts';
 
 export const id = 'gerrit';
+export const experimental = true;
 
 const defaults: {
   endpoint?: string;
@@ -47,7 +56,7 @@ let config: {
   repository?: string;
   head?: string;
   config?: GerritProjectInfo;
-  labels: Record<string, GerritLabelTypeInfo>;
+  labels: GerritLabels;
   gerritUsername?: string;
 } = {
   labels: {},
@@ -57,7 +66,7 @@ export function writeToConfig(newConfig: typeof config): void {
   config = { ...config, ...newConfig };
 }
 
-export function initPlatform({
+export async function initPlatform({
   endpoint,
   username,
   password,
@@ -74,10 +83,40 @@ export function initPlatform({
   config.gerritUsername = username;
   defaults.endpoint = ensureTrailingSlash(endpoint);
   setBaseUrl(defaults.endpoint);
+
+  let gerritVersion: string;
+  try {
+    const env = getEnv();
+    /* v8 ignore if: experimental feature */
+    if (env.RENOVATE_X_PLATFORM_VERSION) {
+      gerritVersion = env.RENOVATE_X_PLATFORM_VERSION;
+    } else {
+      gerritVersion = await client.getGerritVersion({
+        username,
+        password,
+      });
+    }
+  } catch (err) {
+    logger.debug(
+      { err },
+      'Error authenticating with Gerrit. Check your credentials',
+    );
+    throw new Error('Init: Authentication failure');
+  }
+
+  logger.debug(`Gerrit version is: ${gerritVersion}`);
+  // Example: 3.13.0-rc3-148-gb478dbbb57
+  const parsed = semver.parse(gerritVersion);
+  if (!parsed) {
+    throw new Error(`Unable to parse Gerrit version: ${gerritVersion}`);
+  }
+  gerritVersion = `${parsed.major}.${parsed.minor}.${parsed.patch}`;
+  client.setGerritVersion(gerritVersion);
+
   const platformConfig: PlatformResult = {
     endpoint: defaults.endpoint,
   };
-  return Promise.resolve(platformConfig);
+  return platformConfig;
 }
 
 /**
@@ -94,9 +133,11 @@ export async function getRepos(): Promise<string[]> {
  */
 export async function initRepo({
   repository,
+  cloneSubmodules,
+  cloneSubmodulesFilter,
   gitUrl,
 }: RepoParams): Promise<RepoResult> {
-  logger.debug(`initRepo(${repository}, ${gitUrl!})`);
+  logger.debug(`initRepo(${repository}, ${gitUrl})`);
   const projectInfo = await client.getProjectInfo(repository);
   const branchInfo = await client.getBranchInfo(repository);
 
@@ -105,22 +146,65 @@ export async function initRepo({
     repository,
     head: branchInfo.revision,
     config: projectInfo,
-    labels: projectInfo.labels ?? {},
+    labels: coerceObject(projectInfo.labels),
   };
-  const baseUrl = defaults.endpoint!;
-  const url = getGerritRepoUrl(repository, baseUrl);
-  configureScm(repository, config.gerritUsername!);
-  await git.initRepo({ url });
 
   //abandon "open" and "rejected" changes at startup
-  const rejectedChanges = await client.findChanges(config.repository!, {
+  const rejectedChanges = await client.findChanges(repository, {
     branchName: '',
     state: 'open',
     label: '-2',
   });
   for (const change of rejectedChanges) {
-    await client.abandonChange(change._number);
+    await client.abandonChange(
+      change._number,
+      'This change has been abandoned as it was voted with Code-Review -2.',
+    );
+    logger.info(
+      `Abandoned change ${change._number} with Code-Review -2 in repository ${repository}`,
+    );
   }
+
+  // Collect open Gerrit changes to initialize as virtual branches.
+  // This allows DefaultGitScm to treat them as regular Git branches.
+  const openChanges = await client.findChanges(repository, {
+    branchName: '',
+    state: 'open',
+    requestDetails: ['CURRENT_REVISION', 'COMMIT_FOOTERS'],
+  });
+  const virtualBranches: Record<string, VirtualBranch> = {};
+  for (const change of openChanges) {
+    const branchName = extractSourceBranch(change);
+    if (!branchName) {
+      continue;
+    }
+    const sha = toLongCommitSha(change.current_revision);
+    const ref = change.revisions![sha].ref;
+    virtualBranches[branchName] = { ref, sha };
+  }
+
+  const virtualBranchCount = Object.keys(virtualBranches).length;
+  if (virtualBranchCount > 0) {
+    logger.debug(
+      `Will fetch ${virtualBranchCount} Gerrit changes as virtual branches`,
+    );
+  }
+
+  const baseUrl = defaults.endpoint!;
+  const url = getGerritRepoUrl(
+    repository,
+    baseUrl,
+    gitUrl,
+    config.gerritUsername!,
+  );
+  configureScm(repository, config.labels);
+  await git.initRepo({
+    url,
+    cloneSubmodules,
+    cloneSubmodulesFilter,
+    virtualBranches,
+  });
+
   const repoConfig: RepoResult = {
     defaultBranch: config.head!,
     isFork: false,
@@ -129,19 +213,24 @@ export async function initRepo({
   return repoConfig;
 }
 
-export async function findPr(
-  findPRConfig: FindPRConfig,
-  refreshCache?: boolean,
-): Promise<Pr | null> {
+export async function findPr(findPRConfig: FindPRConfig): Promise<Pr | null> {
   const change = (
-    await client.findChanges(config.repository!, findPRConfig, refreshCache)
+    await client.findChanges(config.repository!, {
+      ...findPRConfig,
+      singleChange: true,
+      requestDetails: REQUEST_DETAILS_FOR_PRS,
+    })
   ).pop();
-  return change ? mapGerritChangeToPr(change) : null;
+  return change
+    ? mapGerritChangeToPr(change, {
+        sourceBranch: findPRConfig.branchName,
+      })
+    : null;
 }
 
 export async function getPr(number: number): Promise<Pr | null> {
   try {
-    const change = await client.getChange(number);
+    const change = await client.getChange(number, REQUEST_DETAILS_FOR_PRS);
     return mapGerritChangeToPr(change);
   } catch (err) {
     if (err.statusCode === 404) {
@@ -153,14 +242,6 @@ export async function getPr(number: number): Promise<Pr | null> {
 
 export async function updatePr(prConfig: UpdatePrConfig): Promise<void> {
   logger.debug(`updatePr(${prConfig.number}, ${prConfig.prTitle})`);
-  const change = await client.getChange(prConfig.number);
-  if (change.subject !== prConfig.prTitle) {
-    await client.updateChangeSubject(
-      prConfig.number,
-      change.revisions[change.current_revision].commit.message,
-      prConfig.prTitle,
-    );
-  }
   if (prConfig.prBody) {
     await client.addMessageIfNotAlreadyExists(
       prConfig.number,
@@ -168,8 +249,12 @@ export async function updatePr(prConfig: UpdatePrConfig): Promise<void> {
       TAG_PULL_REQUEST_BODY,
     );
   }
-  if (prConfig.platformPrOptions?.autoApprove) {
-    await client.approveChange(prConfig.number);
+  await client.setHashtags(prConfig.number, {
+    add: prConfig.addLabels,
+    remove: prConfig.removeLabels,
+  });
+  if (prConfig.targetBranch) {
+    await client.moveChange(prConfig.number, prConfig.targetBranch);
   }
   if (prConfig.state && prConfig.state === 'closed') {
     await client.abandonChange(prConfig.number);
@@ -182,52 +267,79 @@ export async function createPr(prConfig: CreatePRConfig): Promise<Pr | null> {
       prConfig.labels?.toString() ?? ''
     })`,
   );
-  const pr = (
-    await client.findChanges(
-      config.repository!,
-      {
-        branchName: prConfig.sourceBranch,
-        targetBranch: prConfig.targetBranch,
-        state: 'open',
-      },
-      true,
-    )
-  ).pop();
-  if (pr === undefined) {
+
+  logger.debug(
+    `Pushing commit to refs/for/${prConfig.targetBranch} to create Gerrit change`,
+  );
+  const pushResult = await pushForReview({
+    sourceRef: prConfig.sourceBranch,
+    targetBranch: prConfig.targetBranch,
+    files: [],
+    autoApprove: prConfig.platformPrOptions?.autoApprove,
+    labels: prConfig.labels ?? undefined,
+  });
+
+  if (!pushResult) {
     throw new Error(
-      `the change should be created automatically from previous push to refs/for/${prConfig.sourceBranch}`,
+      `Failed to push commit to refs/for/${prConfig.targetBranch} to create Gerrit change`,
     );
   }
-  //Workaround for "Known Problems.1"
-  if (pr.subject !== prConfig.prTitle) {
-    await client.updateChangeSubject(
-      pr._number,
-      pr.revisions[pr.current_revision].commit.message,
-      prConfig.prTitle,
+
+  const change = (
+    await client.findChanges(config.repository!, {
+      branchName: prConfig.sourceBranch,
+      targetBranch: prConfig.targetBranch,
+      state: 'open',
+      singleChange: true,
+      requestDetails: REQUEST_DETAILS_FOR_PRS,
+    })
+  ).pop();
+  if (isUndefined(change)) {
+    throw new Error(
+      `Could not find the Gerrit change after pushing to refs/for/${prConfig.targetBranch}`,
     );
   }
-  await client.addMessageIfNotAlreadyExists(
-    pr._number,
+
+  // Register the virtual branch now that the change exists and we have the ref.
+  const sha = toLongCommitSha(change.current_revision);
+  const ref = change.revisions![sha].ref;
+  await git.setVirtualBranch(prConfig.sourceBranch, ref, sha);
+
+  await client.addMessage(
+    change._number,
     prConfig.prBody,
     TAG_PULL_REQUEST_BODY,
   );
-  if (prConfig.platformPrOptions?.autoApprove) {
-    await client.approveChange(pr._number);
-  }
-  return getPr(pr._number);
+  return mapGerritChangeToPr(change, {
+    sourceBranch: prConfig.sourceBranch,
+    prBody: prConfig.prBody,
+  });
 }
 
-export async function getBranchPr(branchName: string): Promise<Pr | null> {
-  const change = (
-    await client.findChanges(config.repository!, { branchName, state: 'open' })
-  ).pop();
-  return change ? mapGerritChangeToPr(change) : null;
+export async function getBranchPr(
+  branchName: string,
+  targetBranch?: string,
+): Promise<Pr | null> {
+  const change = await client.getBranchChange(config.repository!, {
+    branchName,
+    state: 'open',
+    targetBranch,
+    requestDetails: REQUEST_DETAILS_FOR_PRS,
+  });
+
+  return change
+    ? mapGerritChangeToPr(change, {
+        sourceBranch: branchName,
+      })
+    : null;
 }
 
-export function getPrList(): Promise<Pr[]> {
-  return client
-    .findChanges(config.repository!, { branchName: '' })
-    .then((res) => res.map((change) => mapGerritChangeToPr(change)));
+export async function getPrList(): Promise<Pr[]> {
+  const changes = await client.findChanges(config.repository!, {
+    branchName: '',
+    requestDetails: REQUEST_DETAILS_FOR_PRS,
+  });
+  return changes.map((change) => mapGerritChangeToPr(change)).filter(isTruthy);
 }
 
 export async function mergePr(config: MergePRConfig): Promise<boolean> {
@@ -257,22 +369,28 @@ export async function getBranchStatus(
   branchName: string,
 ): Promise<BranchStatus> {
   logger.debug(`getBranchStatus(${branchName})`);
-  const changes = await client.findChanges(
-    config.repository!,
-    { state: 'open', branchName },
-    true,
-  );
-  if (changes.length > 0) {
-    const allSubmittable =
-      changes.filter((change) => change.submittable === true).length ===
-      changes.length;
-    if (allSubmittable) {
-      return 'green';
-    }
-    const hasProblems =
-      changes.filter((change) => change.problems.length > 0).length > 0;
+  const change = (
+    await client.findChanges(config.repository!, {
+      state: 'open',
+      branchName,
+      singleChange: true,
+      requestDetails: ['LABELS', 'SUBMITTABLE', 'CHECK'],
+    })
+  ).pop();
+  if (change) {
+    const hasProblems = change.problems && change.problems.length > 0;
     if (hasProblems) {
       return 'red';
+    }
+    const hasBlockingLabels = Object.values(coerceObject(change.labels)).some(
+      (label) => label.blocking,
+    );
+    if (hasBlockingLabels) {
+      return 'red';
+    }
+    // v8 ignore else -- TODO: add test #40625
+    if (change.submittable) {
+      return 'green';
     }
   }
   return 'yellow';
@@ -288,23 +406,28 @@ export async function getBranchStatusCheck(
   branchName: string,
   context: string,
 ): Promise<BranchStatus | null> {
-  const label = config.labels[context];
-  if (label) {
+  const labelConfig = config.labels[context];
+  if (labelConfig) {
     const change = (
-      await client.findChanges(
-        config.repository!,
-        { branchName, state: 'open' },
-        true,
-      )
+      await client.findChanges(config.repository!, {
+        branchName,
+        state: 'open',
+        singleChange: true,
+        requestDetails: ['LABELS'],
+      })
     ).pop();
+    // v8 ignore else -- TODO: add test #40625
     if (change) {
-      const labelRes = change.labels?.[context];
-      if (labelRes) {
-        if (labelRes.approved) {
-          return 'green';
-        }
-        if (labelRes.rejected) {
+      const label = change.labels![context];
+      // v8 ignore else -- TODO: add test #40625
+      if (label) {
+        // Check for rejected or blocking first, as a label could have both rejected and approved
+        if (label.rejected || label.blocking) {
           return 'red';
+        }
+        // v8 ignore else -- TODO: add test #40625
+        if (label.approved) {
+          return 'green';
         }
       }
     }
@@ -324,23 +447,40 @@ export async function setBranchStatus(
   const labelValue =
     label && mapBranchStatusToLabel(branchStatusConfig.state, label);
   if (branchStatusConfig.context && labelValue) {
-    const pr = await getBranchPr(branchStatusConfig.branchName);
-    if (pr === null) {
+    const change = (
+      await client.findChanges(config.repository!, {
+        branchName: branchStatusConfig.branchName,
+        state: 'open',
+        singleChange: true,
+        requestDetails: ['LABELS'],
+      })
+    ).pop();
+
+    const labelKey = branchStatusConfig.context;
+    if (!change?.labels || !Object.hasOwn(change.labels, labelKey)) {
       return;
     }
-    await client.setLabel(pr.number, branchStatusConfig.context, labelValue);
+
+    await client.setLabel(change._number, labelKey, labelValue);
   }
 }
 
-export function getRawFile(
+export async function getRawFile(
   fileName: string,
   repoName?: string,
   branchOrTag?: string,
 ): Promise<string | null> {
-  const repo = repoName ?? config.repository ?? 'All-Projects';
+  const repo = repoName ?? config.repository;
+  if (!repo) {
+    logger.debug('No repo so cannot getRawFile');
+    return null;
+  }
+  // v8 ignore next -- TODO: add test #40625
   const branch =
-    branchOrTag ?? (repo === config.repository ? config.head! : 'HEAD');
-  return client.getFile(repo, branch, fileName);
+    branchOrTag ??
+    (repo === config.repository ? (config.head ?? 'HEAD') : 'HEAD');
+  const result = await client.getFile(repo, branch, fileName);
+  return result;
 }
 
 export async function getJsonFile(
@@ -356,9 +496,7 @@ export async function addReviewers(
   number: number,
   reviewers: string[],
 ): Promise<void> {
-  for (const reviewer of reviewers) {
-    await client.addReviewer(number, reviewer);
-  }
+  await client.addReviewers(number, reviewers);
 }
 
 /**
@@ -368,7 +506,9 @@ export async function addAssignees(
   number: number,
   assignees: string[],
 ): Promise<void> {
+  // v8 ignore else -- TODO: add test #40625
   if (assignees.length) {
+    // v8 ignore else -- TODO: add test #40625
     if (assignees.length > 1) {
       logger.debug(
         `addAssignees(${number}, ${assignees.toString()}) called with more then one assignee! Gerrit only supports one assignee! Using the first from list.`,
@@ -394,58 +534,66 @@ export async function ensureComment(
   return true;
 }
 
-export function massageMarkdown(prBody: string): string {
-  //TODO: do more Gerrit specific replacements?
-  return smartTruncate(readOnlyIssueBody(prBody), maxBodyLength())
-    .replace(regEx(/Pull Request(s)?/g), 'Change-Request$1')
-    .replace(regEx(/\bPR(s)?\b/g), 'Change-Request$1')
-    .replace(regEx(/<\/?summary>/g), '**')
-    .replace(regEx(/<\/?details>/g), '')
-    .replace(regEx(/&#8203;/g), '') //remove zero-width-space not supported in gerrit-markdown
-    .replace(
-      'close this Change-Request unmerged.',
-      'abandon or down vote this Change-Request with -2.',
-    )
-    .replace('Branch creation', 'Change creation')
-    .replace(
-      'Close this Change-Request',
-      'Down-vote this Change-Request with -2',
-    )
-    .replace(
-      'you tick the rebase/retry checkbox',
-      'add "rebase!" at the beginning of the commit message.',
-    )
-    .replace(regEx(`\n---\n\n.*?<!-- rebase-check -->.*?\n`), '')
-    .replace(regEx(/<!--renovate-(?:debug|config-hash):.*?-->/g), '');
+export function massageMarkdown(prBody: string, rebaseLabel: string): string {
+  return (
+    smartTruncate(readOnlyIssueBody(prBody), maxBodyLength())
+      .replace('Branch creation', 'Change creation')
+      .replace(
+        'close this Pull Request unmerged',
+        'abandon or vote this change with Code-Review -2',
+      )
+      .replace(
+        'Close this PR',
+        'Abandon or vote this change with Code-Review -2',
+      )
+      .replace(
+        'you tick the rebase/retry checkbox',
+        `you add the _${rebaseLabel}_ hashtag to this change`,
+      )
+      .replace(
+        'checking the rebase/retry box above',
+        `adding the _${rebaseLabel}_ hashtag to this change`,
+      )
+      .replace(regEx(/\b(?:Pull Request|PR)/g), 'change')
+      // Remove HTML tags not supported in Gerrit markdown
+      .replace(regEx(/<\/?summary>/g), '**')
+      .replace(regEx(/<\/?(?:details|blockquote)>/g), '')
+      .replace(regEx(`\n---\n\n.*?<!-- rebase-check -->.*?\n`), '')
+      .replace(regEx(/<!--renovate-(?:debug|config-hash):.*?-->/g), '')
+      // Remove zero-width-space not supported in Gerrit markdown
+      .replace(regEx(/&#8203;/g), '')
+  );
 }
 
 export function maxBodyLength(): number {
-  return 16384; //TODO: check the real gerrit limit (max. chars)
+  return MAX_GERRIT_COMMENT_SIZE;
 }
 
-export function deleteLabel(number: number, label: string): Promise<void> {
-  return Promise.resolve();
+export async function deleteLabel(
+  number: number,
+  label: string,
+): Promise<void> {
+  await client.setHashtags(number, { remove: [label] });
 }
 
 export function ensureCommentRemoval(
-  ensureCommentRemoval:
-    | EnsureCommentRemovalConfigByTopic
-    | EnsureCommentRemovalConfigByContent,
+  _ensureCommentRemoval:
+    EnsureCommentRemovalConfigByTopic | EnsureCommentRemovalConfigByContent,
 ): Promise<void> {
   return Promise.resolve();
 }
 
-export function ensureIssueClosing(title: string): Promise<void> {
+export function ensureIssueClosing(_title: string): Promise<void> {
   return Promise.resolve();
 }
 
 export function ensureIssue(
-  issueConfig: EnsureIssueConfig,
+  _issueConfig: EnsureIssueConfig,
 ): Promise<EnsureIssueResult | null> {
   return Promise.resolve(null);
 }
 
-export function findIssue(title: string): Promise<Issue | null> {
+export function findIssue(_title: string): Promise<Issue | null> {
   return Promise.resolve(null);
 }
 

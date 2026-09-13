@@ -1,9 +1,9 @@
-import { logger } from '../logger';
-import { isSkipComment } from './ignore';
+import { logger } from '../logger/index.ts';
+import { isSkipComment } from './ignore.ts';
 
-jest.mock('../logger', () => ({
+vi.mock('../logger/index.ts', () => ({
   logger: {
-    debug: jest.fn(),
+    debug: vi.fn(),
   },
 }));
 
@@ -22,6 +22,7 @@ describe('util/ignore', () => {
 
   it('logs unknown command for "renovate:" comments without "ignore"', () => {
     isSkipComment('renovate:update');
+
     expect(logger.debug).toHaveBeenCalledWith(
       'Unknown comment command: update',
     );

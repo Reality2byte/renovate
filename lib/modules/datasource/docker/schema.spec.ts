@@ -1,4 +1,4 @@
-import { ZodError } from 'zod';
+import { ZodError } from 'zod/v4';
 import {
   DistributionListManifest,
   DistributionManifest,
@@ -6,7 +6,10 @@ import {
   OciHelmConfig,
   OciImageIndexManifest,
   OciImageManifest,
-} from './schema';
+  QuayTagsResponse,
+  RegistryAuthToken,
+  RegistryTagsList,
+} from './schema.ts';
 
 describe('modules/datasource/docker/schema', () => {
   it('parses OCI image manifest', () => {
@@ -149,6 +152,115 @@ describe('modules/datasource/docker/schema', () => {
     expect(Manifest.parse(manifest)).toMatchObject({
       schemaVersion: 2,
       mediaType: 'application/vnd.oci.image.index.v1+json',
+    });
+  });
+
+  it('parses OCI image index and ignores unknown sub manifests', () => {
+    const manifest = {
+      schemaVersion: 2,
+      mediaType: 'application/vnd.oci.image.index.v1+json',
+      manifests: [
+        {
+          mediaType: 'application/vnd.oci.image.manifest.v1+json',
+          size: 7143,
+          digest:
+            'sha256:e692418e4cbaf90ca69d05a66403747baa33ee08806650b51fab815ad7fc331f',
+          platform: {
+            architecture: 'ppc64le',
+            os: 'linux',
+          },
+        },
+        {
+          mediaType: 'application/vnd.oci.image.manifest.v1+json',
+          size: 7682,
+          digest:
+            'sha256:5b0bcabd1ed22e9fb1310cf6c2dec7cdef19f0ad69efa1f392e94a4333501270',
+          platform: {
+            architecture: 'amd64',
+            os: 'linux',
+          },
+        },
+        {
+          annotations: {
+            'com.docker.official-images.bashbrew.arch': 'windows-amd64',
+          },
+          digest:
+            'sha256:68b622deabed02180f6c985925143b02076942a3d5390e7bae36c037d646eee2',
+          mediaType: 'application/vnd.docker.distribution.manifest.v2+json',
+          platform: {
+            architecture: 'amd64',
+            os: 'windows',
+            'os.version': '10.0.17763.7314',
+          },
+          size: 3042,
+        },
+      ],
+      annotations: {
+        'com.example.key1': 'value1',
+        'com.example.key2': 'value2',
+      },
+    };
+    const parsedManifest = OciImageIndexManifest.parse(manifest);
+
+    expect(parsedManifest).toMatchObject({
+      schemaVersion: 2,
+      mediaType: 'application/vnd.oci.image.index.v1+json',
+    });
+
+    expect(parsedManifest.manifests).toHaveLength(2);
+  });
+
+  it('parses OCI flux artifact', () => {
+    const manifest = {
+      schemaVersion: 2,
+      mediaType: 'application/vnd.oci.image.manifest.v1+json',
+      config: {
+        mediaType: 'application/vnd.cncf.flux.config.v1+json',
+        digest:
+          'sha256:7cd37ea18409c76d241ad0d4ed484e206275be3535782be144ae257d54dd8d50',
+        size: 233,
+      },
+      layers: [
+        {
+          mediaType: 'application/vnd.cncf.flux.content.v1.tar+gzip',
+          digest:
+            'sha256:243a01363756cd6bc04243680d4c9aeac274523f298f9525823db9ae7e188a3c',
+          size: 1113,
+        },
+      ],
+      annotations: {
+        'org.opencontainers.image.source':
+          'https://github.com/renovatebot/renovate',
+      },
+    };
+    expect(OciImageManifest.parse(manifest)).toMatchObject({
+      schemaVersion: 2,
+      mediaType: 'application/vnd.oci.image.manifest.v1+json',
+      config: {
+        mediaType: 'application/vnd.cncf.flux.config.v1+json',
+        digest:
+          'sha256:7cd37ea18409c76d241ad0d4ed484e206275be3535782be144ae257d54dd8d50',
+        size: 233,
+      },
+      annotations: {
+        'org.opencontainers.image.source':
+          'https://github.com/renovatebot/renovate',
+      },
+    });
+
+    expect(Manifest.parse(manifest)).toMatchObject({
+      schemaVersion: 2,
+      mediaType: 'application/vnd.oci.image.manifest.v1+json',
+      config: {
+        mediaType: 'application/vnd.cncf.flux.config.v1+json',
+        digest:
+          'sha256:7cd37ea18409c76d241ad0d4ed484e206275be3535782be144ae257d54dd8d50',
+        size: 233,
+      },
+      annotations: {
+        'org.opencontainers.image.source':
+          'https://github.com/renovatebot/renovate',
+      },
     });
   });
 
@@ -322,5 +434,49 @@ describe('modules/datasource/docker/schema', () => {
 
   it('throws for invalid manifest', () => {
     expect(() => Manifest.parse({ schemaVersion: 2 })).toThrow(ZodError);
+  });
+
+  it('parses RegistryAuthToken with token field', () => {
+    expect(RegistryAuthToken.parse({ token: 'abc123' })).toEqual({
+      token: 'abc123',
+    });
+  });
+
+  it('parses RegistryAuthToken with access_token field', () => {
+    expect(RegistryAuthToken.parse({ access_token: 'abc123' })).toEqual({
+      access_token: 'abc123',
+    });
+  });
+
+  it('parses RegistryAuthToken with extra fields (lenient)', () => {
+    expect(
+      RegistryAuthToken.parse({ token: 'abc', issued_at: '2024-01-01' }),
+    ).toMatchObject({ token: 'abc' });
+  });
+
+  it('parses RegistryTagsList', () => {
+    expect(RegistryTagsList.parse({ tags: ['1.0', '2.0', 'latest'] })).toEqual({
+      tags: ['1.0', '2.0', 'latest'],
+    });
+  });
+
+  it('parses QuayTagsResponse', () => {
+    expect(
+      QuayTagsResponse.parse({
+        tags: [{ name: '1.0' }, { name: '2.0' }],
+        has_additional: true,
+      }),
+    ).toEqual({
+      tags: [{ name: '1.0' }, { name: '2.0' }],
+      has_additional: true,
+    });
+  });
+
+  it('parses QuayTagsResponse and drops invalid tag entries (LooseArray)', () => {
+    const result = QuayTagsResponse.parse({
+      tags: [{ name: '1.0' }, { invalid: true }, { name: '2.0' }],
+      has_additional: false,
+    });
+    expect(result.tags).toEqual([{ name: '1.0' }, { name: '2.0' }]);
   });
 });

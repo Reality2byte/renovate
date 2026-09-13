@@ -1,6 +1,6 @@
-import is from '@sindresorhus/is';
-import { parse } from './parser';
-import type { Fragment, FragmentPath, FragmentUpdater } from './types';
+import { isNumber, isString } from '@sindresorhus/is';
+import { parse } from './parser.ts';
+import type { Fragment, FragmentPath, FragmentUpdater } from './types.ts';
 
 export function findCodeFragment(
   input: string,
@@ -13,18 +13,16 @@ export function findCodeFragment(
 
   const [ruleIndex, ...restPath] = path;
   let fragment: Fragment | undefined = parsed[ruleIndex];
-  for (let pathIndex = 0; pathIndex < restPath.length; pathIndex += 1) {
+  for (const key of restPath) {
     if (!fragment) {
       break;
     }
 
-    const key = restPath[pathIndex];
-
-    if (fragment.type === 'array' && is.number(key)) {
+    if (fragment.type === 'array' && isNumber(key)) {
       fragment = fragment.children[key];
     }
 
-    if (fragment.type === 'record' && is.string(key)) {
+    if (fragment.type === 'record' && isString(key)) {
       fragment = fragment.children[key];
     }
   }
@@ -40,7 +38,7 @@ export function patchCodeAtFragment(
   const { value, offset } = fragment;
   const left = input.slice(0, offset);
   const right = input.slice(offset + value.length);
-  return is.string(updater)
+  return isString(updater)
     ? `${left}${updater}${right}`
     : `${left}${updater(value)}${right}`;
 }

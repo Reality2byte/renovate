@@ -1,12 +1,8 @@
 import RE2 from 're2';
-import { CONFIG_VALIDATION } from '../constants/error-messages';
-import { regEx } from './regex';
+import { CONFIG_VALIDATION } from '../constants/error-messages.ts';
+import { regEx } from './regex.ts';
 
 describe('util/regex', () => {
-  beforeEach(() => {
-    jest.resetModules();
-  });
-
   it('uses RE2', () => {
     expect(regEx('foo')).toBeInstanceOf(RE2);
   });
@@ -30,11 +26,14 @@ describe('util/regex', () => {
   });
 
   it('Falls back to RegExp', async () => {
-    jest.doMock('re2', () => {
-      throw new Error();
-    });
+    vi.resetModules();
+    vi.doMock('../expose.ts', () => ({
+      re2: () => {
+        throw new Error();
+      },
+    }));
 
-    const regex = await import('./regex');
+    const regex = await import('./regex.ts');
     expect(regex.regEx('foo')).toBeInstanceOf(RegExp);
   });
 });

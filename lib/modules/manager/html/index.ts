@@ -1,19 +1,20 @@
-import type { Category } from '../../../constants';
-import { CdnjsDatasource } from '../../datasource/cdnjs';
-import * as semverVersioning from '../../versioning/semver';
-import { extractPackageFile } from './extract';
+import type { Category } from '../../../constants/index.ts';
+import { CdnjsDatasource } from '../../datasource/cdnjs/index.ts';
+import * as semverVersioning from '../../versioning/semver/index.ts';
+import { extractPackageFile } from './extract.ts';
 
 export { extractPackageFile };
 
+export const displayName = 'HTML';
+export const categories: Category[] = ['cd'];
+
 export const defaultConfig = {
-  fileMatch: ['\\.html?$'],
+  managerFilePatterns: ['/\\.html?$/'],
   versioning: semverVersioning.id,
   digest: {
     enabled: false,
   },
   pinDigests: false,
 };
-
-export const categories: Category[] = ['cd'];
 
 export const supportedDatasources = [CdnjsDatasource.id];

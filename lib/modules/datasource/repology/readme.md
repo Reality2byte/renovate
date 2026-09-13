@@ -21,7 +21,7 @@ First you would set a custom manager in your `renovate.json` file for `Dockerfil
   "customManagers": [
     {
       "customType": "regex",
-      "fileMatch": ["^Dockerfile$"],
+      "managerFilePatterns": ["/^Dockerfile$/"],
       "matchStrings": [
         "#\\s*renovate:\\s*datasource=(?<datasource>.*?) depName=(?<depName>.*?)( versioning=(?<versioning>.*?))?\\sENV .*?_VERSION=\"(?<currentValue>.*)\"\\s"
       ],
@@ -48,7 +48,6 @@ RUN apk add --no-cache \
 
 When the operating system package for `gcc` of `Alpine Linux 3.12` is updated, Renovate updates the environment variable.
 
-<!-- prettier-ignore -->
 !!! tip
-    We recommend you try `loose` or `deb` versioning for distribution packages first.
-    This is because the version number usually doesn't match Renovate's default `semver-coerced` specification.
+  We recommend you try `loose` or `deb` versioning for distribution packages first.
+  This is because the version number usually doesn't match Renovate's default `semver-coerced` specification.

@@ -1,21 +1,22 @@
 import { quote } from 'shlex';
 import upath from 'upath';
 
-import { logger } from '../../../logger';
-import { coerceArray } from '../../../util/array';
-import type { ExtraEnv } from '../../../util/exec/types';
-import { privateCacheDir } from '../../../util/fs';
-import { addSecretForSanitizing } from '../../../util/sanitize';
-import { fromBase64 } from '../../../util/string';
-import { ecrRegex, getECRAuthToken } from '../../datasource/docker/ecr';
-import type { RepositoryRule } from './types';
+import { logger } from '../../../logger/index.ts';
+import { coerceArray } from '../../../util/array.ts';
+import type { ExtraEnv } from '../../../util/exec/types.ts';
+import { privateCacheDir } from '../../../util/fs/index.ts';
+import { addSecretForSanitizing } from '../../../util/sanitize.ts';
+import { fromBase64 } from '../../../util/string.ts';
+import { ecrRegex, getECRAuthToken } from '../../datasource/docker/ecr.ts';
+import type { RepositoryRule } from './types.ts';
 
 export async function generateLoginCmd(
   repositoryRule: RepositoryRule,
-  loginCMD: string,
 ): Promise<string | null> {
+  logger.trace({ repositoryRule }, 'Generating Helm registry login command');
   const { hostRule, repository } = repositoryRule;
   const { username, password } = hostRule;
+  const loginCMD = 'helm registry login';
   if (username !== 'AWS' && ecrRegex.test(repository)) {
     logger.trace({ repository }, `Using ecr auth for Helm registry`);
     const [, region] = coerceArray(ecrRegex.exec(repository));
@@ -31,13 +32,17 @@ export async function generateLoginCmd(
     addSecretForSanitizing(password);
     return `${loginCMD} --username ${quote(username)} --password ${quote(
       password,
-    )} ${repository}`;
+    )} ${quote(repository)}`;
   }
   if (username && password) {
     logger.trace({ repository }, `Using basic auth for Helm registry`);
-    return `${loginCMD} --username ${quote(username)} --password ${quote(
+    // Split off any path as it's not valid for the helm registry login command
+    const hostPart = repository.split('/')[0];
+    const cmd = `${loginCMD} --username ${quote(username)} --password ${quote(
       password,
-    )} ${repository}`;
+    )} ${quote(hostPart)}`;
+    logger.trace({ cmd }, 'Generated Helm registry login command');
+    return cmd;
   }
   return null;
 }

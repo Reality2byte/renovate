@@ -1,24 +1,28 @@
 import { quote } from 'shlex';
-import type { UserEnv } from '../../../config/types';
-import { TEMPORARY_ERROR } from '../../../constants/error-messages';
-import { logger } from '../../../logger';
-import { coerceArray } from '../../../util/array';
-import { exec } from '../../../util/exec';
-import type { ExecOptions } from '../../../util/exec/types';
+import { TEMPORARY_ERROR } from '../../../constants/error-messages.ts';
+import { logger } from '../../../logger/index.ts';
+import { coerceArray } from '../../../util/array.ts';
+import type { ExecOptions } from '../../../util/exec/types.ts';
 import {
   findLocalSiblingOrParent,
   readLocalFile,
   writeLocalFile,
-} from '../../../util/fs';
-import { getGitEnvironmentVariables } from '../../../util/git/auth';
-import { regEx } from '../../../util/regex';
-import type { UpdateArtifact, UpdateArtifactsResult, Upgrade } from '../types';
-import { extractLockFileContentVersions } from './locked-version';
+} from '../../../util/fs/index.ts';
+import { withGitEnvironment } from '../../../util/git/exec.ts';
+import { regEx } from '../../../util/regex.ts';
+import { CrateDatasource } from '../../datasource/crate/index.ts';
+import type {
+  UpdateArtifact,
+  UpdateArtifactsResult,
+  Upgrade,
+} from '../types.ts';
+import { extractLockFileContentVersions } from './locked-version.ts';
+
+const gitExec = withGitEnvironment(['cargo']);
 
 async function cargoUpdate(
   manifestPath: string,
   isLockFileMaintenance: boolean,
-  userConfiguredEnv: UserEnv,
   constraint: string | undefined,
 ): Promise<void> {
   let cmd = `cargo update --config net.git-fetch-with-cli=true --manifest-path ${quote(
@@ -31,29 +35,29 @@ async function cargoUpdate(
   }
 
   const execOptions: ExecOptions = {
-    userConfiguredEnv,
-    extraEnv: { ...getGitEnvironmentVariables(['cargo']) },
     docker: {},
     toolConstraints: [{ toolName: 'rust', constraint }],
   };
-  await exec(cmd, execOptions);
+  await gitExec(cmd, execOptions);
 }
 
 async function cargoUpdatePrecise(
   manifestPath: string,
   updatedDeps: Upgrade[],
-  userConfiguredEnv: UserEnv,
   constraint: string | undefined,
 ): Promise<void> {
-  // First update all dependencies that have been bumped in `Cargo.toml`.
-  const cmds = [
-    'cargo update --config net.git-fetch-with-cli=true' +
-      ` --manifest-path ${quote(manifestPath)} --workspace`,
-  ];
+  const cmds = [];
 
-  // Update individual dependencies to their `newVersion`. Necessary when
+  // First update individual dependencies to their `newVersion`. Necessary when
   // using the `update-lockfile` rangeStrategy which doesn't touch Cargo.toml.
   for (const dep of updatedDeps) {
+    // If the range is bumped in Cargo.toml, the old lockedVersion may no longer
+    // exist in Cargo's dependency graph, so let the --workspace update at the
+    // end re-resolve it instead.
+    if (dep.currentValue && dep.newValue && dep.currentValue !== dep.newValue) {
+      continue;
+    }
+
     cmds.push(
       `cargo update --config net.git-fetch-with-cli=true` +
         ` --manifest-path ${quote(manifestPath)}` +
@@ -62,14 +66,17 @@ async function cargoUpdatePrecise(
     );
   }
 
+  // Then update all dependencies that have been bumped in `Cargo.toml`.
+  cmds.push(
+    `cargo update --config net.git-fetch-with-cli=true --manifest-path ${quote(manifestPath)} --workspace`,
+  );
+
   const execOptions: ExecOptions = {
-    userConfiguredEnv,
-    extraEnv: { ...getGitEnvironmentVariables(['cargo']) },
     docker: {},
     toolConstraints: [{ toolName: 'rust', constraint }],
   };
 
-  await exec(cmds, execOptions);
+  await gitExec(cmds, execOptions);
 }
 
 export async function updateArtifacts(
@@ -104,7 +111,7 @@ async function updateArtifactsImpl(
     return null;
   }
 
-  const isLockFileMaintenance = config.updateType === 'lockFileMaintenance';
+  const { isLockFileMaintenance } = config;
   if (!isLockFileMaintenance && !updatedDeps?.length) {
     logger.debug('No more dependencies to update');
     return [
@@ -120,35 +127,34 @@ async function updateArtifactsImpl(
 
   try {
     await writeLocalFile(packageFileName, newPackageFileContent);
-    logger.debug('Updating ' + lockFileName);
+    logger.debug(`Updating ${lockFileName}`);
 
     if (isLockFileMaintenance) {
-      await cargoUpdate(
-        packageFileName,
-        true,
-        config.env ?? {},
-        config.constraints?.rust,
-      );
+      await cargoUpdate(packageFileName, true, config.constraints?.rust);
     } else {
-      const missingDep = updatedDeps.find((dep) => !dep.lockedVersion);
-      if (missingDep) {
-        // If there is a dependency without a locked version then log a warning
-        // and perform a regular workspace lockfile update.
-        logger.warn(
-          `Missing locked version for dependency \`${missingDep.depName}\``,
-        );
-        await cargoUpdate(
-          packageFileName,
-          false,
-          config.env ?? {},
-          config.constraints?.rust,
-        );
+      const hasNonCrateDep = updatedDeps.some(
+        (dep) => dep.datasource !== CrateDatasource.id,
+      );
+      const crateDepWithoutLockedVersion = updatedDeps.find(
+        (dep) => !dep.lockedVersion && dep.datasource === CrateDatasource.id,
+      );
+      // Non-crate dependencies (like git ones) do not have locked versions.
+      // For crate dependencies, a locked version is expected.
+      // In both situations, perform a regular workspace lockfile update.
+      if (hasNonCrateDep || crateDepWithoutLockedVersion) {
+        if (crateDepWithoutLockedVersion) {
+          // Only warn when a crate dependency has no locked version
+          logger.warn(
+            { dependency: crateDepWithoutLockedVersion.depName },
+            'Missing locked version for dependency',
+          );
+        }
+        await cargoUpdate(packageFileName, false, config.constraints?.rust);
       } else {
         // If all dependencies have locked versions then update them precisely.
         await cargoUpdatePrecise(
           packageFileName,
           updatedDeps,
-          config.env ?? {},
           config.constraints?.rust,
         );
       }
@@ -214,7 +220,7 @@ async function updateArtifactsImpl(
     return [
       {
         artifactError: {
-          lockFile: lockFileName,
+          fileName: lockFileName,
           stderr: err.message,
         },
       },

@@ -1,14 +1,15 @@
-import type { KnownProps } from 'editorconfig';
+import { isNumber } from '@sindresorhus/is';
+import type { Props } from 'editorconfig';
 import { parse } from 'editorconfig';
 import upath from 'upath';
-import { GlobalConfig } from '../../config/global';
-import { logger } from '../../logger';
-import type { CodeFormat } from './code-format';
-import type { IndentationType } from './indentation-type';
+import { GlobalConfig } from '../../config/global.ts';
+import { logger } from '../../logger/index.ts';
+import type { CodeFormat } from './code-format.ts';
+import type { IndentationType } from './indentation-type.ts';
 
 export class EditorConfig {
   public static async getCodeFormat(fileName: string): Promise<CodeFormat> {
-    const localDir = GlobalConfig.get('localDir', '');
+    const localDir = GlobalConfig.get('localDir');
     try {
       const knownProps = await parse(upath.join(localDir, fileName));
       return {
@@ -23,7 +24,7 @@ export class EditorConfig {
   }
 
   private static getIndentationType(
-    knownProps: KnownProps,
+    knownProps: Props,
   ): IndentationType | undefined {
     const { indent_style: indentStyle } = knownProps;
 
@@ -38,12 +39,10 @@ export class EditorConfig {
     return undefined;
   }
 
-  private static getIndentationSize(
-    knownProps: KnownProps,
-  ): number | undefined {
-    const indentSize = Number(knownProps.indent_size);
+  private static getIndentationSize(knownProps: Props): number | undefined {
+    const { indent_size: indentSize } = knownProps;
 
-    if (!Number.isNaN(indentSize) && Number.isInteger(indentSize)) {
+    if (isNumber(indentSize) && Number.isInteger(indentSize)) {
       return indentSize;
     }
 

@@ -1,5 +1,34 @@
 import type { SemVer } from 'semver';
-import type { RangeStrategy } from '../../types';
+import type { RangeStrategy } from '../../types/index.ts';
+
+export interface GenericVersion {
+  release: number[];
+  /** prereleases are treated in the standard semver manner, if present */
+  prerelease?: string;
+  suffix?: string;
+}
+export type VersionParser = (version: string) => GenericVersion;
+
+export type VersionComparator = (version: string, other: string) => number;
+
+export interface DistroSchedule {
+  codename: string;
+  series: string;
+  created: string;
+  release?: string;
+  eol?: string;
+  eol_server?: string;
+  eol_esm?: string;
+  eol_lts?: string;
+  eol_elts?: string;
+}
+
+export type DistroDataFile =
+  'data/ubuntu-distro-info.json' | 'data/debian-distro-info.json';
+
+export type DistroInfoRecord = Record<string, DistroSchedule>;
+
+export type DistroInfoRecordWithVersion = { version: string } & DistroSchedule;
 
 export interface NewValueConfig {
   currentValue: string;
@@ -7,6 +36,12 @@ export interface NewValueConfig {
   currentVersion?: string;
   newVersion: string;
   isReplacement?: boolean;
+  /**
+   * All versions numbers that this given Release has.
+   *
+   * Allows Versioning modules to determine whether the version they're proposing matches a known version.
+   */
+  allVersions?: Set<string>;
 }
 export interface VersioningApi {
   // validation
@@ -58,6 +93,8 @@ export interface VersioningApi {
    */
   isCompatible(version: string, current?: string): boolean;
 
+  isBreaking?(current: string, version: string): boolean;
+
   // digestion of version
 
   getMajor(version: string | SemVer): null | number;
@@ -104,6 +141,12 @@ export interface VersioningApi {
   getNewValue(newValueConfig: NewValueConfig): string | null;
 
   /**
+   * Convert the `newVersion` to a pinned value.
+   * @param newVersion
+   */
+  getPinnedValue?(newVersion: string): string;
+
+  /**
    * Compare two versions. Return `0` if `v1 == v2`, or `1` if `v1` is
    * greater, or `-1` if `v2` is greater.
    */
@@ -126,6 +169,11 @@ export interface VersioningApi {
   subset?(subRange: string, superRange: string): boolean | undefined;
 
   /**
+   * Checks whether subRange intersects superRange.
+   */
+  intersects?(subRange: string, superRange: string): boolean;
+
+  /**
    * Return whether unstable-to-unstable upgrades within the same major version are allowed.
    */
   allowUnstableMajorUpgrades?: boolean;
@@ -137,6 +185,4 @@ export interface VersioningApi {
   isSame?(type: 'major' | 'minor' | 'patch', a: string, b: string): boolean;
 }
 
-export interface VersioningApiConstructor {
-  new (config?: string): VersioningApi;
-}
+export type VersioningApiConstructor = new (config?: string) => VersioningApi;

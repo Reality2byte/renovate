@@ -1,32 +1,32 @@
-import url from 'node:url';
-import is from '@sindresorhus/is';
+import { isNonEmptyString, isString } from '@sindresorhus/is';
 import ini from 'ini';
-import { GlobalConfig } from '../../../config/global';
-import type { PackageRule } from '../../../config/types';
-import { logger } from '../../../logger';
-import type { HostRule } from '../../../types';
-import * as hostRules from '../../../util/host-rules';
-import { regEx } from '../../../util/regex';
-import { fromBase64 } from '../../../util/string';
-import { ensureTrailingSlash, isHttpUrl } from '../../../util/url';
-import { defaultRegistryUrls } from './common';
-import type { NpmrcRules } from './types';
+import { GlobalConfig } from '../../../config/global.ts';
+import type { PackageRule } from '../../../config/types.ts';
+import { logger } from '../../../logger/index.ts';
+import type { HostRule } from '../../../types/index.ts';
+import { getEnv } from '../../../util/env.ts';
+import * as hostRules from '../../../util/host-rules.ts';
+import { regEx } from '../../../util/regex.ts';
+import { fromBase64 } from '../../../util/string.ts';
+import { ensureTrailingSlash, isHttpUrl } from '../../../util/url.ts';
+import { defaultRegistryUrl } from './common.ts';
+import type { NpmrcRules } from './types.ts';
 
 let npmrc: Record<string, any> = {};
 let npmrcRaw = '';
 let packageRules: PackageRule[] = [];
 
-function envReplace(value: any, env = process.env): any {
-  // istanbul ignore if
-  if (!is.string(value)) {
+function envReplace(value: any, env = getEnv()): any {
+  /* v8 ignore next -- TODO: add test */
+  if (!isString(value)) {
     return value;
   }
 
-  const ENV_EXPR = regEx(/(\\*)\$\{([^}]+)\}/g);
+  const ENV_EXPR = regEx(/(?<esc>\\*)\$\{(?<envVarName>[^}]+)\}/g);
 
   return value.replace(ENV_EXPR, (match, _esc, envVarName) => {
     if (env[envVarName] === undefined) {
-      logger.warn('Failed to replace env in config: ' + match);
+      logger.warn({ match }, 'Failed to replace env in config');
       throw new Error('env-replace');
     }
     return env[envVarName];
@@ -37,7 +37,7 @@ export function getMatchHostFromNpmrcHost(input: string): string {
   if (input.startsWith('//')) {
     const matchHost = input.replace('//', '');
     if (matchHost.includes('/')) {
-      return 'https://' + matchHost;
+      return `https://${matchHost}`;
     }
     return matchHost;
   }
@@ -53,7 +53,7 @@ export function convertNpmrcToRules(npmrc: Record<string, any>): NpmrcRules {
   const hostType = 'npm';
   const hosts: Record<string, HostRule> = {};
   for (const [key, value] of Object.entries(npmrc)) {
-    if (!is.nonEmptyString(value)) {
+    if (!isNonEmptyString(value)) {
       continue;
     }
     const keyParts = key.split(':');
@@ -88,7 +88,7 @@ export function convertNpmrcToRules(npmrc: Record<string, any>): NpmrcRules {
   const matchDatasources = ['npm'];
   const { registry } = npmrc;
   // packageRules order matters, so look for a default registry first
-  if (is.nonEmptyString(registry)) {
+  if (isNonEmptyString(registry)) {
     if (isHttpUrl(registry)) {
       // Default registry
       rules.packageRules?.push({
@@ -101,12 +101,12 @@ export function convertNpmrcToRules(npmrc: Record<string, any>): NpmrcRules {
   }
   // Now look for scoped registries
   for (const [key, value] of Object.entries(npmrc)) {
-    if (!is.nonEmptyString(value)) {
+    if (!isNonEmptyString(value)) {
       continue;
     }
     const keyParts = key.split(':');
     const keyType = keyParts.pop();
-    if (keyType === 'registry' && keyParts.length && is.nonEmptyString(value)) {
+    if (keyType === 'registry' && keyParts.length && isNonEmptyString(value)) {
       const scope = keyParts.join(':');
       if (isHttpUrl(value)) {
         rules.packageRules?.push({
@@ -136,7 +136,7 @@ export function setNpmrc(input?: string): void {
       if (
         !exposeAllEnv &&
         key.endsWith('registry') &&
-        is.string(val) &&
+        isString(val) &&
         val.includes('localhost')
       ) {
         logger.debug(
@@ -166,7 +166,7 @@ export function setNpmrc(input?: string): void {
 }
 
 export function resolveRegistryUrl(packageName: string): string {
-  let registryUrl = defaultRegistryUrls[0];
+  let registryUrl = defaultRegistryUrl;
   for (const rule of packageRules) {
     const { matchPackageNames, registryUrls } = rule;
     if (
@@ -184,8 +184,8 @@ export function resolvePackageUrl(
   registryUrl: string,
   packageName: string,
 ): string {
-  return url.resolve(
-    ensureTrailingSlash(registryUrl),
+  return new URL(
     encodeURIComponent(packageName).replace(regEx(/^%40/), '@'),
-  );
+    ensureTrailingSlash(registryUrl),
+  ).href;
 }

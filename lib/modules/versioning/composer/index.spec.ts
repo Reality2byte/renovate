@@ -1,4 +1,4 @@
-import { api as semver } from '.';
+import { api as semver } from './index.ts';
 
 describe('modules/versioning/composer/index', () => {
   it.each`
@@ -175,9 +175,29 @@ describe('modules/versioning/composer/index', () => {
   });
 
   it.each`
+    a                     | b                     | expected
+    ${'1.0.0'}            | ${'1.0.0'}            | ${true}
+    ${'1.0.0'}            | ${'>=1.0.0'}          | ${true}
+    ${'1.1.0'}            | ${'^1.0.0'}           | ${true}
+    ${'>=1.0.0'}          | ${'>=1.0.0'}          | ${true}
+    ${'~1.0.0'}           | ${'~1.0.0'}           | ${true}
+    ${'^1.0.0'}           | ${'^1.0.0'}           | ${true}
+    ${'>=1.0.0'}          | ${'>=1.1.0'}          | ${true}
+    ${'~1.0.0'}           | ${'~1.1.0'}           | ${false}
+    ${'^1.0.0'}           | ${'^1.1.0'}           | ${true}
+    ${'>=1.0.0'}          | ${'<1.0.0'}           | ${false}
+    ${'~1.0.0'}           | ${'~0.9.0'}           | ${false}
+    ${'^1.0.0'}           | ${'^0.9.0'}           | ${false}
+    ${'^1.1.0 || ^2.0.0'} | ${'^1.0.0 || ^2.0.0'} | ${true}
+    ${'^1.0.0 || ^2.0.0'} | ${'^1.1.0 || ^2.0.0'} | ${true}
+    ${'^7.0.0'}           | ${'<8.0-DEV'}         | ${true}
+    ${'^7.0.0'}           | ${'less than 8'}      | ${false}
+  `('intersects("$a", "$b") === $expected', ({ a, b, expected }) => {
+    expect(semver.intersects!(a, b)).toBe(expected);
+  });
+
+  it.each`
     currentValue              | rangeStrategy        | currentVersion    | newVersion       | expected
-    ${'~1.0'}                 | ${'pin'}             | ${'1.0'}          | ${'V1.1'}        | ${'V1.1'}
-    ${'^1.0'}                 | ${'pin'}             | ${'1.0'}          | ${'V1.1'}        | ${'V1.1'}
     ${'v1.0'}                 | ${'replace'}         | ${'1.0'}          | ${'1.1'}         | ${'v1.1'}
     ${'^1.0'}                 | ${'bump'}            | ${'1.0.0'}        | ${'1.0.7'}       | ${'^1.0.7'}
     ${'^9.4'}                 | ${'bump'}            | ${'9.4.3'}        | ${'9.4.8'}       | ${'^9.4.8'}
@@ -239,7 +259,7 @@ describe('modules/versioning/composer/index', () => {
     ${['1.2.3-p1', '1.2.3-p2', '1.2.3']}                                          | ${['1.2.3', '1.2.3-p1', '1.2.3-p2']}
     ${['1.2.3-p1', '1.2.2']}                                                      | ${['1.2.2', '1.2.3-p1']}
     ${['1.0-p1', '1']}                                                            | ${['1', '1.0-p1']}
-  `('$versions -> sortVersions -> $expected ', ({ versions, expected }) => {
+  `('$versions -> sortVersions -> $expected', ({ versions, expected }) => {
     expect(versions.sort(semver.sortVersions)).toEqual(expected);
   });
 
@@ -250,4 +270,22 @@ describe('modules/versioning/composer/index', () => {
   `('isCompatible("$version") === $expected', ({ version, expected }) => {
     expect(semver.isCompatible(version)).toBe(expected);
   });
+
+  // isBreaking
+  it.each`
+    currentVersion | newVersion | expected
+    ${'0.0.1'}     | ${'0.0.2'} | ${true}
+    ${'0.0.1'}     | ${'0.2.0'} | ${true}
+    ${'0.0.1'}     | ${'1.0.0'} | ${true}
+    ${'1.0.0'}     | ${'1.0.0'} | ${false}
+    ${'1.0.0'}     | ${'2.0.0'} | ${true}
+    ${'2.0.0'}     | ${'1.0.0'} | ${true}
+    ${'2.0.0'}     | ${'2.0.1'} | ${false}
+    ${'2.0.0'}     | ${'2.1.0'} | ${false}
+  `(
+    'isBreaking("$currentVersion", "$newVersion") === $expected',
+    ({ newVersion, currentVersion, expected }) => {
+      expect(semver.isBreaking!(currentVersion, newVersion)).toBe(expected);
+    },
+  );
 });

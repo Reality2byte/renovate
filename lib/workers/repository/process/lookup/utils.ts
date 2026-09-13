@@ -1,10 +1,10 @@
-import is from '@sindresorhus/is';
+import { isNonEmptyString, isNullOrUndefined } from '@sindresorhus/is';
 
-import { getRangeStrategy } from '../../../../modules/manager';
-import type { LookupUpdate } from '../../../../modules/manager/types';
-import * as allVersioning from '../../../../modules/versioning';
-import * as template from '../../../../util/template';
-import type { LookupUpdateConfig } from './types';
+import { getRangeStrategy } from '../../../../modules/manager/index.ts';
+import type { LookupUpdate } from '../../../../modules/manager/types.ts';
+import * as allVersioning from '../../../../modules/versioning/index.ts';
+import * as template from '../../../../util/template/index.ts';
+import type { LookupUpdateConfig } from './types.ts';
 
 export function addReplacementUpdateIfValid(
   updates: LookupUpdate[],
@@ -29,9 +29,10 @@ export function isReplacementRulesConfigured(
   config: LookupUpdateConfig,
 ): boolean {
   return (
-    is.nonEmptyString(config.replacementName) ||
-    is.nonEmptyString(config.replacementNameTemplate) ||
-    is.nonEmptyString(config.replacementVersion)
+    isNonEmptyString(config.replacementName) ||
+    isNonEmptyString(config.replacementNameTemplate) ||
+    isNonEmptyString(config.replacementVersion) ||
+    isNonEmptyString(config.replacementVersionTemplate)
   );
 }
 
@@ -50,18 +51,29 @@ export function determineNewReplacementName(
 export function determineNewReplacementValue(
   config: LookupUpdateConfig,
 ): string | undefined | null {
+  const newVersion = getNewVersion(config);
+  if (!newVersion) {
+    return config.currentValue;
+  }
+
   const versioningApi = allVersioning.get(config.versioning);
   const rangeStrategy = getRangeStrategy(config);
 
-  if (!is.nullOrUndefined(config.replacementVersion)) {
-    return versioningApi.getNewValue({
-      // TODO #22198
-      currentValue: config.currentValue!,
-      newVersion: config.replacementVersion,
-      rangeStrategy: rangeStrategy!,
-      isReplacement: true,
-    });
-  }
+  return versioningApi.getNewValue({
+    // TODO #22198
+    currentValue: config.currentValue!,
+    newVersion,
+    rangeStrategy: rangeStrategy!,
+    isReplacement: true,
+  });
+}
 
-  return config.currentValue;
+function getNewVersion(config: LookupUpdateConfig): string | null {
+  if (!isNullOrUndefined(config.replacementVersion)) {
+    return config.replacementVersion;
+  }
+  if (!isNullOrUndefined(config.replacementVersionTemplate)) {
+    return template.compile(config.replacementVersionTemplate, config, true);
+  }
+  return null;
 }

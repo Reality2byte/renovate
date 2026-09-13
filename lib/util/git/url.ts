@@ -1,8 +1,9 @@
 import gitUrlParse from 'git-url-parse';
-import { logger } from '../../logger';
-import { detectPlatform } from '../common';
-import * as hostRules from '../host-rules';
-import { regEx } from '../regex';
+import { logger } from '../../logger/index.ts';
+import { detectPlatform } from '../common.ts';
+import * as hostRules from '../host-rules.ts';
+import { regEx } from '../regex.ts';
+import { parseUrl } from '../url.ts';
 
 export function parseGitUrl(url: string): gitUrlParse.GitUrl {
   return gitUrlParse(url);
@@ -16,7 +17,7 @@ export function getHttpUrl(url: string, token?: string): string {
 
   // Convert non-https URLs to https and strip port
   if (!regEx(/^https?$/).test(protocol)) {
-    parsedUrl.port = 443;
+    parsedUrl.port = '443';
     protocol = 'https';
   }
 
@@ -43,13 +44,19 @@ export function getHttpUrl(url: string, token?: string): string {
       // HTTPS URLs look like https://git.my.com/scm/project/repo.git
       // git-url-parse can't detect bitbucket-server from SSH URL
       // and thus doesn't know it should insert '/scm/'
+      // v8 ignore else -- TODO: add test #40625
       if (origProtocol === 'ssh') {
         parsedUrl.source = 'bitbucket-server';
       }
       break;
   }
 
-  return new URL(parsedUrl.toString(protocol)).href;
+  const httpUrl = parseUrl(parsedUrl.toString(protocol));
+  // v8 ignore if: git-url-parse always produces a parseable URL string
+  if (!httpUrl) {
+    throw new Error(`Failed to parse git URL: ${parsedUrl.toString(protocol)}`);
+  }
+  return httpUrl.href;
 }
 
 export function getRemoteUrlWithToken(url: string, hostType?: string): string {

@@ -1,19 +1,29 @@
-import type { Category } from '../../../constants';
-import { BazelDatasource } from '../../datasource/bazel';
-import { GithubTagsDatasource } from '../../datasource/github-tags';
-import { MavenDatasource } from '../../datasource/maven';
-import { extractPackageFile } from './extract';
+import type { Category } from '../../../constants/index.ts';
+import { BazelDatasource } from '../../datasource/bazel/index.ts';
+import { CrateDatasource } from '../../datasource/crate/index.ts';
+import { DockerDatasource } from '../../datasource/docker/index.ts';
+import { GithubTagsDatasource } from '../../datasource/github-tags/index.ts';
+import { MavenDatasource } from '../../datasource/maven/index.ts';
 
-export { extractPackageFile };
+export { updateArtifacts } from './artifacts.ts';
+export { knownDepTypes } from './dep-types.ts';
+export { extractPackageFile } from './extract.ts';
+
+export const url = 'https://bazel.build/external/module';
+export const categories: Category[] = ['bazel'];
 
 export const defaultConfig = {
-  fileMatch: ['(^|/)MODULE\\.bazel$'],
+  managerFilePatterns: ['/(^|/|\\.)MODULE\\.bazel$/'],
 };
-
-export const categories: Category[] = ['bazel'];
 
 export const supportedDatasources = [
   BazelDatasource.id,
+  CrateDatasource.id,
+  DockerDatasource.id,
   GithubTagsDatasource.id,
   MavenDatasource.id,
 ];
+
+export const supportsLockFileMaintenance = true;
+export const lockFileNames = ['MODULE.bazel.lock'];
+export const lockFileMaintenanceIsDelegatedToPackageManager = true;

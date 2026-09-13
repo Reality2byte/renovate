@@ -1,5 +1,5 @@
-import { Fixtures } from '../../../../test/fixtures';
-import { extractPackageFile } from '.';
+import { Fixtures } from '~test/fixtures.ts';
+import { extractPackageFile } from './index.ts';
 
 const invalidYAML = Fixtures.get('invalid.yml');
 const matrixYAMLwithNodeSyntaxString = Fixtures.get('matrix_jobs.yml');
@@ -17,8 +17,20 @@ describe('modules/manager/travis/extract', () => {
 
     it('returns results', () => {
       const res = extractPackageFile('node_js:\n  - 6\n  - 8\n');
-      expect(res).toMatchSnapshot();
-      expect(res?.deps).toHaveLength(2);
+      expect(res).toEqual({
+        deps: [
+          {
+            currentValue: '6',
+            datasource: 'node-version',
+            depName: 'node',
+          },
+          {
+            currentValue: '8',
+            datasource: 'node-version',
+            depName: 'node',
+          },
+        ],
+      });
     });
 
     it('should handle invalid YAML', () => {

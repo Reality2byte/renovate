@@ -1,13 +1,13 @@
-import type { Category } from '../../../constants';
-import { DockerDatasource } from '../../datasource/docker';
+import type { Category } from '../../../constants/index.ts';
+import { DockerDatasource } from '../../datasource/docker/index.ts';
 
-export { extractPackageFile } from './extract';
+export { knownDepTypes } from './dep-types.ts';
+export { extractPackageFile } from './extract.ts';
 
-export const displayName = 'Crossplane';
-export const url = 'https://docs.crossplane.io/';
+export const url = 'https://docs.crossplane.io';
 
 export const defaultConfig = {
-  fileMatch: [],
+  managerFilePatterns: [],
 };
 
 export const categories: Category[] = ['kubernetes', 'iac'];

@@ -1,69 +1,103 @@
 // TODO #22198
-import is from '@sindresorhus/is';
-import { getManagerConfig, mergeChildConfig } from '../../../config';
-import type { RenovateConfig } from '../../../config/types';
-import { logger } from '../../../logger';
-import { getDefaultConfig } from '../../../modules/datasource';
-import { getDefaultVersioning } from '../../../modules/datasource/common';
+import { isNonEmptyString, isString } from '@sindresorhus/is';
+import { getManagerConfig, mergeChildConfig } from '../../../config/index.ts';
+import type { RenovateConfig } from '../../../config/types.ts';
+import { instrument } from '../../../instrumentation/index.ts';
+import { logger } from '../../../logger/index.ts';
+import { getDefaultVersioning } from '../../../modules/datasource/common.ts';
+import { getDefaultConfig } from '../../../modules/datasource/index.ts';
 import type {
   PackageDependency,
   PackageFile,
-} from '../../../modules/manager/types';
-import { ExternalHostError } from '../../../types/errors/external-host-error';
-import { clone } from '../../../util/clone';
-import { applyPackageRules } from '../../../util/package-rules';
-import * as p from '../../../util/promises';
-import { Result } from '../../../util/result';
-import { LookupStats } from '../../../util/stats';
-import { PackageFiles } from '../package-files';
-import { lookupUpdates } from './lookup';
-import type { LookupUpdateConfig } from './lookup/types';
+} from '../../../modules/manager/types.ts';
+import { ExternalHostError } from '../../../types/errors/external-host-error.ts';
+import { clone } from '../../../util/clone.ts';
+import { applyPackageRules } from '../../../util/package-rules/index.ts';
+import * as p from '../../../util/promises.ts';
+import { Result } from '../../../util/result.ts';
+import { LookupStats } from '../../../util/stats.ts';
+import { PackageFiles } from '../package-files.ts';
+import { lookupUpdates } from './lookup/index.ts';
+import type { LookupUpdateConfig, UpdateResult } from './lookup/types.ts';
 
-async function fetchDepUpdates(
+type LookupResult = Result<PackageDependency>;
+
+async function lookup(
   packageFileConfig: RenovateConfig & PackageFile,
   indep: PackageDependency,
-): Promise<Result<PackageDependency, Error>> {
+): Promise<LookupResult> {
   const dep = clone(indep);
+
   dep.updates = [];
-  if (is.string(dep.depName)) {
+
+  if (isString(dep.depName)) {
     dep.depName = dep.depName.trim();
   }
+
   dep.packageName ??= dep.depName;
-  if (!is.nonEmptyString(dep.packageName)) {
-    dep.skipReason = 'invalid-name';
-  }
-  if (dep.isInternal && !packageFileConfig.updateInternalDeps) {
-    dep.skipReason = 'internal-package';
-  }
+
   if (dep.skipReason) {
     return Result.ok(dep);
   }
+
+  if (!isNonEmptyString(dep.packageName)) {
+    dep.skipReason = 'invalid-name';
+    return Result.ok(dep);
+  }
+
+  if (dep.isInternal && !packageFileConfig.updateInternalDeps) {
+    dep.skipReason = 'internal-package';
+    return Result.ok(dep);
+  }
+
   const { depName } = dep;
   // TODO: fix types
   let depConfig = mergeChildConfig(packageFileConfig, dep);
+  if (dep.extractedConstraints) {
+    depConfig.constraints = {
+      ...dep.extractedConstraints,
+      ...depConfig.constraints,
+    };
+  }
   const datasourceDefaultConfig = await getDefaultConfig(depConfig.datasource!);
   depConfig = mergeChildConfig(depConfig, datasourceDefaultConfig);
   depConfig.versioning ??= getDefaultVersioning(depConfig.datasource);
   depConfig = await applyPackageRules(depConfig, 'pre-lookup');
   depConfig.packageName ??= depConfig.depName;
+
   if (depConfig.ignoreDeps!.includes(depName!)) {
     // TODO: fix types (#22198)
     logger.debug(`Dependency: ${depName!}, is ignored`);
     dep.skipReason = 'ignored';
-  } else if (depConfig.enabled === false) {
+    return Result.ok(dep);
+  }
+
+  if (depConfig.enabled === false) {
     logger.debug(`Dependency: ${depName!}, is disabled`);
     dep.skipReason = 'disabled';
-  } else {
-    if (depConfig.datasource) {
-      const { val: updateResult, err } = await LookupStats.wrap(
-        depConfig.datasource,
-        () =>
-          Result.wrap(lookupUpdates(depConfig as LookupUpdateConfig)).unwrap(),
-      );
+    return Result.ok(dep);
+  }
 
-      if (updateResult) {
-        Object.assign(dep, updateResult);
-      } else {
+  if (!depConfig.datasource) {
+    return Result.ok(dep);
+  }
+
+  return LookupStats.wrap(depConfig.datasource, async () => {
+    const { packageFile, manager } = packageFileConfig;
+    return await Result.wrap(lookupUpdates(depConfig as LookupUpdateConfig))
+      .onValue((dep) => {
+        logger.trace(
+          { dep, packageFile, manager },
+          'Dependency lookup success',
+        );
+      })
+      .onError((err) => {
+        logger.trace(
+          { err, depName, packageFile, manager },
+          'Dependency lookup error',
+        );
+      })
+      .catch((err): Result<UpdateResult> => {
         if (
           packageFileConfig.repoIsOnboarded === true ||
           !(err instanceof ExternalHostError)
@@ -72,17 +106,18 @@ async function fetchDepUpdates(
         }
 
         const cause = err.err;
-        dep.warnings ??= [];
-        dep.warnings.push({
-          topic: 'Lookup Error',
-          // TODO: types (#22198)
-          message: `${depName!}: ${cause.message}`,
+        return Result.ok({
+          updates: [],
+          warnings: [
+            {
+              topic: 'Lookup Error',
+              message: `${depName}: ${cause.message}`,
+            },
+          ],
         });
-      }
-    }
-    dep.updates ??= [];
-  }
-  return Result.ok(dep);
+      })
+      .transform((upd): PackageDependency => Object.assign(dep, upd));
+  });
 }
 
 async function fetchManagerPackagerFileUpdates(
@@ -98,10 +133,17 @@ async function fetchManagerPackagerFileUpdates(
       ...config.constraints,
     };
   }
+  const mergedConstraintsVersioning = {
+    ...pFile.constraintsVersioning,
+    ...config.constraintsVersioning,
+  };
+  if (Object.keys(mergedConstraintsVersioning).length > 0) {
+    packageFileConfig.constraintsVersioning = mergedConstraintsVersioning;
+  }
   const { manager } = packageFileConfig;
   const queue = pFile.deps.map(
     (dep) => async (): Promise<PackageDependency> => {
-      const updates = await fetchDepUpdates(packageFileConfig, dep);
+      const updates = await lookup(packageFileConfig, dep);
       return updates.unwrapOrThrow();
     },
   );
@@ -111,7 +153,10 @@ async function fetchManagerPackagerFileUpdates(
   );
 
   pFile.deps = await p.all(queue);
-  logger.trace({ packageFile }, 'fetchManagerPackagerFileUpdates finished');
+  logger.trace(
+    { manager, packageFile },
+    'fetchManagerPackagerFileUpdates finished',
+  );
 }
 
 async function fetchManagerUpdates(
@@ -138,7 +183,9 @@ export async function fetchUpdates(
 ): Promise<void> {
   const managers = Object.keys(packageFiles);
   const allManagerJobs = managers.map((manager) =>
-    fetchManagerUpdates(config, packageFiles, manager),
+    instrument(manager, () =>
+      fetchManagerUpdates(config, packageFiles, manager),
+    ),
   );
   await Promise.all(allManagerJobs);
   PackageFiles.add(config.baseBranch!, { ...packageFiles });

@@ -1,23 +1,57 @@
-import is from '@sindresorhus/is';
-import { z } from 'zod';
-import { logger } from '../../../logger';
-import { ExternalHostError } from '../../../types/errors/external-host-error';
-import { cache } from '../../../util/cache/package/decorator';
-import * as hostRules from '../../../util/host-rules';
-import type { HttpOptions } from '../../../util/http/types';
-import * as p from '../../../util/promises';
-import { replaceUrlPath, resolveBaseUrl } from '../../../util/url';
-import * as composerVersioning from '../../versioning/composer';
-import { Datasource } from '../datasource';
-import type { GetReleasesConfig, ReleaseResult } from '../types';
-import type { RegistryFile } from './schema';
+import { isNumber, isObject } from '@sindresorhus/is';
+import { z } from 'zod/v4';
+import { logger } from '../../../logger/index.ts';
+import { ExternalHostError } from '../../../types/errors/external-host-error.ts';
+import { withCache } from '../../../util/cache/package/with-cache.ts';
+import * as hostRules from '../../../util/host-rules.ts';
+import type { HttpOptions } from '../../../util/http/types.ts';
+import * as p from '../../../util/promises.ts';
+import { parseUrl, replaceUrlPath, resolveBaseUrl } from '../../../util/url.ts';
+import * as composerVersioning from '../../versioning/composer/index.ts';
+import { Datasource } from '../datasource.ts';
+import type { GetReleasesConfig, ReleaseResult } from '../types.ts';
+import type { RegistryFile } from './schema.ts';
 import {
   PackagesResponse,
   PackagistFile,
   RegistryMeta,
   extractDepReleases,
   parsePackagesResponses,
-} from './schema';
+} from './schema.ts';
+
+interface PackagistLookupError {
+  code?: string;
+  statusCode?: number;
+}
+
+function isDefaultPackagistHost(registryUrl: string): boolean {
+  const url = parseUrl(registryUrl);
+
+  /* v8 ignore if -- typescript strict null check */
+  if (!url) {
+    return false;
+  }
+
+  return ['repo.packagist.org', 'packagist.org'].includes(url.host);
+}
+
+function isTransientPackagistError(err: PackagistLookupError): boolean {
+  const { code: errCode, statusCode } = err;
+
+  if (errCode && ['ECONNRESET', 'ETIMEDOUT'].includes(errCode)) {
+    return true;
+  }
+
+  if (!isNumber(statusCode)) {
+    return false;
+  }
+
+  if (statusCode === 429 || (statusCode >= 500 && statusCode < 600)) {
+    return true;
+  }
+
+  return false;
+}
 
 export class PackagistDatasource extends Datasource {
   static readonly id = 'packagist';
@@ -26,7 +60,7 @@ export class PackagistDatasource extends Datasource {
     super(PackagistDatasource.id);
   }
 
-  override readonly defaultRegistryUrls = ['https://packagist.org'];
+  override readonly defaultRegistryUrls = ['https://repo.packagist.org'];
 
   override readonly defaultVersioning = composerVersioning.id;
 
@@ -49,23 +83,29 @@ export class PackagistDatasource extends Datasource {
     return username && password ? { username, password } : {};
   }
 
-  private async getJson<T, U extends z.ZodSchema<T>>(
+  private async getJson<Schema extends z.ZodType<any, any, any>>(
     url: string,
-    schema: U,
-  ): Promise<z.infer<typeof schema>> {
+    schema: Schema,
+  ): Promise<z.infer<Schema>> {
     const opts = PackagistDatasource.getHostOpts(url);
-    const { body } = await this.http.getJson(url, opts);
-    return schema.parse(body);
+    const { body } = await this.http.getJson(url, opts, schema);
+    return body;
   }
 
-  @cache({
-    namespace: `datasource-${PackagistDatasource.id}`,
-    key: (regUrl: string) => `getRegistryMeta:${regUrl}`,
-  })
-  async getRegistryMeta(regUrl: string): Promise<RegistryMeta> {
+  private async _getRegistryMeta(regUrl: string): Promise<RegistryMeta> {
     const url = resolveBaseUrl(regUrl, 'packages.json');
     const result = await this.getJson(url, RegistryMeta);
     return result;
+  }
+
+  getRegistryMeta(regUrl: string): Promise<RegistryMeta> {
+    return withCache(
+      {
+        namespace: `datasource-${PackagistDatasource.id}`,
+        key: `getRegistryMeta:${regUrl}`,
+      },
+      () => this._getRegistryMeta(regUrl),
+    );
   }
 
   private static isPrivatePackage(regUrl: string): boolean {
@@ -85,21 +125,28 @@ export class PackagistDatasource extends Datasource {
     return url;
   }
 
-  @cache({
-    namespace: `datasource-${PackagistDatasource.id}`,
-    key: (regUrl: string, regFile: RegistryFile) =>
-      `getPackagistFile:${PackagistDatasource.getPackagistFileUrl(regUrl, regFile)}`,
-    cacheable: (regUrl: string) =>
-      !PackagistDatasource.isPrivatePackage(regUrl),
-    ttlMinutes: 1440,
-  })
-  async getPackagistFile(
+  private async _getPackagistFile(
     regUrl: string,
     regFile: RegistryFile,
   ): Promise<PackagistFile> {
     const url = PackagistDatasource.getPackagistFileUrl(regUrl, regFile);
     const packagistFile = await this.getJson(url, PackagistFile);
     return packagistFile;
+  }
+
+  getPackagistFile(
+    regUrl: string,
+    regFile: RegistryFile,
+  ): Promise<PackagistFile> {
+    return withCache(
+      {
+        namespace: `datasource-${PackagistDatasource.id}`,
+        key: `getPackagistFile:${PackagistDatasource.getPackagistFileUrl(regUrl, regFile)}`,
+        ttlMinutes: 1440,
+        cacheable: !PackagistDatasource.isPrivatePackage(regUrl),
+      },
+      () => this._getPackagistFile(regUrl, regFile),
+    );
   }
 
   async fetchProviderPackages(
@@ -124,13 +171,7 @@ export class PackagistDatasource extends Datasource {
     });
   }
 
-  @cache({
-    namespace: `datasource-${PackagistDatasource.id}`,
-    key: (registryUrl: string, metadataUrl: string, packageName: string) =>
-      `packagistV2Lookup:${registryUrl}:${metadataUrl}:${packageName}`,
-    ttlMinutes: 10,
-  })
-  async packagistV2Lookup(
+  private async _packagistV2Lookup(
     registryUrl: string,
     metadataUrl: string,
     packageName: string,
@@ -153,8 +194,23 @@ export class PackagistDatasource extends Datasource {
     const responses: NonNullable<unknown>[] = await Promise.all([
       pkgPromise,
       devPromise,
-    ]).then((responses) => responses.filter(is.object));
+    ]).then((responses) => responses.filter(isObject));
     return parsePackagesResponses(packageName, responses);
+  }
+
+  packagistV2Lookup(
+    registryUrl: string,
+    metadataUrl: string,
+    packageName: string,
+  ): Promise<ReleaseResult | null> {
+    return withCache(
+      {
+        namespace: `datasource-${PackagistDatasource.id}`,
+        key: `packagistV2Lookup:${registryUrl}:${metadataUrl}:${packageName}`,
+        ttlMinutes: 10,
+      },
+      () => this._packagistV2Lookup(registryUrl, metadataUrl, packageName),
+    );
   }
 
   public getPkgUrl(
@@ -190,7 +246,7 @@ export class PackagistDatasource extends Datasource {
   }: GetReleasesConfig): Promise<ReleaseResult | null> {
     logger.trace(`getReleases(${packageName})`);
 
-    // istanbul ignore if
+    /* v8 ignore next -- should never happen */
     if (!registryUrl) {
       return null;
     }
@@ -235,13 +291,11 @@ export class PackagistDatasource extends Datasource {
       logger.trace({ dep }, 'dep');
       return dep;
     } catch (err) /* istanbul ignore next */ {
-      if (err.host === 'packagist.org') {
-        if (err.code === 'ECONNRESET' || err.code === 'ETIMEDOUT') {
-          throw new ExternalHostError(err);
-        }
-        if (err.statusCode && err.statusCode >= 500 && err.statusCode < 600) {
-          throw new ExternalHostError(err);
-        }
+      if (
+        isDefaultPackagistHost(registryUrl) &&
+        isTransientPackagistError(err)
+      ) {
+        throw new ExternalHostError(err);
       }
       throw err;
     }

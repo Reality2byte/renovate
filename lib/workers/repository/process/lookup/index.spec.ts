@@ -1,38 +1,45 @@
 import { codeBlock } from 'common-tags';
-import * as hostRules from '../../../../../lib/util/host-rules';
-import { Fixtures } from '../../../../../test/fixtures';
-import * as httpMock from '../../../../../test/http-mock';
-import { partial } from '../../../../../test/util';
-import { getConfig } from '../../../../config/defaults';
-import { supportedDatasources as presetSupportedDatasources } from '../../../../config/presets/internal/merge-confidence';
-import type { AllConfig } from '../../../../config/types';
-import { CONFIG_VALIDATION } from '../../../../constants/error-messages';
-import { CustomDatasource } from '../../../../modules/datasource/custom';
-import { DockerDatasource } from '../../../../modules/datasource/docker';
-import { GitRefsDatasource } from '../../../../modules/datasource/git-refs';
-import { GithubReleasesDatasource } from '../../../../modules/datasource/github-releases';
-import { GithubTagsDatasource } from '../../../../modules/datasource/github-tags';
-import { GoDatasource } from '../../../../modules/datasource/go';
-import { MavenDatasource } from '../../../../modules/datasource/maven';
-import { NpmDatasource } from '../../../../modules/datasource/npm';
-import { PackagistDatasource } from '../../../../modules/datasource/packagist';
-import { PypiDatasource } from '../../../../modules/datasource/pypi';
-import { id as composerVersioningId } from '../../../../modules/versioning/composer';
-import { id as debianVersioningId } from '../../../../modules/versioning/debian';
-import { id as dockerVersioningId } from '../../../../modules/versioning/docker';
-import { id as gitVersioningId } from '../../../../modules/versioning/git';
-import { id as mavenVersioningId } from '../../../../modules/versioning/maven';
-import { id as nodeVersioningId } from '../../../../modules/versioning/node';
-import { id as npmVersioningId } from '../../../../modules/versioning/npm';
-import { id as pep440VersioningId } from '../../../../modules/versioning/pep440';
-import { id as poetryVersioningId } from '../../../../modules/versioning/poetry';
-import type { HostRule } from '../../../../types';
-import * as memCache from '../../../../util/cache/memory';
-import { initConfig, resetConfig } from '../../../../util/merge-confidence';
-import * as McApi from '../../../../util/merge-confidence';
-import { Result } from '../../../../util/result';
-import type { LookupUpdateConfig } from './types';
-import * as lookup from '.';
+import { Fixtures } from '~test/fixtures.ts';
+import * as httpMock from '~test/http-mock.ts';
+import { fakeSha, logger, partial } from '~test/util.ts';
+import * as hostRules from '../../../../../lib/util/host-rules.ts';
+import { getConfig } from '../../../../config/defaults.ts';
+import { supportedDatasources as presetSupportedDatasources } from '../../../../config/presets/internal/merge-confidence.preset.ts';
+import type { AllConfig } from '../../../../config/types.ts';
+import { CONFIG_VALIDATION } from '../../../../constants/error-messages.ts';
+import { CustomDatasource } from '../../../../modules/datasource/custom/index.ts';
+import { DockerDatasource } from '../../../../modules/datasource/docker/index.ts';
+import { GitRefsDatasource } from '../../../../modules/datasource/git-refs/index.ts';
+import { GithubReleasesDatasource } from '../../../../modules/datasource/github-releases/index.ts';
+import { GithubTagsDatasource } from '../../../../modules/datasource/github-tags/index.ts';
+import { GoDatasource } from '../../../../modules/datasource/go/index.ts';
+import { MavenDatasource } from '../../../../modules/datasource/maven/index.ts';
+import { defaultRegistryUrl as npmDefaultRegistryUrl } from '../../../../modules/datasource/npm/common.ts';
+import { NpmDatasource } from '../../../../modules/datasource/npm/index.ts';
+import { PackagistDatasource } from '../../../../modules/datasource/packagist/index.ts';
+import { PypiDatasource } from '../../../../modules/datasource/pypi/index.ts';
+import { id as composerVersioningId } from '../../../../modules/versioning/composer/index.ts';
+import { id as debianVersioningId } from '../../../../modules/versioning/debian/index.ts';
+import { id as dockerVersioningId } from '../../../../modules/versioning/docker/index.ts';
+import { id as gitVersioningId } from '../../../../modules/versioning/git/index.ts';
+import { id as githubActionsVersioningId } from '../../../../modules/versioning/github-actions/index.ts';
+import { id as mavenVersioningId } from '../../../../modules/versioning/maven/index.ts';
+import { id as nodeVersioningId } from '../../../../modules/versioning/node/index.ts';
+import { id as npmVersioningId } from '../../../../modules/versioning/npm/index.ts';
+import { id as pep440VersioningId } from '../../../../modules/versioning/pep440/index.ts';
+import { id as poetryVersioningId } from '../../../../modules/versioning/poetry/index.ts';
+import { id as semverVersioningId } from '../../../../modules/versioning/semver/index.ts';
+import type { HostRule } from '../../../../types/index.ts';
+import * as memCache from '../../../../util/cache/memory/index.ts';
+import * as McApi from '../../../../util/merge-confidence/index.ts';
+import {
+  initConfig,
+  resetConfig,
+} from '../../../../util/merge-confidence/index.ts';
+import { Result } from '../../../../util/result.ts';
+import type { Timestamp } from '../../../../util/timestamp.ts';
+import * as lookup from './index.ts';
+import type { LookupUpdateConfig } from './types.ts';
 
 const qJson = {
   ...Fixtures.getJson('01.json'),
@@ -49,33 +56,27 @@ const webpackJson = Fixtures.get('webpack.json');
 let config: LookupUpdateConfig;
 
 describe('workers/repository/process/lookup/index', () => {
-  const getGithubReleases = jest.spyOn(
+  const getGithubReleases = vi.spyOn(
     GithubReleasesDatasource.prototype,
     'getReleases',
   );
 
-  const getGithubTags = jest.spyOn(
-    GithubTagsDatasource.prototype,
-    'getReleases',
-  );
+  const getGithubTags = vi.spyOn(GithubTagsDatasource.prototype, 'getReleases');
 
-  const getDockerReleases = jest.spyOn(
-    DockerDatasource.prototype,
-    'getReleases',
-  );
+  const getDockerReleases = vi.spyOn(DockerDatasource.prototype, 'getReleases');
 
-  const getMavenReleases = jest.spyOn(MavenDatasource.prototype, 'getReleases');
-  const postprocessMavenRelease = jest.spyOn(
+  const getMavenReleases = vi.spyOn(MavenDatasource.prototype, 'getReleases');
+  const postprocessMavenRelease = vi.spyOn(
     MavenDatasource.prototype,
     'postprocessRelease',
   );
 
-  const getCustomDatasourceReleases = jest.spyOn(
+  const getCustomDatasourceReleases = vi.spyOn(
     CustomDatasource.prototype,
     'getReleases',
   );
 
-  const getDockerDigest = jest.spyOn(DockerDatasource.prototype, 'getDigest');
+  const getDockerDigest = vi.spyOn(DockerDatasource.prototype, 'getDigest');
 
   beforeEach(() => {
     // TODO: fix types #22198
@@ -83,14 +84,12 @@ describe('workers/repository/process/lookup/index', () => {
     config.manager = 'npm';
     config.versioning = npmVersioningId;
     config.rangeStrategy = 'replace';
-    jest
-      .spyOn(GitRefsDatasource.prototype, 'getReleases')
-      .mockResolvedValueOnce({
-        releases: [{ version: 'master' }],
-      });
-    jest
-      .spyOn(GitRefsDatasource.prototype, 'getDigest')
-      .mockResolvedValueOnce('4b825dc642cb6eb9a060e54bf8d69288fbee4904');
+    vi.spyOn(GitRefsDatasource.prototype, 'getReleases').mockResolvedValueOnce({
+      releases: [{ version: 'master' }],
+    });
+    vi.spyOn(GitRefsDatasource.prototype, 'getDigest').mockResolvedValueOnce(
+      '4b825dc642cb6eb9a060e54bf8d69288fbee4904',
+    );
   });
 
   // TODO: fix mocks
@@ -127,11 +126,11 @@ describe('workers/repository/process/lookup/index', () => {
       config.packageName = 'some-dep';
       config.datasource = NpmDatasource.id;
       config.rollbackPrs = true;
-      httpMock.scope('https://registry.npmjs.org').get('/some-dep').reply(500);
+      httpMock.scope(npmDefaultRegistryUrl).get('/some-dep').reply(500);
 
       const res = await lookup.lookupUpdates(config);
 
-      expect(() => res.unwrapOrThrow()).toThrow();
+      expect(() => res.unwrapOrThrow()).toThrow('external-host-error');
     });
 
     it('returns rollback for pinned version', async () => {
@@ -139,7 +138,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
       config.rollbackPrs = true;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -153,17 +152,23 @@ describe('workers/repository/process/lookup/index', () => {
           newVersion: '0.9.7',
           registryUrl: undefined,
           updateType: 'rollback',
+          prBodyNotes: expect.arrayContaining([
+            expect.stringContaining('The version of `q` in use (`0.9.99`)'),
+          ]),
         },
         {
           bucket: 'major',
+          isBreaking: true,
           newMajor: 1,
           newMinor: 4,
           newPatch: 1,
           newValue: '1.4.1',
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2015-05-17T04:25:07.299Z',
+          releaseTimestamp: '2015-05-17T04:25:07.299Z' as Timestamp,
           updateType: 'major',
+          hasAttestation: false,
         },
       ]);
     });
@@ -173,7 +178,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
       config.rollbackPrs = true;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -187,6 +192,9 @@ describe('workers/repository/process/lookup/index', () => {
           newVersion: '0.9.7',
           registryUrl: undefined,
           updateType: 'rollback',
+          prBodyNotes: expect.arrayContaining([
+            expect.stringContaining('The version of `q` in use (`^0.9.99`)'),
+          ]),
         },
       ]);
     });
@@ -196,7 +204,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.rangeStrategy = 'pin';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -212,27 +220,33 @@ describe('workers/repository/process/lookup/index', () => {
         },
         {
           bucket: 'non-major',
+          isBreaking: true,
           isRange: true,
           newMajor: 0,
           newMinor: 9,
           newPatch: 7,
           newValue: '^0.9.0',
           newVersion: '0.9.7',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-0.9.7.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2013-09-04T17:07:22.948Z',
+          releaseTimestamp: '2013-09-04T17:07:22.948Z' as Timestamp,
           updateType: 'minor',
+          hasAttestation: false,
         },
         {
           bucket: 'major',
+          isBreaking: true,
           isRange: true,
           newMajor: 1,
           newMinor: 4,
           newPatch: 1,
           newValue: '^1.0.0',
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2015-05-17T04:25:07.299Z',
+          releaseTimestamp: '2015-05-17T04:25:07.299Z' as Timestamp,
           updateType: 'major',
+          hasAttestation: false,
         },
       ]);
     });
@@ -244,7 +258,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.datasource = NpmDatasource.id;
       config.separateMinorPatch = true;
       config.lockedVersion = '0.4.0';
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -253,6 +267,7 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'patch',
+          isBreaking: true,
           isLockfileUpdate: true,
           isRange: true,
           newMajor: 0,
@@ -260,33 +275,41 @@ describe('workers/repository/process/lookup/index', () => {
           newPatch: 4,
           newValue: '^0.4.0',
           newVersion: '0.4.4',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-0.4.4.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2011-06-10T17:20:04.719Z',
+          releaseTimestamp: '2011-06-10T17:20:04.719Z' as Timestamp,
           updateType: 'patch',
+          hasAttestation: false,
         },
         {
           bucket: 'minor',
+          isBreaking: true,
           isRange: true,
           newMajor: 0,
           newMinor: 9,
           newPatch: 7,
           newValue: '^0.9.0',
           newVersion: '0.9.7',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-0.9.7.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2013-09-04T17:07:22.948Z',
+          releaseTimestamp: '2013-09-04T17:07:22.948Z' as Timestamp,
           updateType: 'minor',
+          hasAttestation: false,
         },
         {
           bucket: 'major',
+          isBreaking: true,
           isRange: true,
           newMajor: 1,
           newMinor: 4,
           newPatch: 1,
           newValue: '^1.0.0',
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2015-05-17T04:25:07.299Z',
+          releaseTimestamp: '2015-05-17T04:25:07.299Z' as Timestamp,
           updateType: 'major',
+          hasAttestation: false,
         },
       ]);
     });
@@ -297,7 +320,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.rangeStrategy = 'pin';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -306,25 +329,31 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          isBreaking: true,
           newMajor: 0,
           newMinor: 9,
           newPatch: 7,
           newValue: '0.9.7',
           newVersion: '0.9.7',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-0.9.7.tgz',
           newVersionAgeInDays: expect.any(Number),
           releaseTimestamp: expect.any(String),
           updateType: 'minor',
+          hasAttestation: false,
         },
         {
           bucket: 'major',
+          isBreaking: true,
           newMajor: 1,
           newMinor: 4,
           newPatch: 1,
           newValue: '1.4.1',
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
           releaseTimestamp: expect.any(String),
           updateType: 'major',
+          hasAttestation: false,
         },
       ]);
     });
@@ -336,7 +365,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.packageName = 'q';
       config.separateMinorPatch = true;
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -345,36 +374,45 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'patch',
+          isBreaking: true,
           newMajor: 0,
           newMinor: 4,
           newPatch: 4,
           newValue: '0.4.4',
           newVersion: '0.4.4',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-0.4.4.tgz',
           newVersionAgeInDays: expect.any(Number),
           releaseTimestamp: expect.any(String),
           updateType: 'patch',
+          hasAttestation: false,
         },
         {
           bucket: 'minor',
+          isBreaking: true,
           newMajor: 0,
           newMinor: 9,
           newPatch: 7,
           newValue: '0.9.7',
           newVersion: '0.9.7',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-0.9.7.tgz',
           newVersionAgeInDays: expect.any(Number),
           releaseTimestamp: expect.any(String),
           updateType: 'minor',
+          hasAttestation: false,
         },
         {
           bucket: 'major',
+          isBreaking: true,
           newMajor: 1,
           newMinor: 4,
           newPatch: 1,
           newValue: '1.4.1',
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
           releaseTimestamp: expect.any(String),
           updateType: 'major',
+          hasAttestation: false,
         },
       ]);
     });
@@ -386,7 +424,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.separateMajorMinor = false;
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -395,14 +433,17 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'latest',
+          isBreaking: true,
           newMajor: 1,
           newMinor: 4,
           newPatch: 1,
           newValue: '1.4.1',
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
           releaseTimestamp: expect.any(String),
           updateType: 'major',
+          hasAttestation: false,
         },
       ]);
     });
@@ -413,7 +454,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.rangeStrategy = 'pin';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -429,27 +470,33 @@ describe('workers/repository/process/lookup/index', () => {
         },
         {
           bucket: 'non-major',
+          isBreaking: true,
           isRange: true,
           newMajor: 0,
           newMinor: 9,
           newPatch: 7,
           newValue: '^0.9.0',
           newVersion: '0.9.7',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-0.9.7.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2013-09-04T17:07:22.948Z',
+          releaseTimestamp: '2013-09-04T17:07:22.948Z' as Timestamp,
           updateType: 'minor',
+          hasAttestation: false,
         },
         {
           bucket: 'major',
+          isBreaking: true,
           isRange: true,
           newMajor: 1,
           newMinor: 4,
           newPatch: 1,
           newValue: '^1.0.0',
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2015-05-17T04:25:07.299Z',
+          releaseTimestamp: '2015-05-17T04:25:07.299Z' as Timestamp,
           updateType: 'major',
+          hasAttestation: false,
         },
       ]);
     });
@@ -459,7 +506,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.allowedVersions = '<1';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -468,14 +515,17 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          isBreaking: true,
           newMajor: 0,
           newMinor: 9,
           newPatch: 7,
           newValue: '0.9.7',
           newVersion: '0.9.7',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-0.9.7.tgz',
           newVersionAgeInDays: expect.any(Number),
           releaseTimestamp: expect.any(String),
           updateType: 'minor',
+          hasAttestation: false,
         },
       ]);
     });
@@ -485,7 +535,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.allowedVersions = '/^0/';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -494,14 +544,17 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          isBreaking: true,
           newMajor: 0,
           newMinor: 9,
           newPatch: 7,
           newValue: '0.9.7',
           newVersion: '0.9.7',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-0.9.7.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2013-09-04T17:07:22.948Z',
+          releaseTimestamp: '2013-09-04T17:07:22.948Z' as Timestamp,
           updateType: 'minor',
+          hasAttestation: false,
         },
       ]);
     });
@@ -511,7 +564,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.allowedVersions = '!/^1/';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -520,14 +573,17 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          isBreaking: true,
           newMajor: 0,
           newMinor: 9,
           newPatch: 7,
           newValue: '0.9.7',
           newVersion: '0.9.7',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-0.9.7.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2013-09-04T17:07:22.948Z',
+          releaseTimestamp: '2013-09-04T17:07:22.948Z' as Timestamp,
           updateType: 'minor',
+          hasAttestation: false,
         },
       ]);
     });
@@ -538,7 +594,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.packageName = 'q';
       config.versioning = dockerVersioningId; // this doesn't make sense but works for this test
       config.datasource = NpmDatasource.id; // this doesn't make sense but works for this test
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -547,14 +603,17 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          isBreaking: false,
           newMajor: 0,
           newMinor: 9,
           newPatch: 7,
           newValue: '0.9.7',
           newVersion: '0.9.7',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-0.9.7.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2013-09-04T17:07:22.948Z',
+          releaseTimestamp: '2013-09-04T17:07:22.948Z' as Timestamp,
           updateType: 'minor',
+          hasAttestation: false,
         },
       ]);
     });
@@ -565,7 +624,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.packageName = 'q';
       config.versioning = poetryVersioningId; // this doesn't make sense but works for this test
       config.datasource = NpmDatasource.id; // this doesn't make sense but works for this test
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -574,14 +633,17 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          isBreaking: false,
           newMajor: 0,
           newMinor: 9,
           newPatch: 4,
           newValue: '0.9.4',
           newVersion: '0.9.4',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-0.9.4.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2013-05-22T20:26:50.888Z',
+          releaseTimestamp: '2013-05-22T20:26:50.888Z' as Timestamp,
           updateType: 'minor',
+          hasAttestation: false,
         },
       ]);
     });
@@ -591,11 +653,11 @@ describe('workers/repository/process/lookup/index', () => {
       config.allowedVersions = 'less than 1';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const res = await lookup.lookupUpdates(config);
 
-      expect(() => res.unwrapOrThrow()).toThrow(Error(CONFIG_VALIDATION));
+      expect(() => res.unwrapOrThrow()).toThrow(CONFIG_VALIDATION);
     });
 
     it('returns patch update even if separate patches not configured', async () => {
@@ -603,7 +665,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.rangeStrategy = 'pin';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -612,25 +674,31 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          isBreaking: true,
           newMajor: 0,
           newMinor: 9,
           newPatch: 7,
           newValue: '0.9.7',
           newVersion: '0.9.7',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-0.9.7.tgz',
           newVersionAgeInDays: expect.any(Number),
           releaseTimestamp: expect.any(String),
           updateType: 'patch',
+          hasAttestation: false,
         },
         {
           bucket: 'major',
+          isBreaking: true,
           newMajor: 1,
           newMinor: 4,
           newPatch: 1,
           newValue: '1.4.1',
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
           releaseTimestamp: expect.any(String),
           updateType: 'major',
+          hasAttestation: false,
         },
       ]);
     });
@@ -646,7 +714,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.rangeStrategy = 'pin';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -655,25 +723,31 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          isBreaking: true,
           newMajor: 0,
           newMinor: 9,
           newPatch: 7,
           newValue: '0.9.7',
           newVersion: '0.9.7',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-0.9.7.tgz',
           newVersionAgeInDays: expect.any(Number),
           releaseTimestamp: expect.any(String),
           updateType: 'patch',
+          hasAttestation: false,
         },
         {
           bucket: 'major',
+          isBreaking: true,
           newMajor: 1,
           newMinor: 4,
           newPatch: 1,
           newValue: '1.4.1',
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
           releaseTimestamp: expect.any(String),
           updateType: 'major',
+          hasAttestation: false,
         },
       ]);
     });
@@ -684,7 +758,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.rangeStrategy = 'pin';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -693,25 +767,31 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'patch',
+          isBreaking: true,
           newMajor: 0,
           newMinor: 9,
           newPatch: 7,
           newValue: '0.9.7',
           newVersion: '0.9.7',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-0.9.7.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2013-09-04T17:07:22.948Z',
+          releaseTimestamp: '2013-09-04T17:07:22.948Z' as Timestamp,
           updateType: 'patch',
+          hasAttestation: false,
         },
         {
           bucket: 'major',
+          isBreaking: true,
           newMajor: 1,
           newMinor: 4,
           newPatch: 1,
           newValue: '1.4.1',
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2015-05-17T04:25:07.299Z',
+          releaseTimestamp: '2015-05-17T04:25:07.299Z' as Timestamp,
           updateType: 'major',
+          hasAttestation: false,
         },
       ]);
     });
@@ -722,7 +802,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.rangeStrategy = 'pin';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -731,36 +811,45 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'patch',
+          isBreaking: true,
           newMajor: 0,
           newMinor: 8,
           newPatch: 12,
           newValue: '0.8.12',
           newVersion: '0.8.12',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-0.8.12.tgz',
           newVersionAgeInDays: expect.any(Number),
           releaseTimestamp: expect.any(String),
           updateType: 'patch',
+          hasAttestation: false,
         },
         {
           bucket: 'minor',
+          isBreaking: true,
           newMajor: 0,
           newMinor: 9,
           newPatch: 7,
           newValue: '0.9.7',
           newVersion: '0.9.7',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-0.9.7.tgz',
           newVersionAgeInDays: expect.any(Number),
           releaseTimestamp: expect.any(String),
           updateType: 'minor',
+          hasAttestation: false,
         },
         {
           bucket: 'major',
+          isBreaking: true,
           newMajor: 1,
           newMinor: 4,
           newPatch: 1,
           newValue: '1.4.1',
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
           releaseTimestamp: expect.any(String),
           updateType: 'major',
+          hasAttestation: false,
         },
       ]);
     });
@@ -771,7 +860,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.rangeStrategy = 'pin';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -787,15 +876,18 @@ describe('workers/repository/process/lookup/index', () => {
         },
         {
           bucket: 'latest',
+          isBreaking: true,
           isRange: true,
           newMajor: 1,
           newMinor: 4,
           newPatch: 1,
           newValue: '^1.0.0',
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2015-05-17T04:25:07.299Z',
+          releaseTimestamp: '2015-05-17T04:25:07.299Z' as Timestamp,
           updateType: 'major',
+          hasAttestation: false,
         },
       ]);
     });
@@ -806,7 +898,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.rangeStrategy = 'pin';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -815,14 +907,17 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'latest',
+          isBreaking: false,
           newMajor: 1,
           newMinor: 4,
           newPatch: 1,
           newValue: '1.4.1',
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2015-05-17T04:25:07.299Z',
+          releaseTimestamp: '2015-05-17T04:25:07.299Z' as Timestamp,
           updateType: 'minor',
+          hasAttestation: false,
         },
       ]);
     });
@@ -832,7 +927,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.isVulnerabilityAlert = true;
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -841,14 +936,17 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          isBreaking: false,
           newMajor: 1,
           newMinor: 0,
           newPatch: 1,
           newValue: '1.0.1',
           newVersion: '1.0.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.0.1.tgz',
           newVersionAgeInDays: expect.any(Number),
           releaseTimestamp: expect.any(String),
           updateType: 'patch',
+          hasAttestation: false,
         },
       ]);
     });
@@ -859,7 +957,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.vulnerabilityFixStrategy = 'highest';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -868,14 +966,17 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          isBreaking: false,
           newMajor: 1,
           newMinor: 4,
           newPatch: 1,
           newValue: '1.4.1',
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
           releaseTimestamp: expect.any(String),
           updateType: 'minor',
+          hasAttestation: false,
         },
       ]);
     });
@@ -886,7 +987,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.vulnerabilityFixVersion = '1.1.0';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -895,14 +996,17 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          isBreaking: false,
           newMajor: 1,
           newMinor: 1,
           newPatch: 0,
           newValue: '1.1.0',
           newVersion: '1.1.0',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.1.0.tgz',
           newVersionAgeInDays: expect.any(Number),
           releaseTimestamp: expect.any(String),
           updateType: 'minor',
+          hasAttestation: false,
         },
       ]);
     });
@@ -913,7 +1017,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.vulnerabilityFixVersion = '1.0.2';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -922,14 +1026,17 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          isBreaking: false,
           newMajor: 1,
           newMinor: 1,
           newPatch: 0,
           newValue: '1.1.0',
           newVersion: '1.1.0',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.1.0.tgz',
           newVersionAgeInDays: expect.any(Number),
           releaseTimestamp: expect.any(String),
           updateType: 'minor',
+          hasAttestation: false,
         },
       ]);
     });
@@ -940,7 +1047,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.vulnerabilityFixVersion = '>= 1.1.0';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -949,14 +1056,17 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          isBreaking: false,
           newMajor: 1,
           newMinor: 1,
           newPatch: 0,
           newValue: '1.1.0',
           newVersion: '1.1.0',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.1.0.tgz',
           newVersionAgeInDays: expect.any(Number),
           releaseTimestamp: expect.any(String),
           updateType: 'minor',
+          hasAttestation: false,
         },
       ]);
     });
@@ -968,7 +1078,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.vulnerabilityFixStrategy = 'highest';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -977,14 +1087,17 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          isBreaking: false,
           newMajor: 1,
           newMinor: 4,
           newPatch: 1,
           newValue: '1.4.1',
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
           releaseTimestamp: expect.any(String),
           updateType: 'minor',
+          hasAttestation: false,
         },
       ]);
     });
@@ -995,7 +1108,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.vulnerabilityFixVersion = 'abc';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -1004,14 +1117,17 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          isBreaking: false,
           newMajor: 1,
           newMinor: 0,
           newPatch: 1,
           newValue: '1.0.1',
           newVersion: '1.0.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.0.1.tgz',
           newVersionAgeInDays: expect.any(Number),
           releaseTimestamp: expect.any(String),
           updateType: 'patch',
+          hasAttestation: false,
         },
       ]);
     });
@@ -1022,7 +1138,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.vulnerabilityFixVersion = '5.1.0';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -1036,7 +1152,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.rangeStrategy = 'pin';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -1052,27 +1168,33 @@ describe('workers/repository/process/lookup/index', () => {
         },
         {
           bucket: 'non-major',
+          isBreaking: true,
           isRange: true,
           newMajor: 0,
           newMinor: 9,
           newPatch: 7,
           newValue: '~0.9.0',
           newVersion: '0.9.7',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-0.9.7.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2013-09-04T17:07:22.948Z',
+          releaseTimestamp: '2013-09-04T17:07:22.948Z' as Timestamp,
           updateType: 'minor',
+          hasAttestation: false,
         },
         {
           bucket: 'major',
+          isBreaking: true,
           isRange: true,
           newMajor: 1,
           newMinor: 4,
           newPatch: 1,
           newValue: '~1.4.0',
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2015-05-17T04:25:07.299Z',
+          releaseTimestamp: '2015-05-17T04:25:07.299Z' as Timestamp,
           updateType: 'major',
+          hasAttestation: false,
         },
       ]);
     });
@@ -1083,7 +1205,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.lockedVersion = '0.4.0';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -1113,10 +1235,7 @@ describe('workers/repository/process/lookup/index', () => {
         config.lockedVersion = '0.4.0';
         config.packageName = 'q';
         config.datasource = NpmDatasource.id;
-        httpMock
-          .scope('https://registry.npmjs.org')
-          .get('/q')
-          .reply(200, qJson);
+        httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
         const { updates } = await Result.wrap(
           lookup.lookupUpdates(config),
@@ -1131,7 +1250,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.rangeStrategy = 'pin';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -1153,7 +1272,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.rangeStrategy = 'pin';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -1175,10 +1294,7 @@ describe('workers/repository/process/lookup/index', () => {
         config.rangeStrategy = strategy;
         config.packageName = 'q';
         config.datasource = NpmDatasource.id;
-        httpMock
-          .scope('https://registry.npmjs.org')
-          .get('/q')
-          .reply(200, qJson);
+        httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
         const { updates } = await Result.wrap(
           lookup.lookupUpdates(config),
@@ -1193,7 +1309,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.rangeStrategy = 'pin';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -1209,14 +1325,17 @@ describe('workers/repository/process/lookup/index', () => {
         },
         {
           bucket: 'major',
+          hasAttestation: false,
+          isBreaking: true,
           isRange: true,
           newMajor: 1,
           newMinor: 4,
           newPatch: 1,
           newValue: '~1.4.0',
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2015-05-17T04:25:07.299Z',
+          releaseTimestamp: '2015-05-17T04:25:07.299Z' as Timestamp,
           updateType: 'major',
         },
       ]);
@@ -1227,7 +1346,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.rangeStrategy = 'pin';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -1243,15 +1362,18 @@ describe('workers/repository/process/lookup/index', () => {
         },
         {
           bucket: 'non-major',
+          isBreaking: false,
           isRange: true,
           newMajor: 1,
           newMinor: 4,
           newPatch: 1,
           newValue: '~1.4.0',
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2015-05-17T04:25:07.299Z',
+          releaseTimestamp: '2015-05-17T04:25:07.299Z' as Timestamp,
           updateType: 'minor',
+          hasAttestation: false,
         },
       ]);
     });
@@ -1262,7 +1384,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.rangeStrategy = 'update-lockfile';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -1271,6 +1393,7 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          isBreaking: false,
           isLockfileUpdate: true,
           isRange: true,
           newMajor: 1,
@@ -1278,9 +1401,11 @@ describe('workers/repository/process/lookup/index', () => {
           newPatch: 1,
           newValue: '^1.2.1',
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
           releaseTimestamp: expect.any(String),
           updateType: 'minor',
+          hasAttestation: false,
         },
       ]);
     });
@@ -1291,7 +1416,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.rangeStrategy = 'in-range-only';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -1300,6 +1425,7 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          isBreaking: false,
           isLockfileUpdate: true,
           isRange: true,
           newMajor: 1,
@@ -1307,9 +1433,11 @@ describe('workers/repository/process/lookup/index', () => {
           newPatch: 1,
           newValue: '^1.2.1',
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
           releaseTimestamp: expect.any(String),
           updateType: 'minor',
+          hasAttestation: false,
         },
       ]);
     });
@@ -1320,7 +1448,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.rangeStrategy = 'in-range-only';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -1329,6 +1457,7 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          isBreaking: false,
           isLockfileUpdate: true,
           isRange: true,
           newMajor: 1,
@@ -1336,9 +1465,11 @@ describe('workers/repository/process/lookup/index', () => {
           newPatch: 1,
           newValue: '~1.2.0',
           newVersion: '1.2.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.2.1.tgz',
           newVersionAgeInDays: expect.any(Number),
           releaseTimestamp: expect.any(String),
           updateType: 'patch',
+          hasAttestation: false,
         },
       ]);
     });
@@ -1348,7 +1479,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.rangeStrategy = 'update-lockfile';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -1357,6 +1488,7 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          isBreaking: false,
           isLockfileUpdate: true,
           isRange: true,
           newMajor: 1,
@@ -1364,9 +1496,11 @@ describe('workers/repository/process/lookup/index', () => {
           newPatch: 1,
           newValue: undefined,
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
           releaseTimestamp: expect.any(String),
           updateType: 'minor',
+          hasAttestation: false,
         },
       ]);
     });
@@ -1377,13 +1511,14 @@ describe('workers/repository/process/lookup/index', () => {
       config.packageName = 'q';
       config.isVulnerabilityAlert = true;
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
       ).unwrapOrThrow();
       expect(updates).toMatchObject([
         {
           bucket: 'non-major',
+          isBreaking: false,
           isLockfileUpdate: true,
           isRange: true,
           newMajor: 1,
@@ -1391,8 +1526,10 @@ describe('workers/repository/process/lookup/index', () => {
           newPatch: 0,
           newValue: undefined,
           newVersion: '1.3.0',
-          releaseTimestamp: '2015-04-26T16:42:11.311Z',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.3.0.tgz',
+          releaseTimestamp: '2015-04-26T16:42:11.311Z' as Timestamp,
           updateType: 'minor',
+          hasAttestation: false,
         },
       ]);
       expect(updates[0].newValue).toBeUndefined();
@@ -1404,7 +1541,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.rangeStrategy = 'widen';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -1413,15 +1550,18 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          isBreaking: false,
           isRange: true,
           newMajor: 1,
           newMinor: 4,
           newPatch: 1,
           newValue: '~1.3.0 || ~1.4.0',
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2015-05-17T04:25:07.299Z',
+          releaseTimestamp: '2015-05-17T04:25:07.299Z' as Timestamp,
           updateType: 'minor',
+          hasAttestation: false,
         },
       ]);
     });
@@ -1431,7 +1571,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.rangeStrategy = 'replace';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -1440,15 +1580,18 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          isBreaking: false,
           isRange: true,
           newMajor: 1,
           newMinor: 4,
           newPatch: 1,
           newValue: '~1.4.0',
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2015-05-17T04:25:07.299Z',
+          releaseTimestamp: '2015-05-17T04:25:07.299Z' as Timestamp,
           updateType: 'minor',
+          hasAttestation: false,
         },
       ]);
     });
@@ -1459,7 +1602,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.packageName = 'webpack';
       config.datasource = NpmDatasource.id;
       httpMock
-        .scope('https://registry.npmjs.org')
+        .scope(npmDefaultRegistryUrl)
         .get('/webpack')
         .reply(200, webpackJson);
 
@@ -1470,15 +1613,20 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'major',
+          isBreaking: true,
           isRange: true,
           newMajor: 3,
           newMinor: 8,
           newPatch: 1,
           newValue: '^2.0.0 || ^3.0.0',
           newVersion: '3.8.1',
+          newDigest:
+            'sha512-5ZXLWWsMqHKFr5y0N3Eo5IIisxeEeRAajNq4mELb/WELOR7srdbQk2N5XiyNy2A/AgvlR3AmeBCZJW8lHrolbw==',
+          downloadUrl: 'https://registry.npmjs.org/webpack/-/webpack-3.8.1.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2017-10-17T15:22:36.646Z',
+          releaseTimestamp: '2017-10-17T15:22:36.646Z' as Timestamp,
           updateType: 'major',
+          hasAttestation: false,
         },
       ]);
     });
@@ -1489,7 +1637,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.packageName = 'webpack';
       config.datasource = NpmDatasource.id;
       httpMock
-        .scope('https://registry.npmjs.org')
+        .scope(npmDefaultRegistryUrl)
         .get('/webpack')
         .reply(200, webpackJson);
 
@@ -1500,15 +1648,20 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'major',
+          isBreaking: true,
           isRange: true,
           newMajor: 3,
           newMinor: 8,
           newPatch: 1,
           newValue: '^3.0.0',
           newVersion: '3.8.1',
+          newDigest:
+            'sha512-5ZXLWWsMqHKFr5y0N3Eo5IIisxeEeRAajNq4mELb/WELOR7srdbQk2N5XiyNy2A/AgvlR3AmeBCZJW8lHrolbw==',
+          downloadUrl: 'https://registry.npmjs.org/webpack/-/webpack-3.8.1.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2017-10-17T15:22:36.646Z',
+          releaseTimestamp: '2017-10-17T15:22:36.646Z' as Timestamp,
           updateType: 'major',
+          hasAttestation: false,
         },
       ]);
     });
@@ -1518,7 +1671,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.rangeStrategy = 'pin';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -1541,7 +1694,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.rangeStrategy = 'pin';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -1563,7 +1716,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.currentValue = '^1.0.0';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -1578,7 +1731,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.lockedVersion = '1.1.0';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -1592,7 +1745,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.currentValue = '~1.3.0';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -1608,15 +1761,18 @@ describe('workers/repository/process/lookup/index', () => {
         },
         {
           bucket: 'non-major',
+          isBreaking: false,
           isRange: true,
           newMajor: 1,
           newMinor: 4,
           newPatch: 1,
           newValue: '~1.4.0',
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2015-05-17T04:25:07.299Z',
+          releaseTimestamp: '2015-05-17T04:25:07.299Z' as Timestamp,
           updateType: 'minor',
+          hasAttestation: false,
         },
       ]);
     });
@@ -1626,7 +1782,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.rangeStrategy = 'pin';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -1642,15 +1798,18 @@ describe('workers/repository/process/lookup/index', () => {
         },
         {
           bucket: 'non-major',
+          isBreaking: false,
           isRange: true,
           newMajor: 1,
           newMinor: 4,
           newPatch: 1,
           newValue: '1.4.x',
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2015-05-17T04:25:07.299Z',
+          releaseTimestamp: '2015-05-17T04:25:07.299Z' as Timestamp,
           updateType: 'minor',
+          hasAttestation: false,
         },
       ]);
     });
@@ -1660,7 +1819,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.currentValue = '~1.3.0';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -1669,15 +1828,18 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          isBreaking: false,
           isRange: true,
           newMajor: 1,
           newMinor: 4,
           newPatch: 1,
           newValue: '~1.4.0',
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2015-05-17T04:25:07.299Z',
+          releaseTimestamp: '2015-05-17T04:25:07.299Z' as Timestamp,
           updateType: 'minor',
+          hasAttestation: false,
         },
       ]);
     });
@@ -1687,7 +1849,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.currentValue = '0.x';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -1696,15 +1858,18 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'major',
+          isBreaking: true,
           isRange: true,
           newMajor: 1,
           newMinor: 4,
           newPatch: 1,
           newValue: '1.x',
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2015-05-17T04:25:07.299Z',
+          releaseTimestamp: '2015-05-17T04:25:07.299Z' as Timestamp,
           updateType: 'major',
+          hasAttestation: false,
         },
       ]);
     });
@@ -1714,7 +1879,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.currentValue = '1.3.x';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -1723,15 +1888,18 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          isBreaking: false,
           isRange: true,
           newMajor: 1,
           newMinor: 4,
           newPatch: 1,
           newValue: '1.4.x',
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2015-05-17T04:25:07.299Z',
+          releaseTimestamp: '2015-05-17T04:25:07.299Z' as Timestamp,
           updateType: 'minor',
+          hasAttestation: false,
         },
       ]);
     });
@@ -1741,7 +1909,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.currentValue = '1.2.x - 1.3.x';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -1750,15 +1918,18 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          isBreaking: false,
           isRange: true,
           newMajor: 1,
           newMinor: 4,
           newPatch: 1,
           newValue: '1.2.x - 1.4.x',
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2015-05-17T04:25:07.299Z',
+          releaseTimestamp: '2015-05-17T04:25:07.299Z' as Timestamp,
           updateType: 'minor',
+          hasAttestation: false,
         },
       ]);
     });
@@ -1768,7 +1939,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.currentValue = '0';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -1777,15 +1948,18 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'major',
+          isBreaking: true,
           isRange: true,
           newMajor: 1,
           newMinor: 4,
           newPatch: 1,
           newValue: '1',
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2015-05-17T04:25:07.299Z',
+          releaseTimestamp: '2015-05-17T04:25:07.299Z' as Timestamp,
           updateType: 'major',
+          hasAttestation: false,
         },
       ]);
     });
@@ -1795,7 +1969,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.currentValue = '1.3';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -1804,15 +1978,18 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          isBreaking: false,
           isRange: true,
           newMajor: 1,
           newMinor: 4,
           newPatch: 1,
           newValue: '1.4',
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2015-05-17T04:25:07.299Z',
+          releaseTimestamp: '2015-05-17T04:25:07.299Z' as Timestamp,
           updateType: 'minor',
+          hasAttestation: false,
         },
       ]);
     });
@@ -1822,7 +1999,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.currentValue = '~0.7.0';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -1831,27 +2008,33 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          isBreaking: true,
           isRange: true,
           newMajor: 0,
           newMinor: 9,
           newPatch: 7,
           newValue: '~0.9.0',
           newVersion: '0.9.7',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-0.9.7.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2013-09-04T17:07:22.948Z',
+          releaseTimestamp: '2013-09-04T17:07:22.948Z' as Timestamp,
           updateType: 'minor',
+          hasAttestation: false,
         },
         {
           bucket: 'major',
+          isBreaking: true,
           isRange: true,
           newMajor: 1,
           newMinor: 4,
           newPatch: 1,
           newValue: '~1.4.0',
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2015-05-17T04:25:07.299Z',
+          releaseTimestamp: '2015-05-17T04:25:07.299Z' as Timestamp,
           updateType: 'major',
+          hasAttestation: false,
         },
       ]);
     });
@@ -1861,7 +2044,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.currentValue = '^0.7.0';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -1870,27 +2053,33 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          isBreaking: true,
           isRange: true,
           newMajor: 0,
           newMinor: 9,
           newPatch: 7,
           newValue: '^0.9.0',
           newVersion: '0.9.7',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-0.9.7.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2013-09-04T17:07:22.948Z',
+          releaseTimestamp: '2013-09-04T17:07:22.948Z' as Timestamp,
           updateType: 'minor',
+          hasAttestation: false,
         },
         {
           bucket: 'major',
+          isBreaking: true,
           isRange: true,
           newMajor: 1,
           newMinor: 4,
           newPatch: 1,
           newValue: '^1.0.0',
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2015-05-17T04:25:07.299Z',
+          releaseTimestamp: '2015-05-17T04:25:07.299Z' as Timestamp,
           updateType: 'major',
+          hasAttestation: false,
         },
       ]);
     });
@@ -1900,7 +2089,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.currentValue = '^0.7.0 || ^0.8.0';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -1909,27 +2098,33 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          isBreaking: true,
           isRange: true,
           newMajor: 0,
           newMinor: 9,
           newPatch: 7,
           newValue: '^0.7.0 || ^0.8.0 || ^0.9.0',
           newVersion: '0.9.7',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-0.9.7.tgz',
           newVersionAgeInDays: expect.any(Number),
           releaseTimestamp: expect.any(String),
           updateType: 'minor',
+          hasAttestation: false,
         },
         {
           bucket: 'major',
+          isBreaking: true,
           isRange: true,
           newMajor: 1,
           newMinor: 4,
           newPatch: 1,
           newValue: '^0.7.0 || ^0.8.0 || ^1.0.0',
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
           releaseTimestamp: expect.any(String),
           updateType: 'major',
+          hasAttestation: false,
         },
       ]);
     });
@@ -1940,7 +2135,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.packageName = 'webpack';
       config.datasource = NpmDatasource.id;
       httpMock
-        .scope('https://registry.npmjs.org')
+        .scope(npmDefaultRegistryUrl)
         .get('/webpack')
         .reply(200, webpackJson);
 
@@ -1951,15 +2146,20 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'major',
+          isBreaking: true,
           isRange: true,
           newMajor: 3,
           newMinor: 8,
           newPatch: 1,
           newValue: '^1.0.0 || ^2.0.0 || ^3.0.0',
           newVersion: '3.8.1',
+          newDigest:
+            'sha512-5ZXLWWsMqHKFr5y0N3Eo5IIisxeEeRAajNq4mELb/WELOR7srdbQk2N5XiyNy2A/AgvlR3AmeBCZJW8lHrolbw==',
+          downloadUrl: 'https://registry.npmjs.org/webpack/-/webpack-3.8.1.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2017-10-17T15:22:36.646Z',
+          releaseTimestamp: '2017-10-17T15:22:36.646Z' as Timestamp,
           updateType: 'major',
+          hasAttestation: false,
         },
       ]);
     });
@@ -1970,7 +2170,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.packageName = 'webpack';
       config.datasource = NpmDatasource.id;
       httpMock
-        .scope('https://registry.npmjs.org')
+        .scope(npmDefaultRegistryUrl)
         .get('/webpack')
         .reply(200, webpackJson);
 
@@ -1981,15 +2181,20 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'major',
+          isBreaking: true,
           isRange: true,
           newMajor: 3,
           newMinor: 8,
           newPatch: 1,
           newValue: '1.x - 3.x',
           newVersion: '3.8.1',
+          newDigest:
+            'sha512-5ZXLWWsMqHKFr5y0N3Eo5IIisxeEeRAajNq4mELb/WELOR7srdbQk2N5XiyNy2A/AgvlR3AmeBCZJW8lHrolbw==',
+          downloadUrl: 'https://registry.npmjs.org/webpack/-/webpack-3.8.1.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2017-10-17T15:22:36.646Z',
+          releaseTimestamp: '2017-10-17T15:22:36.646Z' as Timestamp,
           updateType: 'major',
+          hasAttestation: false,
         },
       ]);
     });
@@ -2000,7 +2205,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.packageName = 'webpack';
       config.datasource = NpmDatasource.id;
       httpMock
-        .scope('https://registry.npmjs.org')
+        .scope(npmDefaultRegistryUrl)
         .get('/webpack')
         .reply(200, webpackJson);
 
@@ -2011,15 +2216,20 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'major',
+          isBreaking: true,
           isRange: true,
           newMajor: 3,
           newMinor: 8,
           newPatch: 1,
           newValue: '1.x || 2.x || 3.x',
           newVersion: '3.8.1',
+          newDigest:
+            'sha512-5ZXLWWsMqHKFr5y0N3Eo5IIisxeEeRAajNq4mELb/WELOR7srdbQk2N5XiyNy2A/AgvlR3AmeBCZJW8lHrolbw==',
+          downloadUrl: 'https://registry.npmjs.org/webpack/-/webpack-3.8.1.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2017-10-17T15:22:36.646Z',
+          releaseTimestamp: '2017-10-17T15:22:36.646Z' as Timestamp,
           updateType: 'major',
+          hasAttestation: false,
         },
       ]);
     });
@@ -2030,7 +2240,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.packageName = 'webpack';
       config.datasource = NpmDatasource.id;
       httpMock
-        .scope('https://registry.npmjs.org')
+        .scope(npmDefaultRegistryUrl)
         .get('/webpack')
         .reply(200, webpackJson);
 
@@ -2041,15 +2251,20 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'major',
+          isBreaking: true,
           isRange: true,
           newMajor: 3,
           newMinor: 8,
           newPatch: 1,
           newValue: '1 || 2 || 3',
           newVersion: '3.8.1',
+          newDigest:
+            'sha512-5ZXLWWsMqHKFr5y0N3Eo5IIisxeEeRAajNq4mELb/WELOR7srdbQk2N5XiyNy2A/AgvlR3AmeBCZJW8lHrolbw==',
+          downloadUrl: 'https://registry.npmjs.org/webpack/-/webpack-3.8.1.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2017-10-17T15:22:36.646Z',
+          releaseTimestamp: '2017-10-17T15:22:36.646Z' as Timestamp,
           updateType: 'major',
+          hasAttestation: false,
         },
       ]);
     });
@@ -2059,7 +2274,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.currentValue = '~1.2.0 || ~1.3.0';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -2068,15 +2283,18 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          isBreaking: false,
           isRange: true,
           newMajor: 1,
           newMinor: 4,
           newPatch: 1,
           newValue: '~1.2.0 || ~1.3.0 || ~1.4.0',
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2015-05-17T04:25:07.299Z',
+          releaseTimestamp: '2015-05-17T04:25:07.299Z' as Timestamp,
           updateType: 'minor',
+          hasAttestation: false,
         },
       ]);
     });
@@ -2086,7 +2304,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.currentValue = '>= 0.7.0';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -2100,7 +2318,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.currentValue = '<= 0.7.2';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -2109,27 +2327,33 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          isBreaking: true,
           isRange: true,
           newMajor: 0,
           newMinor: 9,
           newPatch: 7,
           newValue: '<= 0.9.7',
           newVersion: '0.9.7',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-0.9.7.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2013-09-04T17:07:22.948Z',
+          releaseTimestamp: '2013-09-04T17:07:22.948Z' as Timestamp,
           updateType: 'minor',
+          hasAttestation: false,
         },
         {
           bucket: 'major',
+          isBreaking: true,
           isRange: true,
           newMajor: 1,
           newMinor: 4,
           newPatch: 1,
           newValue: '<= 1.4.1',
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2015-05-17T04:25:07.299Z',
+          releaseTimestamp: '2015-05-17T04:25:07.299Z' as Timestamp,
           updateType: 'major',
+          hasAttestation: false,
         },
       ]);
     });
@@ -2139,7 +2363,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.currentValue = '< 0.7.2';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -2148,27 +2372,33 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          isBreaking: true,
           isRange: true,
           newMajor: 0,
           newMinor: 9,
           newPatch: 7,
           newValue: '< 0.9.8',
           newVersion: '0.9.7',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-0.9.7.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2013-09-04T17:07:22.948Z',
+          releaseTimestamp: '2013-09-04T17:07:22.948Z' as Timestamp,
           updateType: 'minor',
+          hasAttestation: false,
         },
         {
           bucket: 'major',
+          isBreaking: true,
           isRange: true,
           newMajor: 1,
           newMinor: 4,
           newPatch: 1,
           newValue: '< 1.4.2',
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2015-05-17T04:25:07.299Z',
+          releaseTimestamp: '2015-05-17T04:25:07.299Z' as Timestamp,
           updateType: 'major',
+          hasAttestation: false,
         },
       ]);
     });
@@ -2178,7 +2408,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.currentValue = '< 1';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -2187,15 +2417,18 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'major',
+          isBreaking: true,
           isRange: true,
           newMajor: 1,
           newMinor: 4,
           newPatch: 1,
           newValue: '< 2',
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2015-05-17T04:25:07.299Z',
+          releaseTimestamp: '2015-05-17T04:25:07.299Z' as Timestamp,
           updateType: 'major',
+          hasAttestation: false,
         },
       ]);
     });
@@ -2205,7 +2438,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.currentValue = '<= 1.3';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -2214,15 +2447,18 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          isBreaking: false,
           isRange: true,
           newMajor: 1,
           newMinor: 4,
           newPatch: 1,
           newValue: '<= 1.4',
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2015-05-17T04:25:07.299Z',
+          releaseTimestamp: '2015-05-17T04:25:07.299Z' as Timestamp,
           updateType: 'minor',
+          hasAttestation: false,
         },
       ]);
     });
@@ -2232,7 +2468,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.currentValue = '=1.3.1';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -2241,15 +2477,18 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          isBreaking: false,
           isRange: true,
           newMajor: 1,
           newMinor: 4,
           newPatch: 1,
           newValue: '=1.4.1',
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2015-05-17T04:25:07.299Z',
+          releaseTimestamp: '2015-05-17T04:25:07.299Z' as Timestamp,
           updateType: 'minor',
+          hasAttestation: false,
         },
       ]);
     });
@@ -2260,7 +2499,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.currentValue = '<= 1';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -2269,15 +2508,18 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'major',
+          isBreaking: true,
           isRange: true,
           newMajor: 2,
           newMinor: 0,
           newPatch: 3,
           newValue: '<= 2',
           newVersion: '2.0.3',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-2.0.3.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2015-01-31T08:11:47.852Z',
+          releaseTimestamp: '2015-01-31T08:11:47.852Z' as Timestamp,
           updateType: 'major',
+          hasAttestation: false,
         },
       ]);
     });
@@ -2287,7 +2529,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.currentValue = '<= 1.0.0';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -2296,15 +2538,18 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          isBreaking: false,
           isRange: true,
           newMajor: 1,
           newMinor: 4,
           newPatch: 1,
           newValue: '<= 1.4.1',
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
           releaseTimestamp: expect.any(String),
           updateType: 'minor',
+          hasAttestation: false,
         },
       ]);
     });
@@ -2314,7 +2559,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.currentValue = '< 1.0.0';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -2323,15 +2568,18 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'major',
+          isBreaking: true,
           isRange: true,
           newMajor: 1,
           newMinor: 4,
           newPatch: 1,
           newValue: '< 2.0.0',
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
           releaseTimestamp: expect.any(String),
           updateType: 'major',
+          hasAttestation: false,
         },
       ]);
     });
@@ -2341,7 +2589,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.currentValue = '>= 0.5.0 < 1.0.0';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -2350,15 +2598,18 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'major',
+          isBreaking: true,
           isRange: true,
           newMajor: 1,
           newMinor: 4,
           newPatch: 1,
           newValue: '>= 0.5.0 < 2.0.0',
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
           releaseTimestamp: expect.any(String),
           updateType: 'major',
+          hasAttestation: false,
         },
       ]);
     });
@@ -2368,7 +2619,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.currentValue = '>= 0.5.0 <0.8';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -2377,27 +2628,33 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          isBreaking: true,
           isRange: true,
           newMajor: 0,
           newMinor: 9,
           newPatch: 7,
           newValue: '>= 0.5.0 <0.10',
           newVersion: '0.9.7',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-0.9.7.tgz',
           newVersionAgeInDays: expect.any(Number),
           releaseTimestamp: expect.any(String),
           updateType: 'minor',
+          hasAttestation: false,
         },
         {
           bucket: 'major',
+          isBreaking: true,
           isRange: true,
           newMajor: 1,
           newMinor: 4,
           newPatch: 1,
           newValue: '>= 0.5.0 <1.5',
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
           releaseTimestamp: expect.any(String),
           updateType: 'major',
+          hasAttestation: false,
         },
       ]);
     });
@@ -2407,7 +2664,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.currentValue = '>= 0.5.0 <= 0.8.0';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -2416,27 +2673,33 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          isBreaking: true,
           isRange: true,
           newMajor: 0,
           newMinor: 9,
           newPatch: 7,
           newValue: '>= 0.5.0 <= 0.9.7',
           newVersion: '0.9.7',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-0.9.7.tgz',
           newVersionAgeInDays: expect.any(Number),
           releaseTimestamp: expect.any(String),
           updateType: 'minor',
+          hasAttestation: false,
         },
         {
           bucket: 'major',
+          isBreaking: true,
           isRange: true,
           newMajor: 1,
           newMinor: 4,
           newPatch: 1,
           newValue: '>= 0.5.0 <= 1.4.1',
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
           releaseTimestamp: expect.any(String),
           updateType: 'major',
+          hasAttestation: false,
         },
       ]);
     });
@@ -2446,7 +2709,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.currentValue = '<= 0.8.0 >= 0.5.0';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -2460,7 +2723,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.currentValue = '1.4.1';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -2469,14 +2732,17 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'major',
+          isBreaking: true,
           newMajor: 2,
           newMinor: 0,
           newPatch: 3,
           newValue: '2.0.3',
           newVersion: '2.0.3',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-2.0.3.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2015-01-31T08:11:47.852Z',
+          releaseTimestamp: '2015-01-31T08:11:47.852Z' as Timestamp,
           updateType: 'major',
+          hasAttestation: false,
         },
       ]);
     });
@@ -2485,10 +2751,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.currentValue = '2.5.16';
       config.packageName = 'vue';
       config.datasource = NpmDatasource.id;
-      httpMock
-        .scope('https://registry.npmjs.org')
-        .get('/vue')
-        .reply(200, vueJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/vue').reply(200, vueJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -2516,12 +2779,14 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'major',
+          isBreaking: true,
           newMajor: 2,
           newMinor: 0,
           newPatch: 0,
           newValue: '2.0.0',
           newVersion: '2.0.0',
           updateType: 'major',
+          hasAttestation: undefined,
         },
       ]);
     });
@@ -2546,12 +2811,14 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          isBreaking: false,
           newMajor: 20,
           newMinor: 3,
           newPatch: 1,
           newValue: '20.3.1',
           newVersion: '20.3.1',
           updateType: 'patch',
+          hasAttestation: undefined,
         },
       ]);
     });
@@ -2571,11 +2838,11 @@ describe('workers/repository/process/lookup/index', () => {
           { version: '1.4.4' },
           {
             version: '1.4.5',
-            releaseTimestamp: lastWeek.toISOString(),
+            releaseTimestamp: lastWeek.toISOString() as Timestamp,
           },
           {
             version: '1.4.6',
-            releaseTimestamp: yesterday.toISOString(),
+            releaseTimestamp: yesterday.toISOString() as Timestamp,
           },
         ],
       });
@@ -2587,6 +2854,7 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          isBreaking: false,
           newMajor: 1,
           newMinor: 4,
           newPatch: 6,
@@ -2596,6 +2864,7 @@ describe('workers/repository/process/lookup/index', () => {
           newVersionAgeInDays: expect.any(Number),
           releaseTimestamp: expect.any(String),
           updateType: 'patch',
+          hasAttestation: undefined,
         },
       ]);
     });
@@ -2615,11 +2884,11 @@ describe('workers/repository/process/lookup/index', () => {
           { version: '1.4.4' },
           {
             version: '1.4.5',
-            releaseTimestamp: lastWeek.toISOString(),
+            releaseTimestamp: lastWeek.toISOString() as Timestamp,
           },
           {
             version: '1.4.6',
-            releaseTimestamp: yesterday.toISOString(),
+            releaseTimestamp: yesterday.toISOString() as Timestamp,
           },
         ],
       });
@@ -2631,6 +2900,7 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          isBreaking: false,
           newMajor: 1,
           newMinor: 4,
           newPatch: 5,
@@ -2640,6 +2910,7 @@ describe('workers/repository/process/lookup/index', () => {
           newVersionAgeInDays: expect.any(Number),
           releaseTimestamp: expect.any(String),
           updateType: 'patch',
+          hasAttestation: undefined,
         },
       ]);
     });
@@ -2650,10 +2921,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.respectLatest = false;
       config.packageName = 'vue';
       config.datasource = NpmDatasource.id;
-      httpMock
-        .scope('https://registry.npmjs.org')
-        .get('/vue')
-        .reply(200, vueJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/vue').reply(200, vueJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -2662,14 +2930,19 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          isBreaking: true,
           newMajor: 2,
           newMinor: 5,
           newPatch: 17,
           newValue: '2.5.17-beta.0',
           newVersion: '2.5.17-beta.0',
+          newDigest:
+            'sha512-9BZOxpRe1TaGLS4oXyrUp3BC1dlc93js/yvnHtOovWzrkrjFMm58X+BCHrA/xgMXSM1iyRTEGoxAURyOUaK1dA==',
+          downloadUrl: 'https://registry.npmjs.org/vue/-/vue-2.5.17-beta.0.tgz',
           newVersionAgeInDays: expect.any(Number),
           releaseTimestamp: expect.any(String),
           updateType: 'patch',
+          hasAttestation: false,
         },
       ]);
     });
@@ -2679,7 +2952,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.packageName = 'typescript';
       config.datasource = NpmDatasource.id;
       httpMock
-        .scope('https://registry.npmjs.org')
+        .scope(npmDefaultRegistryUrl)
         .get('/typescript')
         .reply(200, typescriptJson);
 
@@ -2690,14 +2963,20 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          isBreaking: true,
           newMajor: 3,
           newMinor: 1,
           newPatch: 0,
           newValue: '3.1.0-dev.20180813',
           newVersion: '3.1.0-dev.20180813',
+          newDigest:
+            'sha512-3sooaeRS1KvHoZ/hE8v2VhlxojcPvHBVZ5jXi070GscZA9BeZ/sXA21Un5m9xqeXMESrWFt7onto2xZfwj2XQg==',
+          downloadUrl:
+            'https://registry.npmjs.org/typescript/-/typescript-3.1.0-dev.20180813.tgz',
           newVersionAgeInDays: expect.any(Number),
           releaseTimestamp: expect.any(String),
           updateType: 'patch',
+          hasAttestation: false,
         },
       ]);
     });
@@ -2707,7 +2986,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.packageName = 'typescript';
       config.datasource = NpmDatasource.id;
       httpMock
-        .scope('https://registry.npmjs.org')
+        .scope(npmDefaultRegistryUrl)
         .get('/typescript')
         .reply(200, typescriptJson);
 
@@ -2718,14 +2997,20 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          isBreaking: true,
           newMajor: 3,
           newMinor: 0,
           newPatch: 1,
           newValue: '3.0.1',
           newVersion: '3.0.1',
+          newDigest:
+            'sha512-zQIMOmC+372pC/CCVLqnQ0zSBiY7HHodU7mpQdjiZddek4GMj31I3dUJ7gAs9o65X7mnRma6OokOkc6f9jjfBg==',
+          downloadUrl:
+            'https://registry.npmjs.org/typescript/-/typescript-3.0.1.tgz',
           newVersionAgeInDays: expect.any(Number),
           releaseTimestamp: expect.any(String),
           updateType: 'patch',
+          hasAttestation: false,
         },
       ]);
     });
@@ -2736,7 +3021,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.packageName = '@types/helmet';
       config.datasource = NpmDatasource.id;
       httpMock
-        .scope('https://registry.npmjs.org')
+        .scope(npmDefaultRegistryUrl)
         .get('/@types%2Fhelmet')
         .reply(200, helmetJson);
 
@@ -2747,14 +3032,18 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          isBreaking: true,
           newMajor: 0,
           newMinor: 0,
           newPatch: 35,
           newValue: '0.0.35',
           newVersion: '0.0.35',
+          downloadUrl:
+            'https://registry.npmjs.org/@types/helmet/-/helmet-0.0.35.tgz',
           newVersionAgeInDays: expect.any(Number),
           releaseTimestamp: expect.any(String),
           updateType: 'patch',
+          hasAttestation: false,
         },
       ]);
     });
@@ -2765,7 +3054,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.packageName = '@types/helmet';
       config.datasource = NpmDatasource.id;
       httpMock
-        .scope('https://registry.npmjs.org')
+        .scope(npmDefaultRegistryUrl)
         .get('/@types%2Fhelmet')
         .reply(200, helmetJson);
 
@@ -2782,7 +3071,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.datasource = NpmDatasource.id;
       config.followTag = 'insiders';
       httpMock
-        .scope('https://registry.npmjs.org')
+        .scope(npmDefaultRegistryUrl)
         .get('/typescript')
         .reply(200, typescriptJson);
 
@@ -2793,14 +3082,20 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          isBreaking: true,
           newMajor: 3,
           newMinor: 0,
           newPatch: 1,
           newValue: '3.0.1-insiders.20180726',
           newVersion: '3.0.1-insiders.20180726',
+          newDigest:
+            'sha512-fSY7XOiD1xObVp+vCamB9Hivvvu/SlUu/tzoPz+7xZGk2pqVTRFG7+1a2okxIBVV+C1ePXOR163PIjB3+L4SPA==',
+          downloadUrl:
+            'https://registry.npmjs.org/typescript/-/typescript-3.0.1-insiders.20180726.tgz',
           newVersionAgeInDays: expect.any(Number),
           releaseTimestamp: expect.any(String),
           updateType: 'patch',
+          hasAttestation: false,
         },
       ]);
     });
@@ -2812,7 +3107,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.followTag = 'insiders';
       config.rollbackPrs = true;
       httpMock
-        .scope('https://registry.npmjs.org')
+        .scope(npmDefaultRegistryUrl)
         .get('/typescript')
         .reply(200, typescriptJson);
 
@@ -2828,6 +3123,11 @@ describe('workers/repository/process/lookup/index', () => {
           newVersion: '3.0.1-insiders.20180726',
           registryUrl: undefined,
           updateType: 'rollback',
+          prBodyNotes: expect.arrayContaining([
+            expect.stringContaining(
+              'The version of `typescript` in use (`3.1.0-dev.20180813`)',
+            ),
+          ]),
         },
       ]);
     });
@@ -2838,7 +3138,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.datasource = NpmDatasource.id;
       config.followTag = 'insiders';
       httpMock
-        .scope('https://registry.npmjs.org')
+        .scope(npmDefaultRegistryUrl)
         .get('/typescript')
         .reply(200, typescriptJson);
 
@@ -2849,14 +3149,20 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          isBreaking: true,
           newMajor: 3,
           newMinor: 0,
           newPatch: 1,
           newValue: '3.0.1-insiders.20180726',
           newVersion: '3.0.1-insiders.20180726',
+          newDigest:
+            'sha512-fSY7XOiD1xObVp+vCamB9Hivvvu/SlUu/tzoPz+7xZGk2pqVTRFG7+1a2okxIBVV+C1ePXOR163PIjB3+L4SPA==',
+          downloadUrl:
+            'https://registry.npmjs.org/typescript/-/typescript-3.0.1-insiders.20180726.tgz',
           newVersionAgeInDays: expect.any(Number),
           releaseTimestamp: expect.any(String),
           updateType: 'patch',
+          hasAttestation: false,
         },
       ]);
     });
@@ -2867,7 +3173,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.datasource = NpmDatasource.id;
       config.followTag = 'insiders';
       httpMock
-        .scope('https://registry.npmjs.org')
+        .scope(npmDefaultRegistryUrl)
         .get('/typescript')
         .reply(200, typescriptJson);
 
@@ -2884,7 +3190,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.datasource = NpmDatasource.id;
       config.followTag = 'foo';
       httpMock
-        .scope('https://registry.npmjs.org')
+        .scope(npmDefaultRegistryUrl)
         .get('/typescript')
         .reply(200, typescriptJson);
 
@@ -2916,7 +3222,7 @@ describe('workers/repository/process/lookup/index', () => {
           {
             version: 'v2.0.0',
             gitRef: 'v2.0.0',
-            releaseTimestamp: '2022-01-01',
+            releaseTimestamp: '2022-01-01' as Timestamp,
           },
         ],
       });
@@ -2935,6 +3241,64 @@ describe('workers/repository/process/lookup/index', () => {
       ]);
     });
 
+    describe('digest managed externally', () => {
+      it('does not create a pinDigest update', async () => {
+        config.currentValue = 'v1.0.0';
+        config.packageName = 'angular/angular';
+        config.pinDigests = true;
+        // for instance, if a lockfile manages the digest instead of the package file
+        config.digestManagedExternally = true;
+        config.datasource = GithubTagsDatasource.id;
+
+        getGithubTags.mockResolvedValueOnce({
+          releases: [
+            {
+              version: 'v1.0.0',
+              gitRef: 'v1.0.0',
+              releaseTimestamp: '2022-01-01' as Timestamp,
+            },
+          ],
+        });
+        const getDigest = vi.spyOn(GithubTagsDatasource.prototype, 'getDigest');
+
+        const { updates } = await Result.wrap(
+          lookup.lookupUpdates(config),
+        ).unwrapOrThrow();
+
+        expect(updates).toBeEmptyArray();
+        expect(getDigest).not.toHaveBeenCalled();
+      });
+
+      it('still refreshes a digest that is already inline', async () => {
+        config.currentValue = 'v1.0.0';
+        config.currentDigest = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+        config.packageName = 'angular/angular';
+        config.pinDigests = true;
+        config.digestManagedExternally = true;
+        config.datasource = GithubTagsDatasource.id;
+
+        getGithubTags.mockResolvedValueOnce({
+          releases: [
+            {
+              version: 'v1.0.0',
+              gitRef: 'v1.0.0',
+              releaseTimestamp: '2022-01-01' as Timestamp,
+            },
+          ],
+        });
+        vi.spyOn(
+          GithubTagsDatasource.prototype,
+          'getDigest',
+        ).mockResolvedValueOnce('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
+
+        const { updates } = await Result.wrap(
+          lookup.lookupUpdates(config),
+        ).unwrapOrThrow();
+
+        expect(updates).toMatchObject([{ updateType: 'digest' }]);
+      });
+    });
+
     describe('pinning enabled but no existing digest', () => {
       it('should not warn if no new digest could be found', async () => {
         config.currentValue = 'v1.0.0';
@@ -2951,7 +3315,7 @@ describe('workers/repository/process/lookup/index', () => {
             {
               version: 'v2.0.0',
               gitRef: 'v2.0.0',
-              releaseTimestamp: '2022-01-01',
+              releaseTimestamp: '2022-01-01' as Timestamp,
             },
           ],
         });
@@ -2984,11 +3348,11 @@ describe('workers/repository/process/lookup/index', () => {
           {
             version: 'v1.0.0',
             gitRef: 'v1.0.0',
-            releaseTimestamp: '2022-01-01',
+            releaseTimestamp: '2022-01-01' as Timestamp,
           },
         ],
       });
-      const getGithubTagsDigest = jest
+      const getGithubTagsDigest = vi
         .spyOn(GithubTagsDatasource.prototype, 'getDigest')
         .mockResolvedValueOnce('digest1234');
 
@@ -3016,7 +3380,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.packageName = '@types/helmet';
       config.datasource = NpmDatasource.id;
       httpMock
-        .scope('https://registry.npmjs.org')
+        .scope(npmDefaultRegistryUrl)
         .get('/@types%2Fhelmet')
         .reply(200, helmetJson);
 
@@ -3033,7 +3397,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.packageName = '@types/helmet';
       config.datasource = NpmDatasource.id;
       httpMock
-        .scope('https://registry.npmjs.org')
+        .scope(npmDefaultRegistryUrl)
         .get('/@types%2Fhelmet')
         .reply(200, helmetJson);
 
@@ -3044,15 +3408,19 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          isBreaking: true,
           isRange: true,
           newMajor: 0,
           newMinor: 0,
           newPatch: 35,
           newValue: '^0.0.35',
           newVersion: '0.0.35',
+          downloadUrl:
+            'https://registry.npmjs.org/@types/helmet/-/helmet-0.0.35.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2017-04-27T16:59:06.479Z',
+          releaseTimestamp: '2017-04-27T16:59:06.479Z' as Timestamp,
           updateType: 'patch',
+          hasAttestation: false,
         },
       ]);
     });
@@ -3063,7 +3431,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.datasource = NpmDatasource.id;
       config.rollbackPrs = true;
       httpMock
-        .scope('https://registry.npmjs.org')
+        .scope(npmDefaultRegistryUrl)
         .get('/coffeelint')
         .reply(200, coffeelintJson);
 
@@ -3079,6 +3447,11 @@ describe('workers/repository/process/lookup/index', () => {
           newVersion: '1.16.0',
           registryUrl: undefined,
           updateType: 'rollback',
+          prBodyNotes: expect.arrayContaining([
+            expect.stringContaining(
+              'The version of `coffeelint` in use (`1.16.1`)',
+            ),
+          ]),
         },
       ]);
     });
@@ -3088,7 +3461,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.packageName = 'webpack';
       config.datasource = NpmDatasource.id;
       httpMock
-        .scope('https://registry.npmjs.org')
+        .scope(npmDefaultRegistryUrl)
         .get('/webpack')
         .reply(200, webpackJson);
 
@@ -3099,25 +3472,34 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          isBreaking: false,
           newMajor: 1,
           newMinor: 15,
           newPatch: 0,
           newValue: '1.15.0',
           newVersion: '1.15.0',
+          downloadUrl:
+            'https://registry.npmjs.org/webpack/-/webpack-1.15.0.tgz',
           newVersionAgeInDays: expect.any(Number),
           releaseTimestamp: expect.any(String),
           updateType: 'minor',
+          hasAttestation: false,
         },
         {
           bucket: 'major',
+          isBreaking: true,
           newMajor: 3,
           newMinor: 8,
           newPatch: 1,
           newValue: '3.8.1',
           newVersion: '3.8.1',
+          newDigest:
+            'sha512-5ZXLWWsMqHKFr5y0N3Eo5IIisxeEeRAajNq4mELb/WELOR7srdbQk2N5XiyNy2A/AgvlR3AmeBCZJW8lHrolbw==',
+          downloadUrl: 'https://registry.npmjs.org/webpack/-/webpack-3.8.1.tgz',
           newVersionAgeInDays: expect.any(Number),
           releaseTimestamp: expect.any(String),
           updateType: 'major',
+          hasAttestation: false,
         },
       ]);
     });
@@ -3128,7 +3510,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.packageName = 'webpack';
       config.datasource = NpmDatasource.id;
       httpMock
-        .scope('https://registry.npmjs.org')
+        .scope(npmDefaultRegistryUrl)
         .get('/webpack')
         .reply(200, webpackJson);
 
@@ -3139,36 +3521,51 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          isBreaking: false,
           newMajor: 1,
           newMinor: 15,
           newPatch: 0,
           newValue: '1.15.0',
           newVersion: '1.15.0',
+          downloadUrl:
+            'https://registry.npmjs.org/webpack/-/webpack-1.15.0.tgz',
           newVersionAgeInDays: expect.any(Number),
           releaseTimestamp: expect.any(String),
           updateType: 'minor',
+          hasAttestation: false,
         },
         {
           bucket: 'v2',
+          isBreaking: true,
           newMajor: 2,
           newMinor: 7,
           newPatch: 0,
           newValue: '2.7.0',
           newVersion: '2.7.0',
+          newDigest:
+            'sha512-MjAA0ZqO1ba7ZQJRnoCdbM56mmFpipOPUv/vQpwwfSI42p5PVDdoiuK2AL2FwFUVgT859Jr43bFZXRg/LNsqvg==',
+          downloadUrl: 'https://registry.npmjs.org/webpack/-/webpack-2.7.0.tgz',
           newVersionAgeInDays: expect.any(Number),
           releaseTimestamp: expect.any(String),
           updateType: 'major',
+          hasAttestation: false,
         },
         {
           bucket: 'v3',
+          isBreaking: true,
+
           newMajor: 3,
           newMinor: 8,
           newPatch: 1,
           newValue: '3.8.1',
           newVersion: '3.8.1',
+          newDigest:
+            'sha512-5ZXLWWsMqHKFr5y0N3Eo5IIisxeEeRAajNq4mELb/WELOR7srdbQk2N5XiyNy2A/AgvlR3AmeBCZJW8lHrolbw==',
+          downloadUrl: 'https://registry.npmjs.org/webpack/-/webpack-3.8.1.tgz',
           newVersionAgeInDays: expect.any(Number),
           releaseTimestamp: expect.any(String),
           updateType: 'major',
+          hasAttestation: false,
         },
       ]);
     });
@@ -3179,7 +3576,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.packageName = 'webpack';
       config.datasource = NpmDatasource.id;
       httpMock
-        .scope('https://registry.npmjs.org')
+        .scope(npmDefaultRegistryUrl)
         .get('/webpack')
         .reply(200, webpackJson);
       const { updates } = await Result.wrap(
@@ -3193,10 +3590,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.rangeStrategy = 'replace';
       config.packageName = 'next';
       config.datasource = NpmDatasource.id;
-      httpMock
-        .scope('https://registry.npmjs.org')
-        .get('/next')
-        .reply(200, nextJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/next').reply(200, nextJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -3210,7 +3604,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.currentValue = '^1.0.0';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -3219,6 +3613,7 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          isBreaking: false,
           isBump: true,
           isRange: true,
           newMajor: 1,
@@ -3226,9 +3621,11 @@ describe('workers/repository/process/lookup/index', () => {
           newPatch: 1,
           newValue: '^1.4.1',
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2015-05-17T04:25:07.299Z',
+          releaseTimestamp: '2015-05-17T04:25:07.299Z' as Timestamp,
           updateType: 'minor',
+          hasAttestation: false,
         },
       ]);
     });
@@ -3239,7 +3636,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.packageName = 'q';
       config.separateMinorPatch = true;
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -3248,6 +3645,7 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'patch',
+          isBreaking: false,
           isBump: true,
           isRange: true,
           newMajor: 1,
@@ -3255,21 +3653,26 @@ describe('workers/repository/process/lookup/index', () => {
           newPatch: 1,
           newValue: '~1.0.1',
           newVersion: '1.0.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.0.1.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2014-03-11T18:47:17.560Z',
+          releaseTimestamp: '2014-03-11T18:47:17.560Z' as Timestamp,
           updateType: 'patch',
+          hasAttestation: false,
         },
         {
           bucket: 'minor',
+          isBreaking: false,
           isRange: true,
           newMajor: 1,
           newMinor: 4,
           newPatch: 1,
           newValue: '~1.4.1',
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2015-05-17T04:25:07.299Z',
+          releaseTimestamp: '2015-05-17T04:25:07.299Z' as Timestamp,
           updateType: 'minor',
+          hasAttestation: false,
         },
       ]);
     });
@@ -3280,7 +3683,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.packageName = 'q';
       config.separateMinorPatch = true;
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -3289,6 +3692,8 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'patch',
+          hasAttestation: false,
+          isBreaking: false,
           isBump: true,
           isRange: true,
           newMajor: 1,
@@ -3296,20 +3701,24 @@ describe('workers/repository/process/lookup/index', () => {
           newPatch: 1,
           newValue: '~1.0.1',
           newVersion: '1.0.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.0.1.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2014-03-11T18:47:17.560Z',
+          releaseTimestamp: '2014-03-11T18:47:17.560Z' as Timestamp,
           updateType: 'patch',
         },
         {
           bucket: 'minor',
+          hasAttestation: false,
+          isBreaking: false,
           isRange: true,
           newMajor: 1,
           newMinor: 4,
           newPatch: 1,
           newValue: '~1.4.1',
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2015-05-17T04:25:07.299Z',
+          releaseTimestamp: '2015-05-17T04:25:07.299Z' as Timestamp,
           updateType: 'minor',
         },
       ]);
@@ -3320,7 +3729,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.currentValue = '>=1.0.0';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -3329,6 +3738,8 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          hasAttestation: false,
+          isBreaking: false,
           isBump: true,
           isRange: true,
           newMajor: 1,
@@ -3336,8 +3747,9 @@ describe('workers/repository/process/lookup/index', () => {
           newPatch: 1,
           newValue: '>=1.4.1',
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2015-05-17T04:25:07.299Z',
+          releaseTimestamp: '2015-05-17T04:25:07.299Z' as Timestamp,
           updateType: 'minor',
         },
       ]);
@@ -3349,7 +3761,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
       config.separateMajorMinor = false;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -3358,6 +3770,8 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'latest',
+          hasAttestation: false,
+          isBreaking: true,
           isBump: true,
           isRange: true,
           newMajor: 1,
@@ -3365,8 +3779,9 @@ describe('workers/repository/process/lookup/index', () => {
           newPatch: 1,
           newValue: '>=1.4.1',
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2015-05-17T04:25:07.299Z',
+          releaseTimestamp: '2015-05-17T04:25:07.299Z' as Timestamp,
           updateType: 'major',
         },
       ]);
@@ -3377,7 +3792,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.currentValue = '>1.0.0';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -3391,7 +3806,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.currentValue = '1.x';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -3405,7 +3820,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.currentValue = '^0.9.0 || ^1.0.0';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -3420,7 +3835,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.packageFile = 'package.json';
       config.rangeStrategy = 'bump';
       config.currentValue = '1.0.0';
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -3429,13 +3844,16 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          hasAttestation: false,
+          isBreaking: false,
           newMajor: 1,
           newMinor: 4,
           newPatch: 1,
           newValue: '1.4.1',
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2015-05-17T04:25:07.299Z',
+          releaseTimestamp: '2015-05-17T04:25:07.299Z' as Timestamp,
           updateType: 'minor',
         },
       ]);
@@ -3477,10 +3895,12 @@ describe('workers/repository/process/lookup/index', () => {
       config.datasource = PackagistDatasource.id;
       config.packageFile = 'composer.json';
       config.currentValue = '1.0.0';
-      config.registryUrls = ['https://packagist.org'];
+      config.registryUrls = ['https://repo.packagist.org'];
       httpMock
-        .scope('https://packagist.org')
-        .get('/packages/foo/bar.json')
+        .scope('https://repo.packagist.org')
+        .get('/packages.json')
+        .reply(200, { 'metadata-url': '/p2/%package%.json' })
+        .get('/p2/foo/bar.json')
         .reply(404);
 
       const { updates } = await Result.wrap(
@@ -3514,7 +3934,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.packageName = 'q';
       // TODO: we are using npm as source to test pep440 (#9721)
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -3530,14 +3950,17 @@ describe('workers/repository/process/lookup/index', () => {
         },
         {
           bucket: 'major',
+          hasAttestation: false,
+          isBreaking: true,
           isRange: true,
           newMajor: 1,
           newMinor: 4,
           newPatch: 1,
           newValue: '~=1.4',
           newVersion: '1.4.1',
+          downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2015-05-17T04:25:07.299Z',
+          releaseTimestamp: '2015-05-17T04:25:07.299Z' as Timestamp,
           updateType: 'major',
         },
       ]);
@@ -3547,7 +3970,7 @@ describe('workers/repository/process/lookup/index', () => {
       config.currentValue = '1.3.0';
       config.packageName = 'q';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const res = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -3555,19 +3978,21 @@ describe('workers/repository/process/lookup/index', () => {
 
       expect(res).toMatchObject({
         currentVersion: '1.3.0',
-        currentVersionTimestamp: '2015-04-26T16:42:11.311Z',
+        currentVersionTimestamp: '2015-04-26T16:42:11.311Z' as Timestamp,
         fixedVersion: '1.3.0',
         isSingleVersion: true,
-        registryUrl: 'https://registry.npmjs.org',
+        registryUrl: npmDefaultRegistryUrl,
         sourceUrl: 'https://github.com/kriskowal/q',
         updates: [
           {
             bucket: 'non-major',
+            isBreaking: false,
             newMajor: 1,
             newMinor: 4,
             newPatch: 1,
             newValue: '1.4.1',
             newVersion: '1.4.1',
+            downloadUrl: 'https://registry.npmjs.org/q/-/q-1.4.1.tgz',
             newVersionAgeInDays: expect.any(Number),
             releaseTimestamp: expect.any(String),
             updateType: 'minor',
@@ -3576,6 +4001,43 @@ describe('workers/repository/process/lookup/index', () => {
         versioning: 'npm',
         warnings: [],
       });
+    });
+
+    it('prefers lockedVersion', async () => {
+      // Contrived test to check that lockedVersion is preferred over currentValue
+      config.currentValue = '1.3.0';
+      config.lockedVersion = '1.4.1';
+      config.rangeStrategy = 'update-lockfile';
+      config.packageName = 'q';
+      config.datasource = NpmDatasource.id;
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
+
+      const res = await Result.wrap(
+        lookup.lookupUpdates(config),
+      ).unwrapOrThrow();
+
+      expect(res.currentVersion).toEqual('1.4.1');
+      expect(res.updates).toHaveLength(0);
+    });
+
+    it('uses lockedVersion timestamp when lockedVersion differs from currentVersion', async () => {
+      config.currentValue = '^1.0.0';
+      config.lockedVersion = '1.0.0';
+      config.rangeStrategy = 'replace';
+      config.packageName = 'q';
+      config.datasource = NpmDatasource.id;
+      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+
+      const res = await Result.wrap(
+        lookup.lookupUpdates(config),
+      ).unwrapOrThrow();
+
+      // currentVersion should be the lockedVersion
+      expect(res.currentVersion).toBe('1.0.0');
+      // currentVersionTimestamp should be 1.0.0's timestamp, not 1.4.1's
+      expect(res.currentVersionTimestamp).toBe(
+        '2014-01-04T17:39:35.181Z' as Timestamp,
+      );
     });
 
     it('ignores deprecated when it is not the latest', async () => {
@@ -3588,24 +4050,22 @@ describe('workers/repository/process/lookup/index', () => {
       returnJson.versions['1.4.1'].deprecated = 'true';
       // make sure latest release isn't the one deprecated as otherwise every release is deprecated
       returnJson['dist-tags'].latest = '2.0.3';
-      httpMock
-        .scope('https://registry.npmjs.org')
-        .get('/q2')
-        .reply(200, returnJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q2').reply(200, returnJson);
 
       const res = await Result.wrap(
         lookup.lookupUpdates(config),
       ).unwrapOrThrow();
       expect(res).toMatchObject({
         currentVersion: '1.3.0',
-        currentVersionTimestamp: '2015-04-26T16:42:11.311Z',
+        currentVersionTimestamp: '2015-04-26T16:42:11.311Z' as Timestamp,
         fixedVersion: '1.3.0',
         isSingleVersion: true,
-        registryUrl: 'https://registry.npmjs.org',
+        registryUrl: npmDefaultRegistryUrl,
         sourceUrl: 'https://github.com/kriskowal/q',
         updates: [
           {
             bucket: 'non-major',
+            isBreaking: false,
             newMajor: 1,
             newMinor: 4,
             newPatch: 0,
@@ -3617,6 +4077,7 @@ describe('workers/repository/process/lookup/index', () => {
           },
           {
             bucket: 'major',
+            isBreaking: true,
             newMajor: 2,
             newMinor: 0,
             newPatch: 3,
@@ -3644,10 +4105,7 @@ describe('workers/repository/process/lookup/index', () => {
       };
       returnJson.versions['1.4.1'].deprecated = 'true';
 
-      httpMock
-        .scope('https://registry.npmjs.org')
-        .get('/q3')
-        .reply(200, returnJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q3').reply(200, returnJson);
 
       const res = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -3655,9 +4113,9 @@ describe('workers/repository/process/lookup/index', () => {
 
       expect(res).toMatchObject({
         currentVersion: '1.3.0',
-        currentVersionTimestamp: '2015-04-26T16:42:11.311Z',
+        currentVersionTimestamp: '2015-04-26T16:42:11.311Z' as Timestamp,
         deprecationMessage: codeBlock`
-        On registry \`https://registry.npmjs.org\`, the "latest" version of dependency \`q3\` has the following deprecation notice:
+        On registry \`${npmDefaultRegistryUrl}\`, the "latest" version of dependency \`q3\` has the following deprecation notice:
 
         \`true\`
 
@@ -3665,12 +4123,13 @@ describe('workers/repository/process/lookup/index', () => {
       `,
         fixedVersion: '1.3.0',
         isSingleVersion: true,
-        registryUrl: 'https://registry.npmjs.org',
+        registryUrl: npmDefaultRegistryUrl,
         sourceDirectory: 'test',
         sourceUrl: 'https://github.com/kriskowal/q',
         updates: [
           {
             bucket: 'non-major',
+            isBreaking: false,
             newMajor: 1,
             newMinor: 4,
             newPatch: 1,
@@ -3750,6 +4209,7 @@ describe('workers/repository/process/lookup/index', () => {
         updates: [
           {
             bucket: 'non-major',
+            isBreaking: false,
             newDigest: 'sha256:abcdef1234567890',
             newMajor: 8,
             newMinor: 1,
@@ -3802,6 +4262,7 @@ describe('workers/repository/process/lookup/index', () => {
         updates: [
           {
             bucket: 'non-major',
+            isBreaking: false,
             newMajor: 8,
             newMinor: 2,
             newPatch: 5,
@@ -3848,6 +4309,7 @@ describe('workers/repository/process/lookup/index', () => {
         updates: [
           {
             bucket: 'non-major',
+            isBreaking: false,
             newMajor: 8,
             newMinor: 2,
             newPatch: null,
@@ -3857,6 +4319,7 @@ describe('workers/repository/process/lookup/index', () => {
           },
           {
             bucket: 'major',
+            isBreaking: true,
             newMajor: 9,
             newMinor: 0,
             newPatch: null,
@@ -3903,6 +4366,7 @@ describe('workers/repository/process/lookup/index', () => {
         updates: [
           {
             bucket: 'major',
+            isBreaking: true,
             newMajor: 9,
             newMinor: null,
             newPatch: null,
@@ -3913,6 +4377,36 @@ describe('workers/repository/process/lookup/index', () => {
         ],
         versioning: 'docker',
         warnings: [],
+      });
+    });
+
+    it('preserves currentCompatibility after lookup', async () => {
+      config.currentValue = 'distroless-v1.38.3';
+      config.packageName = 'envoyproxy/envoy';
+      config.versioning = semverVersioningId;
+      config.versionCompatibility = '^(?<compatibility>.*)-(?<version>.*)$';
+      config.datasource = DockerDatasource.id;
+      getDockerReleases.mockResolvedValueOnce({
+        releases: [
+          { version: 'distroless-v1.38.3' },
+          { version: 'distroless-v1.39.0' },
+          { version: 'v1.40.0' },
+        ],
+      });
+
+      const res = await Result.wrap(
+        lookup.lookupUpdates(config),
+      ).unwrapOrThrow();
+
+      expect(res).toMatchObject({
+        currentCompatibility: 'distroless',
+        currentVersion: 'v1.38.3',
+        updates: [
+          {
+            newValue: 'distroless-v1.39.0',
+            newVersion: 'v1.39.0',
+          },
+        ],
       });
     });
 
@@ -3960,6 +4454,7 @@ describe('workers/repository/process/lookup/index', () => {
       ]);
 
       expect(res).toEqual({
+        currentCompatibility: '-alpine',
         currentVersion: '18.10.0',
         fixedVersion: '18.10.0',
         isSingleVersion: true,
@@ -3968,6 +4463,7 @@ describe('workers/repository/process/lookup/index', () => {
         updates: [
           {
             bucket: 'non-major',
+            isBreaking: false,
             newDigest: 'bbb222',
             newMajor: 18,
             newMinor: 19,
@@ -4016,6 +4512,7 @@ describe('workers/repository/process/lookup/index', () => {
         updates: [
           {
             bucket: 'non-major',
+            isBreaking: false,
             newValue: '12.6.1.jre8',
             newVersion: '12.6.1',
             updateType: 'minor',
@@ -4073,6 +4570,7 @@ describe('workers/repository/process/lookup/index', () => {
       ).unwrapOrThrow();
 
       expect(res).toEqual({
+        currentCompatibility: '-slim',
         currentVersion: 'bullseye',
         fixedVersion: 'bullseye',
         isSingleVersion: true,
@@ -4080,6 +4578,7 @@ describe('workers/repository/process/lookup/index', () => {
         updates: [
           {
             bucket: 'major',
+            isBreaking: true,
             newMajor: 12,
             newMinor: null,
             newPatch: null,
@@ -4130,6 +4629,722 @@ describe('workers/repository/process/lookup/index', () => {
         versioning: 'npm',
         warnings: [],
       });
+    });
+
+    it('handles pin for github actions', async () => {
+      config.currentValue = 'v8';
+      config.rangeStrategy = 'pin';
+      config.packageName = 'actions/checkout';
+      config.versioning = githubActionsVersioningId;
+      config.datasource = GithubTagsDatasource.id;
+      getGithubTags.mockResolvedValueOnce({
+        releases: [{ version: 'v8.0.1' }, { version: 'v8' }],
+      });
+
+      const res = await Result.wrap(
+        lookup.lookupUpdates(config),
+      ).unwrapOrThrow();
+
+      expect(res).toEqual({
+        currentVersion: 'v8.0.1',
+        registryUrl: 'https://github.com',
+        updates: [
+          {
+            isPin: true,
+            newMajor: 8,
+            newValue: 'v8.0.1',
+            newVersion: 'v8.0.1',
+            updateType: 'pin',
+          },
+        ],
+        versioning: 'github-actions',
+        warnings: [],
+      });
+    });
+
+    it('marks a too-new GitHub Actions major-tag digest update as pending when using `internalChecksFilter=strict`', async () => {
+      config.currentValue = 'v7';
+      config.currentDigest = fakeSha('current');
+      config.packageName = 'actions/checkout';
+      config.versioning = githubActionsVersioningId;
+      config.datasource = GithubTagsDatasource.id;
+      config.minimumReleaseAge = '3 days';
+      config.internalChecksFilter = 'strict';
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      getGithubTags.mockResolvedValueOnce({
+        releases: [
+          { version: 'v7.0.0' },
+          {
+            version: 'v7.0.1',
+            releaseTimestamp: yesterday.toISOString() as Timestamp,
+          },
+        ],
+      });
+      vi.spyOn(
+        GithubTagsDatasource.prototype,
+        'getDigest',
+      ).mockResolvedValueOnce(fakeSha('new'));
+
+      const { updates } = await Result.wrap(
+        lookup.lookupUpdates(config),
+      ).unwrapOrThrow();
+
+      expect(updates).toEqual([
+        {
+          updateType: 'digest',
+          newValue: 'v7',
+          newDigest: fakeSha('new'),
+          pendingChecks: true,
+        },
+      ]);
+    });
+
+    // when using `rangeStrategy=bump`, this makes `currentVersion` resolve to the oldest matching release (v7.0.0)
+    // however, when we're performing a digest update, we want to repoint to the newest version available, so have to ignore what `rangeStrategy` is telling us
+    it('ages a digest update against the newest matching version, not whatever `rangeStrategy` resolves `currentVersion` to', async () => {
+      config.currentValue = 'v7';
+      config.currentDigest = fakeSha('current');
+      config.rangeStrategy = 'bump';
+      config.packageName = 'actions/checkout';
+      config.versioning = githubActionsVersioningId;
+      config.datasource = GithubTagsDatasource.id;
+      config.minimumReleaseAge = '3 days';
+      config.internalChecksFilter = 'strict';
+      const lastWeek = new Date();
+      lastWeek.setDate(lastWeek.getDate() - 7);
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      getGithubTags.mockResolvedValueOnce({
+        releases: [
+          {
+            version: 'v7.0.0',
+            releaseTimestamp: lastWeek.toISOString() as Timestamp,
+          },
+          {
+            version: 'v7.0.1',
+            releaseTimestamp: yesterday.toISOString() as Timestamp,
+          },
+        ],
+      });
+      vi.spyOn(
+        GithubTagsDatasource.prototype,
+        'getDigest',
+      ).mockResolvedValueOnce(fakeSha('new'));
+
+      const { updates } = await Result.wrap(
+        lookup.lookupUpdates(config),
+      ).unwrapOrThrow();
+
+      expect(updates).toEqual([
+        {
+          updateType: 'digest',
+          newValue: 'v7',
+          newDigest: fakeSha('new'),
+          pendingChecks: true,
+        },
+      ]);
+    });
+
+    // `rangeStrategy=update-lockfile` forces `currentVersion` to `lockedVersion` unconditionally, even though no release actually satisfies the range - so there's no "newest matching version" to age the digest update against.
+    // With no timestamp available, the safe default (with `minimumReleaseAgeBehaviour=timestamp-required`) is to treat it as pending
+    it('marks digest updates as pendingChecks when no release satisfies the current range with `rangeStrategy=update-lockfile`', async () => {
+      config.currentValue = '^2.0.0';
+      config.lockedVersion = '1.0.0';
+      config.rangeStrategy = 'update-lockfile';
+      config.currentDigest = fakeSha('current');
+      config.packageName = 'actions/checkout';
+      config.versioning = npmVersioningId;
+      config.datasource = GithubTagsDatasource.id;
+      config.minimumReleaseAge = '3 days';
+      config.internalChecksFilter = 'strict';
+      getGithubTags.mockResolvedValueOnce({
+        releases: [{ version: '1.0.0' }],
+      });
+      vi.spyOn(
+        GithubTagsDatasource.prototype,
+        'getDigest',
+      ).mockResolvedValueOnce(fakeSha('new'));
+
+      const { updates } = await Result.wrap(
+        lookup.lookupUpdates(config),
+      ).unwrapOrThrow();
+
+      expect(updates).toEqual([
+        {
+          updateType: 'digest',
+          newValue: '^2.0.0',
+          newDigest: fakeSha('new'),
+          pendingChecks: true,
+        },
+      ]);
+    });
+
+    it('respects a minimumReleaseAge packageRule scoped to matchUpdateTypes=digest', async () => {
+      config.currentValue = 'v7';
+      config.currentDigest = fakeSha('current');
+      config.packageName = 'actions/checkout';
+      config.versioning = githubActionsVersioningId;
+      config.datasource = GithubTagsDatasource.id;
+      config.internalChecksFilter = 'strict';
+      config.packageRules = [
+        { matchUpdateTypes: ['digest'], minimumReleaseAge: '3 days' },
+      ];
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      getGithubTags.mockResolvedValueOnce({
+        releases: [
+          { version: 'v7.0.0' },
+          {
+            version: 'v7.0.1',
+            releaseTimestamp: yesterday.toISOString() as Timestamp,
+          },
+        ],
+      });
+      vi.spyOn(
+        GithubTagsDatasource.prototype,
+        'getDigest',
+      ).mockResolvedValueOnce(fakeSha('new'));
+
+      const { updates } = await Result.wrap(
+        lookup.lookupUpdates(config),
+      ).unwrapOrThrow();
+
+      expect(updates).toEqual([
+        {
+          updateType: 'digest',
+          newValue: 'v7',
+          newDigest: fakeSha('new'),
+          pendingChecks: true,
+        },
+      ]);
+    });
+
+    it('respects a `digest.minimumReleaseAge` config for digest updates', async () => {
+      config.currentValue = 'v7';
+      config.currentDigest = fakeSha('current');
+      config.packageName = 'actions/checkout';
+      config.versioning = githubActionsVersioningId;
+      config.datasource = GithubTagsDatasource.id;
+      config.internalChecksFilter = 'strict';
+      config.digest = { minimumReleaseAge: '3 days' };
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      getGithubTags.mockResolvedValueOnce({
+        releases: [
+          { version: 'v7.0.0' },
+          {
+            version: 'v7.0.1',
+            releaseTimestamp: yesterday.toISOString() as Timestamp,
+          },
+        ],
+      });
+      vi.spyOn(
+        GithubTagsDatasource.prototype,
+        'getDigest',
+      ).mockResolvedValueOnce(fakeSha('new'));
+
+      const { updates } = await Result.wrap(
+        lookup.lookupUpdates(config),
+      ).unwrapOrThrow();
+
+      expect(updates).toEqual([
+        {
+          updateType: 'digest',
+          newValue: 'v7',
+          newDigest: fakeSha('new'),
+          pendingChecks: true,
+        },
+      ]);
+    });
+
+    // Deprecated releases are only dispreferred, not unusable - a digest update repointing to one must still be aged against its timestamp, not held forever for lack of one
+    it('ages digest updates against a deprecated newest matching version when no non-deprecated version matches', async () => {
+      config.currentValue = '^1.0.0';
+      config.currentDigest = fakeSha('current');
+      config.rangeStrategy = 'replace';
+      config.packageName = 'actions/checkout';
+      config.versioning = npmVersioningId;
+      config.datasource = GithubTagsDatasource.id;
+      config.minimumReleaseAge = '3 days';
+      config.internalChecksFilter = 'strict';
+      const lastWeek = new Date();
+      lastWeek.setDate(lastWeek.getDate() - 7);
+      getGithubTags.mockResolvedValueOnce({
+        releases: [
+          {
+            version: '1.0.0',
+            isDeprecated: true,
+            releaseTimestamp: lastWeek.toISOString() as Timestamp,
+          },
+        ],
+      });
+      vi.spyOn(
+        GithubTagsDatasource.prototype,
+        'getDigest',
+      ).mockResolvedValueOnce(fakeSha('new'));
+
+      const { updates } = await Result.wrap(
+        lookup.lookupUpdates(config),
+      ).unwrapOrThrow();
+
+      expect(updates).toEqual([
+        {
+          updateType: 'digest',
+          newValue: '^1.0.0',
+          newDigest: fakeSha('new'),
+        },
+      ]);
+    });
+
+    // `followTag` narrows the candidate versions, so the digest update must be aged against the followed tag's version, not the newest release overall
+    it('ages digest updates against the followed tag version when `followTag` is configured', async () => {
+      config.currentValue = 'v7';
+      config.currentDigest = fakeSha('current');
+      config.followTag = 'stable';
+      config.packageName = 'actions/checkout';
+      config.versioning = githubActionsVersioningId;
+      config.datasource = GithubTagsDatasource.id;
+      config.minimumReleaseAge = '3 days';
+      config.internalChecksFilter = 'strict';
+      const lastWeek = new Date();
+      lastWeek.setDate(lastWeek.getDate() - 7);
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      getGithubTags.mockResolvedValueOnce({
+        tags: { stable: 'v7.0.0' },
+        releases: [
+          {
+            version: 'v7.0.0',
+            releaseTimestamp: lastWeek.toISOString() as Timestamp,
+          },
+          {
+            version: 'v7.0.1',
+            releaseTimestamp: yesterday.toISOString() as Timestamp,
+          },
+        ],
+      });
+      vi.spyOn(
+        GithubTagsDatasource.prototype,
+        'getDigest',
+      ).mockResolvedValueOnce(fakeSha('new'));
+
+      const { updates } = await Result.wrap(
+        lookup.lookupUpdates(config),
+      ).unwrapOrThrow();
+
+      expect(updates).toEqual([
+        {
+          updateType: 'digest',
+          newValue: 'v7',
+          newDigest: fakeSha('new'),
+        },
+      ]);
+    });
+
+    // The digest didn't change, so no update is proposed - no age check should run, and no timestamp-optional warn should fire
+    it('does not warn about missing releaseTimestamps when the digest is unchanged', async () => {
+      config.currentValue = 'v7';
+      config.currentDigest = fakeSha('current');
+      config.packageName = 'actions/checkout';
+      config.versioning = githubActionsVersioningId;
+      config.datasource = GithubTagsDatasource.id;
+      config.minimumReleaseAge = '3 days';
+      config.minimumReleaseAgeBehaviour = 'timestamp-optional';
+      config.internalChecksFilter = 'strict';
+      getGithubTags.mockResolvedValueOnce({
+        releases: [{ version: 'v7.0.0' }, { version: 'v7.0.1' }],
+      });
+      vi.spyOn(
+        GithubTagsDatasource.prototype,
+        'getDigest',
+      ).mockResolvedValueOnce(fakeSha('current'));
+
+      const { updates } = await Result.wrap(
+        lookup.lookupUpdates(config),
+      ).unwrapOrThrow();
+
+      expect(updates).toBeEmptyArray();
+      expect(logger.logger.once.warn).not.toHaveBeenCalled();
+    });
+
+    // `currentValue` is a range, so unlike `matchUpdateTypes`, which is read from the incoming `config`, matching against `matchCurrentVersion` needs the resolved `currentVersion`
+    it('respects a minimumReleaseAge packageRule scoped to matchCurrentVersion for digest updates', async () => {
+      config.currentValue = '^1.0.0';
+      config.currentDigest = fakeSha('current');
+      config.packageName = 'some/image';
+      config.datasource = DockerDatasource.id;
+      config.internalChecksFilter = 'strict';
+      config.packageRules = [
+        { matchCurrentVersion: '<2.0.0', minimumReleaseAge: '3 days' },
+      ];
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      getDockerReleases.mockResolvedValueOnce({
+        releases: [
+          { version: '1.0.0' },
+          {
+            version: '1.1.0',
+            releaseTimestamp: yesterday.toISOString() as Timestamp,
+          },
+        ],
+      });
+      getDockerDigest.mockResolvedValueOnce(fakeSha('new'));
+
+      const { updates } = await Result.wrap(
+        lookup.lookupUpdates(config),
+      ).unwrapOrThrow();
+
+      expect(updates).toEqual([
+        {
+          updateType: 'digest',
+          newValue: '^1.0.0',
+          newDigest: fakeSha('new'),
+          pendingChecks: true,
+        },
+      ]);
+    });
+
+    it('does not mark github actions major-tag digest updates as `pendingChecks` once `minimumReleaseAge` has elapsed', async () => {
+      config.currentValue = 'v7';
+      config.currentDigest = fakeSha('current');
+      config.packageName = 'actions/checkout';
+      config.versioning = githubActionsVersioningId;
+      config.datasource = GithubTagsDatasource.id;
+      config.minimumReleaseAge = '3 days';
+      config.internalChecksFilter = 'strict';
+      const lastWeek = new Date();
+      lastWeek.setDate(lastWeek.getDate() - 7);
+      getGithubTags.mockResolvedValueOnce({
+        releases: [
+          { version: 'v7.0.0' },
+          {
+            version: 'v7.0.1',
+            releaseTimestamp: lastWeek.toISOString() as Timestamp,
+          },
+        ],
+      });
+      vi.spyOn(
+        GithubTagsDatasource.prototype,
+        'getDigest',
+      ).mockResolvedValueOnce(fakeSha('new'));
+
+      const { updates } = await Result.wrap(
+        lookup.lookupUpdates(config),
+      ).unwrapOrThrow();
+
+      expect(updates).toEqual([
+        {
+          updateType: 'digest',
+          newValue: 'v7',
+          newDigest: fakeSha('new'),
+        },
+      ]);
+    });
+
+    it('marks github actions major-tag digest updates as `pendingChecks` when no releaseTimestamp is available (when `minimumReleaseAgeBehaviour=timestamp-required`)', async () => {
+      config.currentValue = 'v7';
+      config.currentDigest = fakeSha('current');
+      config.packageName = 'actions/checkout';
+      config.versioning = githubActionsVersioningId;
+      config.datasource = GithubTagsDatasource.id;
+      config.minimumReleaseAge = '3 days';
+      config.minimumReleaseAgeBehaviour = 'timestamp-required';
+      config.internalChecksFilter = 'strict';
+      getGithubTags.mockResolvedValueOnce({
+        releases: [{ version: 'v7.0.0' }, { version: 'v7.0.1' }],
+      });
+      vi.spyOn(
+        GithubTagsDatasource.prototype,
+        'getDigest',
+      ).mockResolvedValueOnce(fakeSha('new'));
+
+      const { updates } = await Result.wrap(
+        lookup.lookupUpdates(config),
+      ).unwrapOrThrow();
+
+      expect(updates).toEqual([
+        {
+          updateType: 'digest',
+          newValue: 'v7',
+          newDigest: fakeSha('new'),
+          pendingChecks: true,
+        },
+      ]);
+    });
+
+    it('does not mark github actions major-tag digest updates as `pendingChecks` when no `releaseTimestamp` is available (when `minimumReleaseAgeBehaviour=timestamp-optional`)', async () => {
+      config.currentValue = 'v7';
+      config.currentDigest = fakeSha('current');
+      config.packageName = 'actions/checkout';
+      config.versioning = githubActionsVersioningId;
+      config.datasource = GithubTagsDatasource.id;
+      config.minimumReleaseAge = '3 days';
+      config.minimumReleaseAgeBehaviour = 'timestamp-optional';
+      config.internalChecksFilter = 'strict';
+      getGithubTags.mockResolvedValueOnce({
+        releases: [{ version: 'v7.0.0' }, { version: 'v7.0.1' }],
+      });
+      vi.spyOn(
+        GithubTagsDatasource.prototype,
+        'getDigest',
+      ).mockResolvedValueOnce(fakeSha('new'));
+
+      const { updates } = await Result.wrap(
+        lookup.lookupUpdates(config),
+      ).unwrapOrThrow();
+
+      expect(updates).toEqual([
+        {
+          updateType: 'digest',
+          newValue: 'v7',
+          newDigest: fakeSha('new'),
+        },
+      ]);
+      // A digest update passing un-aged is exactly the event a timestamp-optional
+      // user needs surfaced, so it must warn - just like the version-update path in
+      // filterInternalChecks().
+      expect(logger.logger.once.warn).toHaveBeenCalledWith(
+        "Some release(s) did not have a releaseTimestamp, but as we're running with minimumReleaseAgeBehaviour=timestamp-optional, proceeding. See debug logs for more information",
+      );
+    });
+
+    it('does not run minimumReleaseAge checks for digest updates under `internalChecksFilter=none`', async () => {
+      config.currentValue = 'v7';
+      config.currentDigest = fakeSha('current');
+      config.packageName = 'actions/checkout';
+      config.versioning = githubActionsVersioningId;
+      config.datasource = GithubTagsDatasource.id;
+      config.minimumReleaseAge = '3 days';
+      config.minimumReleaseAgeBehaviour = 'timestamp-required';
+      config.internalChecksFilter = 'none';
+      // No releaseTimestamp: under `strict`/`timestamp-required` this would be held
+      // as pending, but `none` opts out of internal checks entirely.
+      getGithubTags.mockResolvedValueOnce({
+        releases: [{ version: 'v7.0.0' }, { version: 'v7.0.1' }],
+      });
+      vi.spyOn(
+        GithubTagsDatasource.prototype,
+        'getDigest',
+      ).mockResolvedValueOnce(fakeSha('new'));
+
+      const { updates } = await Result.wrap(
+        lookup.lookupUpdates(config),
+      ).unwrapOrThrow();
+
+      expect(updates).toEqual([
+        {
+          updateType: 'digest',
+          newValue: 'v7',
+          newDigest: fakeSha('new'),
+        },
+      ]);
+      // Short-circuited like filterInternalChecks(): no age check ran, so no
+      // "no releaseTimestamp to age against" log noise.
+      expect(logger.logger.once.debug).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.stringContaining('has no releaseTimestamp to age against'),
+      );
+    });
+
+    // The `pendingChecks` short-circuit is gated on `internalChecksFilter=strict`: under `flexible` the update proceeds, without setting a pending status
+    it('does not mark digest updates as `pendingChecks` under `internalChecksFilter=flexible`, even when `minimumReleaseAge` has not elapsed', async () => {
+      config.currentValue = 'v7';
+      config.currentDigest = fakeSha('current');
+      config.packageName = 'actions/checkout';
+      config.versioning = githubActionsVersioningId;
+      config.datasource = GithubTagsDatasource.id;
+      config.minimumReleaseAge = '3 days';
+      config.internalChecksFilter = 'flexible';
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      getGithubTags.mockResolvedValueOnce({
+        releases: [
+          { version: 'v7.0.0' },
+          {
+            version: 'v7.0.1',
+            releaseTimestamp: yesterday.toISOString() as Timestamp,
+          },
+        ],
+      });
+      vi.spyOn(
+        GithubTagsDatasource.prototype,
+        'getDigest',
+      ).mockResolvedValueOnce(fakeSha('new'));
+
+      const { updates } = await Result.wrap(
+        lookup.lookupUpdates(config),
+      ).unwrapOrThrow();
+
+      expect(updates).toEqual([
+        {
+          updateType: 'digest',
+          newValue: 'v7',
+          newDigest: fakeSha('new'),
+        },
+      ]);
+    });
+
+    it('marks github actions major-tag `pinDigest` updates as `pendingChecks` under `internalChecksFilter=strict`', async () => {
+      config.currentValue = 'v7';
+      config.pinDigests = true;
+      config.packageName = 'actions/checkout';
+      config.versioning = githubActionsVersioningId;
+      config.datasource = GithubTagsDatasource.id;
+      config.minimumReleaseAge = '3 days';
+      config.internalChecksFilter = 'strict';
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      getGithubTags.mockResolvedValueOnce({
+        releases: [
+          { version: 'v7.0.0' },
+          {
+            version: 'v7.0.1',
+            releaseTimestamp: yesterday.toISOString() as Timestamp,
+          },
+        ],
+      });
+      vi.spyOn(
+        GithubTagsDatasource.prototype,
+        'getDigest',
+      ).mockResolvedValueOnce(fakeSha('new'));
+
+      const { updates } = await Result.wrap(
+        lookup.lookupUpdates(config),
+      ).unwrapOrThrow();
+
+      expect(updates).toEqual([
+        {
+          isPinDigest: true,
+          updateType: 'pinDigest',
+          newValue: 'v7',
+          newDigest: fakeSha('new'),
+          pendingChecks: true,
+        },
+      ]);
+    });
+
+    it('does not mark github actions major-tag `pinDigest` updates as `pendingChecks` once `minimumReleaseAge` has elapsed', async () => {
+      config.currentValue = 'v7';
+      config.pinDigests = true;
+      config.packageName = 'actions/checkout';
+      config.versioning = githubActionsVersioningId;
+      config.datasource = GithubTagsDatasource.id;
+      config.minimumReleaseAge = '3 days';
+      config.internalChecksFilter = 'strict';
+      const lastWeek = new Date();
+      lastWeek.setDate(lastWeek.getDate() - 7);
+      getGithubTags.mockResolvedValueOnce({
+        releases: [
+          { version: 'v7.0.0' },
+          {
+            version: 'v7.0.1',
+            releaseTimestamp: lastWeek.toISOString() as Timestamp,
+          },
+        ],
+      });
+      vi.spyOn(
+        GithubTagsDatasource.prototype,
+        'getDigest',
+      ).mockResolvedValueOnce(fakeSha('new'));
+
+      const { updates } = await Result.wrap(
+        lookup.lookupUpdates(config),
+      ).unwrapOrThrow();
+
+      expect(updates).toEqual([
+        {
+          isPinDigest: true,
+          updateType: 'pinDigest',
+          newValue: 'v7',
+          newDigest: fakeSha('new'),
+        },
+      ]);
+    });
+
+    // `rangeStrategy=bump` makes `currentVersion` (and thus `res.currentVersionTimestamp`) resolve to the oldest
+    // matching release (v7.0.0, which already clears `minimumReleaseAge`), but the ref itself has moved on to
+    // v7.0.1 - which is what actually gets pinned, and hasn't yet cleared `minimumReleaseAge`.
+    it('ages a `pinDigest` update against the newest matching version, not whatever `rangeStrategy` resolves `currentVersion` to', async () => {
+      config.currentValue = 'v7';
+      config.pinDigests = true;
+      config.rangeStrategy = 'bump';
+      config.packageName = 'actions/checkout';
+      config.versioning = githubActionsVersioningId;
+      config.datasource = GithubTagsDatasource.id;
+      config.minimumReleaseAge = '3 days';
+      config.internalChecksFilter = 'strict';
+      const lastWeek = new Date();
+      lastWeek.setDate(lastWeek.getDate() - 7);
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      getGithubTags.mockResolvedValueOnce({
+        releases: [
+          {
+            version: 'v7.0.0',
+            releaseTimestamp: lastWeek.toISOString() as Timestamp,
+          },
+          {
+            version: 'v7.0.1',
+            releaseTimestamp: yesterday.toISOString() as Timestamp,
+          },
+        ],
+      });
+      vi.spyOn(
+        GithubTagsDatasource.prototype,
+        'getDigest',
+      ).mockResolvedValueOnce(fakeSha('new'));
+
+      const { updates } = await Result.wrap(
+        lookup.lookupUpdates(config),
+      ).unwrapOrThrow();
+
+      expect(updates).toEqual([
+        {
+          isPinDigest: true,
+          updateType: 'pinDigest',
+          newValue: 'v7',
+          newDigest: fakeSha('new'),
+          pendingChecks: true,
+        },
+      ]);
+    });
+
+    // Unlike `digest`, an unversioned `currentValue` (e.g. `latest`) is exempt from `minimumReleaseAge` entirely for `pinDigest`:
+    // pinning a ref that already floats to latest is strictly safer, so holding it would only prolong the un-pinned state.
+    it('does not hold `pinDigest` updates for unversioned `currentValue`s (e.g. `latest`)', async () => {
+      config.currentValue = 'alpine';
+      config.packageName = 'node';
+      config.datasource = DockerDatasource.id;
+      config.pinDigests = true;
+      config.minimumReleaseAge = '3 days';
+      config.internalChecksFilter = 'strict';
+      getDockerReleases.mockResolvedValueOnce({
+        releases: [
+          { version: 'alpine' },
+          { version: '8.0.0' },
+          { version: '8.1.0' },
+        ],
+      });
+      getDockerDigest.mockResolvedValueOnce('sha256:abcdef1234567890');
+
+      const { updates } = await Result.wrap(
+        lookup.lookupUpdates(config),
+      ).unwrapOrThrow();
+
+      expect(updates).toEqual([
+        {
+          isPinDigest: true,
+          newDigest: 'sha256:abcdef1234567890',
+          newValue: 'alpine',
+          updateType: 'pinDigest',
+        },
+      ]);
+      // Short-circuited: no age check ran, so no "no releaseTimestamp to age against" log noise.
+      expect(logger.logger.once.debug).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.stringContaining('has no releaseTimestamp to age against'),
+      );
     });
 
     it('handles no fitting version and no version in lock file', async () => {
@@ -4258,6 +5473,7 @@ describe('workers/repository/process/lookup/index', () => {
         updates: [
           {
             bucket: 'non-major',
+            isBreaking: false,
             newDigest: 'sha256:abcdef1234567890',
             newMajor: 8,
             newMinor: 1,
@@ -4342,6 +5558,120 @@ describe('workers/repository/process/lookup/index', () => {
       });
     });
 
+    // An unversioned tag like `alpine` has no versioned release to age against. As we're repointing to newer content we apply `minimumReleaseAge`, but as there's no timestamp, this needs to be held
+    it('marks digest updates for unversioned `currentValue`s as `pendingChecks` under `timestamp-required`', async () => {
+      config.currentValue = 'alpine';
+      config.packageName = 'node';
+      config.datasource = DockerDatasource.id;
+      config.currentDigest = 'sha256:zzzzzzzzzzzzzzz';
+      config.pinDigests = true;
+      config.minimumReleaseAge = '3 days';
+      config.internalChecksFilter = 'strict';
+      getDockerReleases.mockResolvedValueOnce({
+        releases: [
+          {
+            version: 'alpine',
+          },
+          {
+            version: '8.0.0',
+          },
+          {
+            version: '8.1.0',
+          },
+        ],
+      });
+      getDockerDigest.mockResolvedValueOnce('sha256:abcdef1234567890');
+
+      const { updates } = await Result.wrap(
+        lookup.lookupUpdates(config),
+      ).unwrapOrThrow();
+
+      expect(updates).toEqual([
+        {
+          newDigest: 'sha256:abcdef1234567890',
+          newValue: 'alpine',
+          updateType: 'digest',
+          pendingChecks: true,
+        },
+      ]);
+    });
+
+    it('lets digest updates for unversioned `currentValue`s through under `timestamp-optional`', async () => {
+      config.currentValue = 'alpine';
+      config.packageName = 'node';
+      config.datasource = DockerDatasource.id;
+      config.currentDigest = 'sha256:zzzzzzzzzzzzzzz';
+      config.pinDigests = true;
+      config.minimumReleaseAge = '3 days';
+      config.minimumReleaseAgeBehaviour = 'timestamp-optional';
+      config.internalChecksFilter = 'strict';
+      getDockerReleases.mockResolvedValueOnce({
+        releases: [
+          {
+            version: 'alpine',
+          },
+          {
+            version: '8.0.0',
+          },
+          {
+            version: '8.1.0',
+          },
+        ],
+      });
+      getDockerDigest.mockResolvedValueOnce('sha256:abcdef1234567890');
+
+      const { updates } = await Result.wrap(
+        lookup.lookupUpdates(config),
+      ).unwrapOrThrow();
+
+      expect(updates).toEqual([
+        {
+          newDigest: 'sha256:abcdef1234567890',
+          newValue: 'alpine',
+          updateType: 'digest',
+        },
+      ]);
+    });
+
+    // when `config.lockVersion` is set, `res.currentVersion` is implied even for unversioned values (like `alpine`), which means we can't compute a timestamp
+    it('marks digest updates for unversioned currentValues as pendingChecks when lockedVersion is set', async () => {
+      config.currentValue = 'alpine';
+      config.lockedVersion = '8.1.0';
+      config.packageName = 'node';
+      config.datasource = DockerDatasource.id;
+      config.currentDigest = 'sha256:zzzzzzzzzzzzzzz';
+      config.pinDigests = true;
+      config.minimumReleaseAge = '3 days';
+      config.internalChecksFilter = 'strict';
+      getDockerReleases.mockResolvedValueOnce({
+        releases: [
+          {
+            version: 'alpine',
+          },
+          {
+            version: '8.0.0',
+          },
+          {
+            version: '8.1.0',
+          },
+        ],
+      });
+      getDockerDigest.mockResolvedValueOnce('sha256:abcdef1234567890');
+
+      const { updates } = await Result.wrap(
+        lookup.lookupUpdates(config),
+      ).unwrapOrThrow();
+
+      expect(updates).toEqual([
+        {
+          newDigest: 'sha256:abcdef1234567890',
+          newValue: 'alpine',
+          updateType: 'digest',
+          pendingChecks: true,
+        },
+      ]);
+    });
+
     it('handles git submodule update', async () => {
       config.packageName = 'some-path';
       config.versioning = gitVersioningId;
@@ -4375,7 +5705,7 @@ describe('workers/repository/process/lookup/index', () => {
           allowedVersions: '< 1.4.0',
         },
       ];
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const res = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -4385,16 +5715,19 @@ describe('workers/repository/process/lookup/index', () => {
         currentVersion: '0.9.99',
         fixedVersion: '0.9.99',
         isSingleVersion: true,
-        registryUrl: 'https://registry.npmjs.org',
+        registryUrl: npmDefaultRegistryUrl,
         sourceUrl: 'https://github.com/kriskowal/q',
         updates: [
           {
             bucket: 'major',
+            hasAttestation: false,
+            isBreaking: true,
             newMajor: 1,
             newMinor: 3,
             newPatch: 0,
             newValue: '1.3.0',
             newVersion: '1.3.0',
+            downloadUrl: 'https://registry.npmjs.org/q/-/q-1.3.0.tgz',
             newVersionAgeInDays: expect.any(Number),
             releaseTimestamp: expect.any(String),
             updateType: 'major',
@@ -4424,7 +5757,7 @@ describe('workers/repository/process/lookup/index', () => {
             // a day old release
             releaseTimestamp: new Date(
               Date.now() - 25 * 60 * 60 * 1000,
-            ).toISOString(),
+            ).toISOString() as Timestamp,
           },
           {
             version: '18.0.0',
@@ -4442,6 +5775,7 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'major',
+          isBreaking: true,
           newMajor: 18,
           newMinor: 0,
           newPatch: 0,
@@ -4466,7 +5800,7 @@ describe('workers/repository/process/lookup/index', () => {
       ];
       const releaseTimestamp = new Date(
         Date.now() - 25 * 60 * 60 * 1000,
-      ).toISOString();
+      ).toISOString() as Timestamp;
       getDockerReleases.mockResolvedValueOnce({
         releases: [
           {
@@ -4497,6 +5831,7 @@ describe('workers/repository/process/lookup/index', () => {
         updates: [
           {
             bucket: 'major',
+            isBreaking: true,
             newMajor: 19,
             newMinor: 0,
             newPatch: 0,
@@ -4548,6 +5883,7 @@ describe('workers/repository/process/lookup/index', () => {
         updates: [
           {
             bucket: 'major',
+            isBreaking: true,
             newMajor: 19,
             newMinor: 0,
             newPatch: 0,
@@ -4587,6 +5923,7 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'major',
+          isBreaking: true,
           newMajor: 18,
           newMinor: 0,
           newPatch: 0,
@@ -4632,6 +5969,7 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'major',
+          isBreaking: true,
           newDigest: 'sha256:abcdef1234567890',
           newMajor: 18,
           newMinor: 0,
@@ -4683,11 +6021,69 @@ describe('workers/repository/process/lookup/index', () => {
       config.packageName = 'openjdk';
       config.currentDigest = 'sha256:fedcba0987654321';
       config.currentValue = '17.0.0';
-      //config.pinDigests = true;
       config.datasource = DockerDatasource.id;
       config.versioning = dockerVersioningId;
-      // This config is normally set when packageRules are applied
       config.replacementName = 'eclipse-temurin';
+      getDockerReleases.mockResolvedValueOnce({
+        releases: [
+          {
+            version: '17.0.0',
+            newDigest: 'sha256:fedcba0987654321',
+          },
+          {
+            version: '17.0.1',
+            newDigest: 'sha256:abcdef1234567890',
+          },
+        ],
+        lookupName: 'openjdk',
+      });
+      getDockerDigest.mockResolvedValueOnce('sha256:pin0987654321');
+
+      const { updates } = await Result.wrap(
+        lookup.lookupUpdates(config),
+      ).unwrapOrThrow();
+
+      expect(updates).toEqual([
+        {
+          bucket: 'non-major',
+          isBreaking: false,
+          newDigest: 'sha256:abcdef1234567890',
+          newMajor: 17,
+          newMinor: 0,
+          newPatch: 1,
+          newValue: '17.0.1',
+          newVersion: '17.0.1',
+          updateType: 'patch',
+        },
+        {
+          newDigest: 'sha256:pin0987654321',
+          newName: 'eclipse-temurin',
+          newValue: '17.0.0',
+          newVersion: undefined,
+          updateType: 'replacement',
+        },
+      ]);
+
+      expect(getDockerDigest).toHaveBeenNthCalledWith(
+        1,
+        {
+          currentDigest: undefined,
+          currentValue: '17.0.0',
+          lookupName: undefined,
+          packageName: 'eclipse-temurin',
+          registryUrl: 'https://index.docker.io',
+        },
+        '17.0.0',
+      );
+    });
+
+    it('handles replacements - Digest configured with replacementNameTemplate and validating getDigest function call', async () => {
+      config.packageName = 'mirror-some-org/library/openjdk';
+      config.currentDigest = 'sha256:fedcba0987654321';
+      config.currentValue = '17.0.0';
+      config.datasource = DockerDatasource.id;
+      config.versioning = dockerVersioningId;
+      config.replacementNameTemplate = `{{{replace 'mirror-some-org/' 'new.registry.io/' packageName}}}`;
       config.replacementVersion = '19.0.0';
       getDockerReleases.mockResolvedValueOnce({
         releases: [
@@ -4698,7 +6094,7 @@ describe('workers/repository/process/lookup/index', () => {
             version: '17.0.1',
           },
         ],
-        lookupName: 'openjdk',
+        lookupName: 'mirror-some-org/library/openjdk',
       });
       getDockerDigest.mockResolvedValueOnce('sha256:abcdef1234567890');
       getDockerDigest.mockResolvedValueOnce('sha256:fedcba0987654321');
@@ -4711,6 +6107,7 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          isBreaking: false,
           newDigest: 'sha256:abcdef1234567890',
           newMajor: 17,
           newMinor: 0,
@@ -4721,7 +6118,7 @@ describe('workers/repository/process/lookup/index', () => {
         },
         {
           newDigest: 'sha256:fedcba0987654321',
-          newName: 'eclipse-temurin',
+          newName: 'new.registry.io/library/openjdk',
           newValue: '19.0.0',
           newVersion: undefined,
           updateType: 'replacement',
@@ -4739,8 +6136,8 @@ describe('workers/repository/process/lookup/index', () => {
         {
           currentDigest: 'sha256:fedcba0987654321',
           currentValue: '17.0.0',
-          lookupName: 'openjdk',
-          packageName: 'openjdk',
+          lookupName: 'mirror-some-org/library/openjdk',
+          packageName: 'mirror-some-org/library/openjdk',
           registryUrl: 'https://index.docker.io',
         },
         '17.0.1',
@@ -4751,7 +6148,7 @@ describe('workers/repository/process/lookup/index', () => {
           currentDigest: undefined,
           currentValue: '17.0.0',
           lookupName: undefined,
-          packageName: 'eclipse-temurin',
+          packageName: 'new.registry.io/library/openjdk',
           registryUrl: 'https://index.docker.io',
         },
         '19.0.0',
@@ -4761,8 +6158,8 @@ describe('workers/repository/process/lookup/index', () => {
         {
           currentDigest: 'sha256:fedcba0987654321',
           currentValue: '17.0.0',
-          lookupName: 'openjdk',
-          packageName: 'openjdk',
+          lookupName: 'mirror-some-org/library/openjdk',
+          packageName: 'mirror-some-org/library/openjdk',
           registryUrl: 'https://index.docker.io',
         },
         '17.0.0',
@@ -4785,11 +6182,10 @@ describe('workers/repository/process/lookup/index', () => {
     it('handles replacements - name and version', async () => {
       config.currentValue = '1.4.1';
       config.packageName = 'q';
-      // This config is normally set when packageRules are applied
       config.replacementName = 'r';
       config.replacementVersion = '2.0.0';
       config.datasource = NpmDatasource.id;
-      httpMock.scope('https://registry.npmjs.org').get('/q').reply(200, qJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/q').reply(200, qJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -4827,6 +6223,7 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'major',
+          isBreaking: true,
           newMajor: 18,
           newMinor: 0,
           newPatch: 0,
@@ -4866,6 +6263,7 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'major',
+          isBreaking: true,
           newMajor: 18,
           newMinor: 0,
           newPatch: 0,
@@ -4905,6 +6303,7 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'major',
+          isBreaking: true,
           newMajor: 18,
           newMinor: 0,
           newPatch: 0,
@@ -4915,6 +6314,165 @@ describe('workers/repository/process/lookup/index', () => {
         {
           newName: 'eclipse-temurin',
           newValue: '17.0.0',
+          updateType: 'replacement',
+        },
+      ]);
+    });
+
+    it('handles replacements - can template replacement version without a replacement name', async () => {
+      config.packageName = 'mirror_some_org/library/openjdk';
+      config.currentValue = '17.0.0';
+      config.replacementVersionTemplate = `{{ lookup (split currentValue '.') 0 }}`;
+      config.datasource = DockerDatasource.id;
+      getDockerReleases.mockResolvedValueOnce({
+        releases: [
+          {
+            version: '17.0.0',
+          },
+          {
+            version: '18.0.0',
+          },
+        ],
+      });
+
+      const { updates } = await Result.wrap(
+        lookup.lookupUpdates(config),
+      ).unwrapOrThrow();
+
+      expect(updates).toEqual([
+        {
+          bucket: 'major',
+          isBreaking: true,
+          newMajor: 18,
+          newMinor: 0,
+          newPatch: 0,
+          newValue: '18.0.0',
+          newVersion: '18.0.0',
+          updateType: 'major',
+        },
+        {
+          newName: 'mirror_some_org/library/openjdk',
+          newValue: '17',
+          updateType: 'replacement',
+        },
+      ]);
+    });
+
+    it('handles replacements - can template replacement version with a replacement name', async () => {
+      config.packageName = 'mirror_some_org/library/openjdk';
+      config.currentValue = '17.0.0';
+      config.replacementName = 'eclipse-temurin';
+      config.replacementVersionTemplate = `{{ lookup (split currentValue '.') 0 }}`;
+      config.datasource = DockerDatasource.id;
+      getDockerReleases.mockResolvedValueOnce({
+        releases: [
+          {
+            version: '17.0.0',
+          },
+          {
+            version: '18.0.0',
+          },
+        ],
+      });
+
+      const { updates } = await Result.wrap(
+        lookup.lookupUpdates(config),
+      ).unwrapOrThrow();
+
+      expect(updates).toEqual([
+        {
+          bucket: 'major',
+          isBreaking: true,
+          newMajor: 18,
+          newMinor: 0,
+          newPatch: 0,
+          newValue: '18.0.0',
+          newVersion: '18.0.0',
+          updateType: 'major',
+        },
+        {
+          newName: 'eclipse-temurin',
+          newValue: '17',
+          updateType: 'replacement',
+        },
+      ]);
+    });
+
+    it('handles replacements - can template replacement version with a template replacement name', async () => {
+      config.packageName = 'mirror_some_org/library/openjdk';
+      config.currentValue = '17.0.0';
+      config.replacementNameTemplate = `{{{replace 'mirror_some_org/' 'new.registry.io/' packageName}}}`;
+      config.replacementVersionTemplate = `{{ lookup (split currentValue '.') 0 }}`;
+      config.datasource = DockerDatasource.id;
+      getDockerReleases.mockResolvedValueOnce({
+        releases: [
+          {
+            version: '17.0.0',
+          },
+          {
+            version: '18.0.0',
+          },
+        ],
+      });
+
+      const { updates } = await Result.wrap(
+        lookup.lookupUpdates(config),
+      ).unwrapOrThrow();
+
+      expect(updates).toEqual([
+        {
+          bucket: 'major',
+          isBreaking: true,
+          newMajor: 18,
+          newMinor: 0,
+          newPatch: 0,
+          newValue: '18.0.0',
+          newVersion: '18.0.0',
+          updateType: 'major',
+        },
+        {
+          newName: 'new.registry.io/library/openjdk',
+          newValue: '17',
+          updateType: 'replacement',
+        },
+      ]);
+    });
+
+    it('handles replacements - replacementVersion takes precedence over replacementVersionTemplate', async () => {
+      config.packageName = 'mirror_some_org/library/openjdk';
+      config.currentValue = '17.0.0';
+      config.replacementVersionTemplate = `{{ lookup (split currentValue '.') 0 }}`;
+      config.replacementVersion = '18.0.0';
+      config.datasource = DockerDatasource.id;
+      getDockerReleases.mockResolvedValueOnce({
+        releases: [
+          {
+            version: '17.0.0',
+          },
+          {
+            version: '18.0.0',
+          },
+        ],
+      });
+
+      const { updates } = await Result.wrap(
+        lookup.lookupUpdates(config),
+      ).unwrapOrThrow();
+
+      expect(updates).toEqual([
+        {
+          bucket: 'major',
+          isBreaking: true,
+          newMajor: 18,
+          newMinor: 0,
+          newPatch: 0,
+          newValue: '18.0.0',
+          newVersion: '18.0.0',
+          updateType: 'major',
+        },
+        {
+          newName: 'mirror_some_org/library/openjdk',
+          newValue: '18.0.0',
           updateType: 'replacement',
         },
       ]);
@@ -4947,16 +6505,36 @@ describe('workers/repository/process/lookup/index', () => {
       ]);
     });
 
+    it('handles replacements - from datasource', async () => {
+      config.currentValue = '2.0.0';
+      config.packageName = 'org.example:foo';
+      config.datasource = MavenDatasource.id;
+      getMavenReleases.mockResolvedValueOnce({
+        releases: [{ version: '2.0.0' }],
+        replacementName: 'foo:bar',
+        replacementVersion: '2.0.0',
+      });
+
+      const { updates } = await Result.wrap(
+        lookup.lookupUpdates(config),
+      ).unwrapOrThrow();
+
+      expect(updates).toEqual([
+        {
+          updateType: 'replacement',
+          newName: 'foo:bar',
+          newValue: '2.0.0',
+        },
+      ]);
+    });
+
     it('rollback for invalid version to last stable version', async () => {
       config.currentValue = '2.5.17';
       config.packageName = 'vue';
       config.datasource = NpmDatasource.id;
       config.rollbackPrs = true;
       config.ignoreUnstable = true;
-      httpMock
-        .scope('https://registry.npmjs.org')
-        .get('/vue')
-        .reply(200, vueJson);
+      httpMock.scope(npmDefaultRegistryUrl).get('/vue').reply(200, vueJson);
 
       const { updates } = await Result.wrap(
         lookup.lookupUpdates(config),
@@ -4969,6 +6547,9 @@ describe('workers/repository/process/lookup/index', () => {
           newValue: `2.5.16`,
           newVersion: `2.5.16`,
           updateType: `rollback`,
+          prBodyNotes: expect.arrayContaining([
+            expect.stringContaining('The version of `vue` in use (`2.5.17`)'),
+          ]),
         },
       ]);
     });
@@ -4979,10 +6560,7 @@ describe('workers/repository/process/lookup/index', () => {
         mergeConfidenceEndpoint: defaultApiBaseUrl,
         mergeConfidenceDatasources: presetSupportedDatasources,
       };
-      const getMergeConfidenceSpy = jest.spyOn(
-        McApi,
-        'getMergeConfidenceLevel',
-      );
+      const getMergeConfidenceSpy = vi.spyOn(McApi, 'getMergeConfidenceLevel');
       const hostRule: HostRule = {
         hostType: 'merge-confidence',
         token: 'some-token',
@@ -5009,7 +6587,7 @@ describe('workers/repository/process/lookup/index', () => {
         config.packageName = packageName;
         config.datasource = datasource;
         httpMock
-          .scope('https://registry.npmjs.org')
+          .scope(npmDefaultRegistryUrl)
           .get('/webpack')
           .reply(200, webpackJson);
         httpMock
@@ -5026,15 +6604,21 @@ describe('workers/repository/process/lookup/index', () => {
         expect(updates).toEqual([
           {
             bucket: 'non-major',
+            isBreaking: false,
             mergeConfidenceLevel: 'high',
             newMajor: 3,
             newMinor: 8,
             newPatch: 1,
             newValue: '3.8.1',
             newVersion: '3.8.1',
+            newDigest:
+              'sha512-5ZXLWWsMqHKFr5y0N3Eo5IIisxeEeRAajNq4mELb/WELOR7srdbQk2N5XiyNy2A/AgvlR3AmeBCZJW8lHrolbw==',
+            downloadUrl:
+              'https://registry.npmjs.org/webpack/-/webpack-3.8.1.tgz',
             newVersionAgeInDays: expect.any(Number),
-            releaseTimestamp: '2017-10-17T15:22:36.646Z',
+            releaseTimestamp: '2017-10-17T15:22:36.646Z' as Timestamp,
             updateType: 'minor',
+            hasAttestation: false,
           },
         ]);
       });
@@ -5044,7 +6628,7 @@ describe('workers/repository/process/lookup/index', () => {
         config.packageName = 'webpack';
         config.datasource = NpmDatasource.id;
         httpMock
-          .scope('https://registry.npmjs.org')
+          .scope(npmDefaultRegistryUrl)
           .get('/webpack')
           .reply(200, webpackJson);
 
@@ -5056,14 +6640,20 @@ describe('workers/repository/process/lookup/index', () => {
         expect(updates).toEqual([
           {
             bucket: 'non-major',
+            isBreaking: false,
             newMajor: 3,
             newMinor: 8,
             newPatch: 1,
             newValue: '3.8.1',
             newVersion: '3.8.1',
+            newDigest:
+              'sha512-5ZXLWWsMqHKFr5y0N3Eo5IIisxeEeRAajNq4mELb/WELOR7srdbQk2N5XiyNy2A/AgvlR3AmeBCZJW8lHrolbw==',
+            downloadUrl:
+              'https://registry.npmjs.org/webpack/-/webpack-3.8.1.tgz',
             newVersionAgeInDays: expect.any(Number),
-            releaseTimestamp: '2017-10-17T15:22:36.646Z',
+            releaseTimestamp: '2017-10-17T15:22:36.646Z' as Timestamp,
             updateType: 'minor',
+            hasAttestation: false,
           },
         ]);
       });
@@ -5077,7 +6667,7 @@ describe('workers/repository/process/lookup/index', () => {
         hostRules.clear(); // reset merge confidence
         initConfig(mcConfig);
         httpMock
-          .scope('https://registry.npmjs.org')
+          .scope(npmDefaultRegistryUrl)
           .get('/webpack')
           .reply(200, webpackJson);
 
@@ -5115,6 +6705,7 @@ describe('workers/repository/process/lookup/index', () => {
       expect(updates).toEqual([
         {
           bucket: 'non-major',
+          isBreaking: true,
           newDigest: '62759503f434',
           newMajor: 0,
           newMinor: 0,
@@ -5122,10 +6713,162 @@ describe('workers/repository/process/lookup/index', () => {
           newValue: 'v0.0.0-20240509183442-62759503f434',
           newVersion: 'v0.0.0-20240509183442-62759503f434',
           newVersionAgeInDays: expect.any(Number),
-          releaseTimestamp: '2024-05-09T18:34:42.000Z',
+          releaseTimestamp: '2024-05-09T18:34:42.000Z' as Timestamp,
           updateType: 'digest',
+          hasAttestation: undefined,
         },
       ]);
+    });
+
+    // gomod pseudo-version updates are relabelled to `updateType=digest` after filterInternalChecks()
+    // has already age-checked them under the version-derived updateType, so digest-scoped rules must be re-applied
+    it('applies digest-scoped minimumReleaseAge packageRules to gomod pseudo-version updates', async () => {
+      config.manager = 'gomod';
+      config.datasource = GoDatasource.id;
+      config.currentValue = 'v0.0.0-20240506185236-b8a5c65736ae';
+      config.currentDigest = 'b8a5c65736ae';
+      config.packageName = 'google.golang.org/genproto/googleapis/rpc';
+      config.digestOneAndOnly = true;
+      config.internalChecksFilter = 'strict';
+      config.packageRules = [
+        { matchUpdateTypes: ['digest'], minimumReleaseAge: '3 days' },
+      ];
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      yesterday.setMilliseconds(0);
+      const pseudoTimestamp = yesterday
+        .toISOString()
+        .replace(/[-:T]/g, '')
+        .slice(0, 14);
+      const newVersion = `v0.0.0-${pseudoTimestamp}-62759503f434`;
+
+      httpMock
+        .scope(
+          'https://proxy.golang.org/google.golang.org/genproto/googleapis/rpc',
+        )
+        .get('/@v/list')
+        .reply(200, '')
+        .get('/v2/@v/list')
+        .reply(404)
+        .get('/@latest')
+        .reply(200, { Version: newVersion });
+
+      const { updates } = await Result.wrap(
+        lookup.lookupUpdates(config),
+      ).unwrapOrThrow();
+
+      expect(updates).toEqual([
+        {
+          bucket: 'non-major',
+          isBreaking: true,
+          newDigest: '62759503f434',
+          newMajor: 0,
+          newMinor: 0,
+          newPatch: 0,
+          newValue: newVersion,
+          newVersion,
+          newVersionAgeInDays: expect.any(Number),
+          releaseTimestamp: yesterday.toISOString() as Timestamp,
+          updateType: 'digest',
+          hasAttestation: undefined,
+          pendingChecks: true,
+        },
+      ]);
+    });
+
+    it('handles changelog with content', async () => {
+      config.currentValue = '8.0.0';
+      config.packageName = 'node';
+      config.datasource = DockerDatasource.id;
+      getDockerReleases.mockResolvedValueOnce({
+        releases: [
+          {
+            version: '8.0.0',
+          },
+          {
+            changelogContent: 'testContent',
+            changelogUrl: 'http://testChangelogUrl',
+            version: '8.1.0',
+          },
+        ],
+      });
+
+      const res = await Result.wrap(
+        lookup.lookupUpdates(config),
+      ).unwrapOrThrow();
+
+      expect(res).toEqual({
+        changelogContent: 'testContent',
+        changelogUrl: 'http://testChangelogUrl',
+        currentVersion: '8.0.0',
+        fixedVersion: '8.0.0',
+        isSingleVersion: true,
+        registryUrl: 'https://index.docker.io',
+        sourceUrl: 'https://github.com/nodejs/node',
+        updates: [
+          {
+            bucket: 'non-major',
+            isBreaking: false,
+            newMajor: 8,
+            newMinor: 1,
+            newPatch: 0,
+            newValue: '8.1.0',
+            newVersion: '8.1.0',
+            updateType: 'minor',
+            hasAttestation: undefined,
+          },
+        ],
+        versioning: 'npm',
+        warnings: [],
+      });
+    });
+
+    it('handles changelog with content for ranges', async () => {
+      config.currentValue = '[8.0,8.1)';
+      config.packageName = 'node';
+      config.datasource = DockerDatasource.id;
+      config.versioning = 'maven';
+      getDockerReleases.mockResolvedValueOnce({
+        releases: [
+          {
+            version: '8.0.0',
+          },
+          {
+            changelogContent: 'testContent',
+            changelogUrl: 'http://testChangelogUrl',
+            version: '8.1.0',
+          },
+        ],
+      });
+
+      const res = await Result.wrap(
+        lookup.lookupUpdates(config),
+      ).unwrapOrThrow();
+
+      expect(res).toEqual({
+        changelogContent: 'testContent',
+        changelogUrl: 'http://testChangelogUrl',
+        currentVersion: '8.0.0',
+        isSingleVersion: false,
+        registryUrl: 'https://index.docker.io',
+        sourceUrl: 'https://github.com/nodejs/node',
+        updates: [
+          {
+            bucket: 'non-major',
+            isBreaking: false,
+            isRange: true,
+            newMajor: 8,
+            newMinor: 1,
+            newPatch: 0,
+            newValue: '[8.0,8.2)',
+            newVersion: '8.1.0',
+            updateType: 'minor',
+            hasAttestation: undefined,
+          },
+        ],
+        versioning: 'maven',
+        warnings: [],
+      });
     });
   });
 });

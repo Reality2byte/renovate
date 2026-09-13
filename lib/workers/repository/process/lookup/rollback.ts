@@ -1,15 +1,22 @@
-import { logger } from '../../../../logger';
-import type { Release } from '../../../../modules/datasource/types';
-import type { LookupUpdate } from '../../../../modules/manager/types';
-import type { VersioningApi } from '../../../../modules/versioning';
-import type { RollbackConfig } from './types';
+import { logger } from '../../../../logger/index.ts';
+import type { Release } from '../../../../modules/datasource/types.ts';
+import type { LookupUpdate } from '../../../../modules/manager/types.ts';
+import type { VersioningApi } from '../../../../modules/versioning/index.ts';
+import type { RollbackConfig } from './types.ts';
 
 export function getRollbackUpdate(
   config: RollbackConfig,
   versions: Release[],
   versioningApi: VersioningApi,
 ): LookupUpdate | null {
-  const { packageFile, versioning, depName, currentValue } = config;
+  const {
+    packageFile,
+    versioning,
+    packageName,
+    depName,
+    currentValue,
+    datasource,
+  } = config;
   // istanbul ignore if
   if (!('isLessThanRange' in versioningApi)) {
     logger.debug(
@@ -78,5 +85,8 @@ export function getRollbackUpdate(
     newVersion,
     registryUrl,
     updateType: 'rollback',
+    prBodyNotes: [
+      `The version of \`${depName ?? packageName}\` in use (\`${currentValue}\`) was not found once Renovate filtered the dependencies. The ${datasource} datasource returned ${versions.length} entries, but when Renovate applied its filtering, none were left, so Renovate will roll back to a supported version`,
+    ],
   };
 }

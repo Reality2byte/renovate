@@ -1,36 +1,55 @@
-import { mockDeep } from 'jest-mock-extended';
-import { Fixtures } from '../../../test/fixtures';
-import { mocked } from '../../../test/util';
-import * as memCache from '../../util/cache/memory';
-import * as _packageCache from '../../util/cache/package';
-import { GlobalConfig } from '../global';
-import type { RenovateConfig } from '../types';
-import * as _github from './github';
-import * as _local from './local';
-import * as _npm from './npm';
+import { mockDeep } from 'vitest-mock-extended';
+import { Fixtures } from '~test/fixtures.ts';
+import { logger } from '~test/util.ts';
+import {
+  CONFIG_VALIDATION,
+  HOST_BLOCKED,
+  PLATFORM_RATE_LIMIT_EXCEEDED,
+} from '../../constants/error-messages.ts';
+import { ExternalHostError } from '../../types/errors/external-host-error.ts';
+import * as memCache from '../../util/cache/memory/index.ts';
+import * as _packageCache from '../../util/cache/package/index.ts';
+import { setCustomEnv } from '../../util/env.ts';
+import { GlobalConfig } from '../global.ts';
+import type { AllConfig } from '../types.ts';
+import * as _forgejo from './forgejo/index.ts';
+import * as _gitea from './gitea/index.ts';
+import * as _github from './github/index.ts';
+import * as _gitlab from './gitlab/index.ts';
+import * as _http from './http/index.ts';
+import * as presets from './index.ts';
+import * as _local from './local/index.ts';
+import * as _npm from './npm/index.ts';
 import {
   PRESET_DEP_NOT_FOUND,
   PRESET_INVALID_JSON,
   PRESET_NOT_FOUND,
   PRESET_RENOVATE_CONFIG_NOT_FOUND,
-} from './util';
-import * as presets from '.';
+} from './util.ts';
 
-jest.mock('./npm');
-jest.mock('./github');
-jest.mock('./local');
-jest.mock('../../util/cache/package', () => mockDeep());
+vi.mock('./forgejo/index.ts');
+vi.mock('./gitea/index.ts');
+vi.mock('./http/index.ts');
+vi.mock('./npm/index.ts');
+vi.mock('./github/index.ts');
+vi.mock('./gitlab/index.ts');
+vi.mock('./local/index.ts');
+vi.mock('../../util/cache/package/index.ts', () => mockDeep());
 
-const npm = mocked(_npm);
-const local = mocked(_local);
-const gitHub = mocked(_github);
-const packageCache = mocked(_packageCache);
+const forgejo = vi.mocked(_forgejo);
+const gitea = vi.mocked(_gitea);
+const http = vi.mocked(_http);
+const npm = vi.mocked(_npm);
+const local = vi.mocked(_local);
+const gitHub = vi.mocked(_github);
+const gitLab = vi.mocked(_gitlab);
+const packageCache = vi.mocked(_packageCache);
 
 const presetIkatyang = Fixtures.getJson('renovate-config-ikatyang.json');
 
 describe('config/presets/index', () => {
-  describe('resolvePreset', () => {
-    let config: RenovateConfig;
+  describe('resolveConfigPresets', () => {
+    let config: AllConfig;
 
     beforeEach(() => {
       config = {};
@@ -46,7 +65,7 @@ describe('config/presets/index', () => {
           namespace: string,
           key: string,
           value: unknown,
-          minutes: number,
+          _minutes: number,
         ): Promise<void> => {
           memCache.set(`${namespace}-${key}`, value);
           return Promise.resolve();
@@ -76,16 +95,36 @@ describe('config/presets/index', () => {
     });
 
     it('returns same if no presets', async () => {
+      // @ts-expect-error -- invalid config
       config.foo = 1;
       config.extends = [];
-      const res = await presets.resolveConfigPresets(config);
+      const { config: res } = await presets.resolveConfigPresets(config);
       expect(config).toMatchObject(res);
       expect(res).toEqual({ foo: 1 });
     });
 
+    it('skips duplicate resolves', async () => {
+      config.extends = ['local>some/repo:a', 'local>some/repo:b'];
+      local.getPreset.mockResolvedValueOnce({ extends: ['local>some/repo:c'] });
+      local.getPreset.mockResolvedValueOnce({ extends: ['local>some/repo:c'] });
+      local.getPreset.mockResolvedValueOnce({ foo: 1 });
+      const { config: res } = await presets.resolveConfigPresets(config);
+      expect(res).toEqual({
+        foo: 1,
+      });
+      expect(local.getPreset).toHaveBeenCalledTimes(3);
+
+      expect(logger.logger.debug).toHaveBeenCalledWith(
+        'Already seen preset local>some/repo:c in [local>some/repo:a, local>some/repo:c]',
+      );
+    });
+
     it('throws if invalid preset file', async () => {
+      // @ts-expect-error -- invalid config
       config.foo = 1;
-      config.extends = ['notfound'];
+      config.extends = ['local>some/repo'];
+
+      local.getPreset.mockResolvedValueOnce({ extends: ['notfound'] });
       let e: Error | undefined;
       try {
         await presets.resolveConfigPresets(config);
@@ -95,12 +134,38 @@ describe('config/presets/index', () => {
       expect(e).toBeDefined();
       expect(e!.validationSource).toBeUndefined();
       expect(e!.validationError).toBe(
-        "Cannot find preset's package (notfound)",
+        "Cannot find preset's package (notfound)." +
+          ' Note: this is a *nested* preset so please contact the preset author if you are unable to fix it yourself.',
       );
       expect(e!.validationMessage).toBeUndefined();
     });
 
+    it('throws if the preset host is blocked', async () => {
+      config.extends = ['http://10.1.2.3/preset.json'];
+      http.getPreset.mockRejectedValueOnce(new Error(HOST_BLOCKED));
+      let e: Error | undefined;
+      try {
+        await presets.resolveConfigPresets(config);
+      } catch (err) {
+        e = err;
+      }
+      expect(e).toBeDefined();
+      expect(e!.validationError).toBe(
+        'Preset host is blocked by this Renovate instance (http://10.1.2.3/preset.json). If this is intended, ask your Renovate administrator to permit it with a `hostRules` entry setting `allowInternal=true`, scoped either by `hostType` (for example `preset` or `npm`) or by a URL-prefix `matchHost`',
+      );
+      expect(logger.logger.warn).toHaveBeenCalledWith(
+        {
+          preset: 'http://10.1.2.3/preset.json',
+          documentationUrl: expect.stringContaining(
+            'self-hosted-configuration/#hostrulesallowinternal',
+          ),
+        },
+        'Preset host is blocked by this Renovate instance',
+      );
+    });
+
     it('throws if invalid preset', async () => {
+      // @ts-expect-error -- invalid config
       config.foo = 1;
       config.extends = ['wrongpreset:invalid-preset'];
       let e: Error | undefined;
@@ -118,6 +183,7 @@ describe('config/presets/index', () => {
     });
 
     it('throws if path + invalid syntax', async () => {
+      // @ts-expect-error -- invalid config
       config.foo = 1;
       config.extends = ['github>user/repo//'];
       let e: Error | undefined;
@@ -133,6 +199,7 @@ describe('config/presets/index', () => {
     });
 
     it('throws if path + sub-preset', async () => {
+      // @ts-expect-error -- invalid config
       config.foo = 1;
       config.extends = ['github>user/repo//path:subpreset'];
       let e: Error | undefined;
@@ -150,6 +217,7 @@ describe('config/presets/index', () => {
     });
 
     it('throws if invalid preset json', async () => {
+      // @ts-expect-error -- invalid config
       config.foo = 1;
       config.extends = ['org/repo'];
       let e: Error | undefined;
@@ -166,6 +234,7 @@ describe('config/presets/index', () => {
     });
 
     it('throws noconfig', async () => {
+      // @ts-expect-error -- invalid config
       config.foo = 1;
       config.extends = ['noconfig:recommended'];
       let e: Error | undefined;
@@ -183,6 +252,7 @@ describe('config/presets/index', () => {
     });
 
     it('throws throw', async () => {
+      // @ts-expect-error -- invalid config
       config.foo = 1;
       config.extends = ['throw:base'];
       let e: Error | undefined;
@@ -200,19 +270,44 @@ describe('config/presets/index', () => {
     });
 
     it('works with valid', async () => {
+      // @ts-expect-error -- invalid config
       config.foo = 1;
-      config.ignoreDeps = [];
       config.extends = [':pinVersions'];
-      const res = await presets.resolveConfigPresets(config);
+      const { config: res } = await presets.resolveConfigPresets(config);
       expect(res).toEqual({
+        description: [
+          'Use version pinning (maintain a single version only and not SemVer ranges).',
+        ],
         foo: 1,
-        ignoreDeps: [],
         rangeStrategy: 'pin',
       });
       expect(res.rangeStrategy).toBe('pin');
     });
 
+    it('replaces preset descriptions with overrideDescription', async () => {
+      config.overrideDescription = ['Pin everything.'];
+      config.extends = [':pinVersions'];
+      const { config: res } = await presets.resolveConfigPresets(config);
+      expect(res).toEqual({
+        description: ['Pin everything.'],
+        rangeStrategy: 'pin',
+      });
+    });
+
+    it('ignores empty overrideDescription', async () => {
+      config.overrideDescription = [];
+      config.extends = [':pinVersions'];
+      const { config: res } = await presets.resolveConfigPresets(config);
+      expect(res).toEqual({
+        description: [
+          'Use version pinning (maintain a single version only and not SemVer ranges).',
+        ],
+        rangeStrategy: 'pin',
+      });
+    });
+
     it('throws if valid and invalid', async () => {
+      // @ts-expect-error -- invalid config
       config.foo = 1;
       config.extends = ['wrongpreset:invalid-preset', ':pinVersions'];
       let e: Error | undefined;
@@ -236,62 +331,122 @@ describe('config/presets/index', () => {
           groupName: 'eslint',
         },
       ];
-      const res = await presets.resolveConfigPresets(config);
+      const { config: res } = await presets.resolveConfigPresets(config);
       expect(res).toEqual({
         packageRules: [
           {
             groupName: 'eslint',
             matchPackageNames: [
-              '@types/eslint',
-              'babel-eslint',
+              '*/eslint-plugin',
               '@babel/eslint-parser',
               '@eslint/**',
               '@eslint-community/**',
               '@stylistic/eslint-plugin**',
+              '@types/eslint',
               '@types/eslint__**',
               '@typescript-eslint/**',
-              'typescript-eslint',
+              'babel-eslint',
               'eslint**',
+              'typescript-eslint',
             ],
           },
         ],
       });
     });
 
+    it('resolves pin GitHub Action digests to SemVer', async () => {
+      config.extends = ['helpers:pinGitHubActionDigestsToSemver'];
+      const { config: res } = await presets.resolveConfigPresets(config);
+
+      expect(res.packageRules).toEqual([
+        {
+          matchDepTypes: ['action', 'workflow'],
+          pinDigests: true,
+        },
+        {
+          matchDepTypes: ['action', 'workflow'],
+          extractVersion: '^(?<version>v?\\d+\\.\\d+\\.\\d+)$',
+          versioning:
+            'regex:^v?(?<major>\\d+)(\\.(?<minor>\\d+)\\.(?<patch>\\d+))?$',
+        },
+      ]);
+    });
+
     it('resolves eslint', async () => {
       config.extends = ['packages:eslint'];
-      const res = await presets.resolveConfigPresets(config);
-      expect(res).toMatchSnapshot();
-      expect(res.matchPackageNames).toHaveLength(10);
+      const { config: res } = await presets.resolveConfigPresets(config);
+      expect(res).toEqual({
+        matchPackageNames: [
+          '*/eslint-plugin',
+          '@babel/eslint-parser',
+          '@eslint/**',
+          '@eslint-community/**',
+          '@stylistic/eslint-plugin**',
+          '@types/eslint',
+          '@types/eslint__**',
+          '@typescript-eslint/**',
+          'babel-eslint',
+          'eslint**',
+          'typescript-eslint',
+        ],
+      });
     });
 
     it('resolves linters', async () => {
       config.extends = ['packages:linters'];
-      const res = await presets.resolveConfigPresets(config);
-      expect(res).toMatchSnapshot();
-      expect(res.matchPackageNames).toHaveLength(20);
+      const { config: res } = await presets.resolveConfigPresets(config);
+      expect(res).toEqual({
+        description: ['All lint-related packages.'],
+        matchPackageNames: [
+          'ember-template-lint**',
+          '*/eslint-plugin',
+          '@babel/eslint-parser',
+          '@eslint/**',
+          '@eslint-community/**',
+          '@stylistic/eslint-plugin**',
+          '@types/eslint',
+          '@types/eslint__**',
+          '@typescript-eslint/**',
+          'babel-eslint',
+          'eslint**',
+          'typescript-eslint',
+          'friendsofphp/php-cs-fixer',
+          'squizlabs/php_codesniffer',
+          'symplify/easy-coding-standard',
+          'stylelint**',
+          'codelyzer',
+          '/\\btslint\\b/',
+          '@oxlint/**',
+          'oxlint',
+          'prettier',
+          'remark-lint',
+          'standard',
+        ],
+      });
     });
 
     it('resolves nested groups', async () => {
       config.extends = [':automergeLinters'];
-      const res = await presets.resolveConfigPresets(config);
-      expect(res).toMatchSnapshot();
+      const { config: res } = await presets.resolveConfigPresets(config);
+      expect(res.packageRules).toHaveLength(1);
       const rule = res.packageRules![0];
       expect(rule.automerge).toBeTrue();
-      expect(rule.matchPackageNames).toHaveLength(20);
+      expect(rule.matchPackageNames).toHaveLength(23);
     });
 
     it('migrates automerge in presets', async () => {
       config.extends = ['ikatyang:library'];
-      const res = await presets.resolveConfigPresets(config);
-      expect(res).toMatchSnapshot();
+      const { config: res } = await presets.resolveConfigPresets(config);
       expect(res.automerge).toBeUndefined();
-      expect(res.minor!.automerge).toBeTrue();
+      expect(res).toMatchObject({
+        major: { automerge: false },
+        minor: { automerge: true },
+      });
     });
 
     it('ignores presets', async () => {
       config.extends = ['config:recommended'];
-      const res = await presets.resolveConfigPresets(config, {}, [
+      const { config: res } = await presets.resolveConfigPresets(config, {}, [
         'config:recommended',
       ]);
       expect(config).toMatchObject(res);
@@ -304,15 +459,63 @@ describe('config/presets/index', () => {
         labels: ['self-hosted resolved'],
       });
 
-      const res = await presets.resolveConfigPresets(config);
+      const { config: res } = await presets.resolveConfigPresets(config);
 
-      expect(res.labels).toEqual(['self-hosted resolved']);
       expect(local.getPreset.mock.calls).toHaveLength(1);
-      expect(res).toMatchSnapshot();
+      expect(res).toEqual({ labels: ['self-hosted resolved'] });
+    });
+
+    it('returns the presets which have been merged into the resulting config', async () => {
+      config.extends = ['local>username/preset-repo'];
+      local.getPreset.mockResolvedValueOnce({
+        extends: ['security:openssf-scorecard'],
+        labels: ['self-hosted resolved'],
+      });
+
+      const {
+        visitedPresets: { merged },
+      } = await presets.resolveConfigPresets(config);
+
+      expect(merged).toEqual([
+        'local>username/preset-repo',
+        'security:openssf-scorecard',
+      ]);
+    });
+
+    it('de-duplicates the presets which have been meregd into the resulting config', async () => {
+      config.extends = [
+        'security:openssf-scorecard',
+        'local>username/preset-repo',
+        'security:openssf-scorecard',
+      ];
+
+      local.getPreset.mockResolvedValueOnce({
+        labels: ['self-hosted resolved'],
+        extends: ['security:openssf-scorecard'],
+        packageRules: [
+          {
+            extends: ['packages:eslint'],
+            groupName: 'eslint',
+          },
+        ],
+      });
+
+      const {
+        visitedPresets: { merged },
+      } = await presets.resolveConfigPresets(config);
+
+      expect(merged).toEqual(
+        // NOTE that we're not expecting to have a strict or stable ordering
+        expect.arrayContaining([
+          'local>username/preset-repo',
+          'security:openssf-scorecard',
+          'packages:eslint',
+        ]),
+      );
     });
 
     it('resolves self-hosted preset with templating', async () => {
-      GlobalConfig.set({ customEnvVariables: { GIT_REF: 'abc123' } });
+      setCustomEnv({ GIT_REF: 'abc123' });
       config.extends = ['local>username/preset-repo#{{ env.GIT_REF }}'];
       local.getPreset.mockImplementationOnce(({ tag }) =>
         tag === 'abc123'
@@ -320,10 +523,15 @@ describe('config/presets/index', () => {
           : Promise.reject(new Error('Failed to resolve self-hosted preset')),
       );
 
-      const res = await presets.resolveConfigPresets(config);
+      const { config: res } = await presets.resolveConfigPresets(config);
 
       expect(res.labels).toEqual(['self-hosted with template resolved']);
-      expect(local.getPreset).toHaveBeenCalledOnce();
+      expect(local.getPreset).toHaveBeenCalledExactlyOnceWith({
+        presetName: 'default',
+        presetPath: undefined,
+        repo: 'username/preset-repo',
+        tag: 'abc123',
+      });
     });
 
     it('resolves self-hosted transitive presets without baseConfig', async () => {
@@ -336,13 +544,41 @@ describe('config/presets/index', () => {
         })
         .mockResolvedValueOnce({ labels: ['self-hosted resolved'] });
 
-      const res = await presets.resolveConfigPresets(config);
+      const { config: res } = await presets.resolveConfigPresets(config);
 
       expect(res).toEqual({
         platform: 'gitlab',
         endpoint: 'https://dummy.example.com/api/v4',
         labels: ['self-hosted resolved'],
       });
+    });
+
+    it('resolves http presets', async () => {
+      config.extends = ['https://example.com/preset.json'];
+      http.getPreset.mockResolvedValueOnce({ labels: ['http'] });
+      const { config: res } = await presets.resolveConfigPresets(config);
+      expect(res).toEqual({ labels: ['http'] });
+    });
+
+    it('resolves forgejo presets', async () => {
+      config.extends = ['forgejo>user/repo'];
+      forgejo.getPreset.mockResolvedValueOnce({ labels: ['forgejo'] });
+      const { config: res } = await presets.resolveConfigPresets(config);
+      expect(res).toEqual({ labels: ['forgejo'] });
+    });
+
+    it('resolves gitea presets', async () => {
+      config.extends = ['gitea>user/repo'];
+      gitea.getPreset.mockResolvedValueOnce({ labels: ['gitea'] });
+      const { config: res } = await presets.resolveConfigPresets(config);
+      expect(res).toEqual({ labels: ['gitea'] });
+    });
+
+    it('resolves gitlab presets', async () => {
+      config.extends = ['gitlab>user/repo'];
+      gitLab.getPreset.mockResolvedValueOnce({ labels: ['gitlab'] });
+      const { config: res } = await presets.resolveConfigPresets(config);
+      expect(res).toEqual({ labels: ['gitlab'] });
     });
 
     it('gets preset value from cache when it has been seen', async () => {
@@ -363,8 +599,8 @@ describe('config/presets/index', () => {
         ],
       });
 
-      expect(await presets.resolveConfigPresets(config)).toBeDefined();
-      const res = await presets.resolveConfigPresets(config);
+      await expect(presets.resolveConfigPresets(config)).resolves.toBeDefined();
+      const { config: res } = await presets.resolveConfigPresets(config);
       expect(res).toEqual({
         packageRules: [
           {
@@ -402,8 +638,8 @@ describe('config/presets/index', () => {
         ],
       });
 
-      expect(await presets.resolveConfigPresets(config)).toBeDefined();
-      const res = await presets.resolveConfigPresets(config);
+      await expect(presets.resolveConfigPresets(config)).resolves.toBeDefined();
+      const { config: res } = await presets.resolveConfigPresets(config);
       expect(res).toEqual({
         packageRules: [
           {
@@ -424,9 +660,6 @@ describe('config/presets/index', () => {
     it('use packageCache when presetCachePersistence is set', async () => {
       GlobalConfig.set({
         presetCachePersistence: true,
-        cacheTtlOverride: {
-          preset: 60,
-        },
       });
 
       config.extends = ['github>username/preset-repo'];
@@ -446,8 +679,8 @@ describe('config/presets/index', () => {
         ],
       });
 
-      expect(await presets.resolveConfigPresets(config)).toBeDefined();
-      const res = await presets.resolveConfigPresets(config);
+      await expect(presets.resolveConfigPresets(config)).resolves.toBeDefined();
+      const { config: res } = await presets.resolveConfigPresets(config);
       expect(res).toEqual({
         packageRules: [
           {
@@ -462,7 +695,726 @@ describe('config/presets/index', () => {
         ],
       });
 
-      expect(packageCache.set.mock.calls[0][3]).toBe(60);
+      expect(packageCache.set.mock.calls[0][3]).toBe(15);
+    });
+
+    it('throws', async () => {
+      config.extends = ['local>username/preset-repo'];
+
+      local.getPreset.mockRejectedValueOnce(
+        new ExternalHostError(new Error('whoops')),
+      );
+      await expect(presets.resolveConfigPresets(config)).rejects.toThrow(
+        ExternalHostError,
+      );
+
+      local.getPreset.mockRejectedValueOnce(
+        new Error(PLATFORM_RATE_LIMIT_EXCEEDED),
+      );
+      await expect(presets.resolveConfigPresets(config)).rejects.toThrow(
+        PLATFORM_RATE_LIMIT_EXCEEDED,
+      );
+    });
+
+    describe('relative presets', () => {
+      it('resolves a relative preset against its parent', async () => {
+        config.extends = ['github>some/repo#v1.0.0'];
+        gitHub.getPreset.mockResolvedValueOnce({
+          extends: ['./system/registries'],
+        });
+        gitHub.getPreset.mockResolvedValueOnce({ prCreation: 'not-pending' });
+
+        const { config: res } = await presets.resolveConfigPresets(config);
+
+        expect(res).toEqual({ prCreation: 'not-pending' });
+        expect(gitHub.getPreset).toHaveBeenCalledWith({
+          repo: 'some/repo',
+          presetPath: 'system',
+          presetName: 'registries',
+          tag: 'v1.0.0',
+        });
+      });
+
+      it('terminates on self-referencing relative presets', async () => {
+        config.extends = ['github>some/repo#v1.0.0'];
+        gitHub.getPreset.mockResolvedValue({
+          extends: ['./default'],
+          prCreation: 'not-pending',
+        });
+
+        const { config: res } = await presets.resolveConfigPresets(config);
+
+        expect(res).toEqual({ prCreation: 'not-pending' });
+        expect(gitHub.getPreset).toHaveBeenCalledTimes(1);
+      });
+
+      it('fetches the root default preset only once', async () => {
+        config.extends = ['github>some/repo#v1.0.0'];
+        gitHub.getPreset.mockImplementation(({ presetPath, presetName }) => {
+          if (presetPath === 'group' && presetName === 'a') {
+            return Promise.resolve({ extends: ['/default'] });
+          }
+          return Promise.resolve({
+            extends: ['./group/a'],
+            packageRules: [{ matchManagers: ['npm'], automerge: true }],
+          });
+        });
+
+        const { config: res } = await presets.resolveConfigPresets(config);
+
+        expect(res).toEqual({
+          packageRules: [{ matchManagers: ['npm'], automerge: true }],
+        });
+        expect(gitHub.getPreset).toHaveBeenCalledTimes(2);
+      });
+
+      it('resolves relative presets which use params', async () => {
+        config.extends = ['github>some/repo#v1.0.0(argA)'];
+        gitHub.getPreset.mockResolvedValueOnce({
+          extends: ['./{{arg0}}'],
+        });
+        gitHub.getPreset.mockResolvedValueOnce({ prCreation: 'not-pending' });
+
+        const { config: res } = await presets.resolveConfigPresets(config);
+
+        expect(res).toEqual({ prCreation: 'not-pending' });
+        expect(gitHub.getPreset).toHaveBeenCalledWith({
+          repo: 'some/repo',
+          presetPath: undefined,
+          presetName: 'argA',
+          tag: 'v1.0.0',
+        });
+      });
+
+      it('throws if a relative preset has no parent preset', async () => {
+        config.extends = ['./x'];
+
+        await expect(presets.resolveConfigPresets(config)).rejects.toThrow(
+          expect.objectContaining({
+            message: CONFIG_VALIDATION,
+            validationError:
+              'Relative preset reference cannot be resolved (./x). Relative presets can only be used within presets from a supported source, must stay inside their repository, and cannot be templated or used outside of a preset (for example in the repository config, inherited config, or globalExtends)',
+          }),
+        );
+      });
+
+      it('throws if a relative preset resolves outside of its repository', async () => {
+        config.extends = ['github>some/repo#v1.0.0'];
+        gitHub.getPreset.mockResolvedValueOnce({
+          extends: ['github>other/repo#v2.0.0'],
+        });
+        gitHub.getPreset.mockResolvedValueOnce({ extends: ['../x'] });
+
+        await expect(presets.resolveConfigPresets(config)).rejects.toThrow(
+          expect.objectContaining({
+            message: CONFIG_VALIDATION,
+            validationError:
+              'Relative preset reference cannot be resolved (../x). Relative presets can only be used within presets from a supported source, must stay inside their repository, and cannot be templated or used outside of a preset (for example in the repository config, inherited config, or globalExtends). Note: this is a *nested* preset so please contact the preset author if you are unable to fix it yourself.',
+          }),
+        );
+      });
+
+      it('throws if a relative preset is used by an unsupported preset source', async () => {
+        config.extends = ['github>some/repo#v1.0.0'];
+        gitHub.getPreset.mockResolvedValueOnce({
+          extends: ['somepackage:webapp'],
+        });
+        npm.getPreset.mockResolvedValueOnce({ extends: ['./x'] });
+
+        await expect(presets.resolveConfigPresets(config)).rejects.toThrow(
+          expect.objectContaining({
+            message: CONFIG_VALIDATION,
+            validationError:
+              'Relative preset reference cannot be resolved (./x). Relative presets can only be used within presets from a supported source, must stay inside their repository, and cannot be templated or used outside of a preset (for example in the repository config, inherited config, or globalExtends). Note: this is a *nested* preset so please contact the preset author if you are unable to fix it yourself.',
+          }),
+        );
+      });
+
+      it('resolves relative ignorePresets of a preset', async () => {
+        config.extends = ['github>some/repo#v1.0.0'];
+        gitHub.getPreset.mockResolvedValueOnce({
+          extends: ['./optional'],
+          ignorePresets: ['./optional'],
+          prCreation: 'not-pending',
+        });
+
+        const { config: res } = await presets.resolveConfigPresets(config);
+
+        expect(res).toEqual({ prCreation: 'not-pending' });
+        expect(gitHub.getPreset).toHaveBeenCalledTimes(1);
+      });
+
+      it('allows ignorePresets to neutralize a broken relative preset', async () => {
+        config.extends = ['github>some/repo#v1.0.0'];
+        config.ignorePresets = ['../oops'];
+        gitHub.getPreset.mockResolvedValueOnce({
+          extends: ['../oops'],
+          prCreation: 'not-pending',
+        });
+
+        const { config: res } = await presets.resolveConfigPresets(config);
+
+        expect(res).toEqual({ prCreation: 'not-pending' });
+      });
+    });
+
+    describe('when using mergeInternalPresets=true', () => {
+      describe('when resolving an internal preset', () => {
+        it('merges `extends`', async () => {
+          config.extends = ['security:openssf-scorecard'];
+          config.packageRules = [
+            {
+              extends: ['packages:eslint'],
+              groupName: 'eslint',
+            },
+          ];
+
+          const { config: res } = await presets.resolveConfigPresets(
+            config,
+            undefined,
+            undefined,
+            undefined,
+            true,
+          );
+
+          expect(res).toEqual({
+            description: ['Show OpenSSF badge on pull requests.'],
+            packageRules: [
+              {
+                matchSourceUrls: ['https://github.com/**'],
+                prBodyColumns: [
+                  'Package',
+                  'Type',
+                  'Update',
+                  'Change',
+                  'Pending',
+                  'OpenSSF',
+                ],
+                prBodyDefinitions: {
+                  OpenSSF:
+                    '[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/{{sourceRepo}}/badge)](https://securityscorecards.dev/viewer/?uri=github.com/{{sourceRepo}})',
+                },
+              },
+              {
+                groupName: 'eslint',
+                matchPackageNames: [
+                  '*/eslint-plugin',
+                  '@babel/eslint-parser',
+                  '@eslint/**',
+                  '@eslint-community/**',
+                  '@stylistic/eslint-plugin**',
+                  '@types/eslint',
+                  '@types/eslint__**',
+                  '@typescript-eslint/**',
+                  'babel-eslint',
+                  'eslint**',
+                  'typescript-eslint',
+                ],
+              },
+            ],
+          });
+        });
+
+        it('does not return any unmerged presets', async () => {
+          config.extends = ['security:openssf-scorecard'];
+          config.packageRules = [
+            {
+              extends: ['packages:eslint'],
+              groupName: 'eslint',
+            },
+          ];
+
+          const {
+            visitedPresets: { unmerged },
+          } = await presets.resolveConfigPresets(
+            config,
+            undefined,
+            undefined,
+            undefined,
+            true,
+          );
+
+          expect(unmerged).toBeEmptyArray();
+        });
+      });
+
+      // NOTE that this is a **??**
+      describe('when resolving an internal preset which includes many other internal presets', () => {
+        it('merges `extends`, recursively', async () => {
+          config.extends = [':assignAndReview(jamietanna)'];
+
+          const { config: res } = await presets.resolveConfigPresets(
+            config,
+            undefined,
+            undefined,
+            undefined,
+            true,
+          );
+
+          expect(res).toEqual({
+            assignees: ['jamietanna'],
+            description: [
+              'Assign PRs to `jamietanna`.',
+              'Add `jamietanna` as reviewer for PRs.',
+            ],
+            reviewers: ['jamietanna'],
+          });
+        });
+
+        it('does not return any unmerged presets', async () => {
+          config.extends = [':assignAndReview(jamietanna)'];
+
+          const {
+            visitedPresets: { merged, unmerged },
+          } = await presets.resolveConfigPresets(
+            config,
+            undefined,
+            undefined,
+            undefined,
+            true,
+          );
+
+          expect(merged).toEqual([
+            ':assignAndReview(jamietanna)',
+            ':assignee(jamietanna)',
+            ':reviewer(jamietanna)',
+          ]);
+          expect(unmerged).toEqual([]);
+        });
+      });
+
+      describe('when resolving an external preset which references an internal preset', () => {
+        it('merges internal `extends`', async () => {
+          config.extends = ['local>username/preset-repo'];
+          local.getPreset.mockResolvedValueOnce({
+            extends: ['security:openssf-scorecard'],
+            labels: ['self-hosted resolved'],
+          });
+
+          const { config: res } = await presets.resolveConfigPresets(
+            config,
+            undefined,
+            undefined,
+            undefined,
+            true,
+          );
+
+          expect(res).toEqual({
+            description: ['Show OpenSSF badge on pull requests.'],
+            labels: ['self-hosted resolved'],
+            packageRules: [
+              {
+                matchSourceUrls: ['https://github.com/**'],
+                prBodyColumns: [
+                  'Package',
+                  'Type',
+                  'Update',
+                  'Change',
+                  'Pending',
+                  'OpenSSF',
+                ],
+                prBodyDefinitions: {
+                  OpenSSF:
+                    '[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/{{sourceRepo}}/badge)](https://securityscorecards.dev/viewer/?uri=github.com/{{sourceRepo}})',
+                },
+              },
+            ],
+          });
+        });
+
+        it('does not return any unmerged presets', async () => {
+          config.extends = ['local>username/preset-repo'];
+          local.getPreset.mockResolvedValueOnce({
+            extends: ['security:openssf-scorecard'],
+            labels: ['self-hosted resolved'],
+          });
+
+          const {
+            visitedPresets: { unmerged },
+          } = await presets.resolveConfigPresets(
+            config,
+            undefined,
+            undefined,
+            undefined,
+            true,
+          );
+
+          expect(unmerged).toBeEmptyArray();
+        });
+      });
+
+      describe('when resolving mixed internal and external presets', () => {
+        it('merges internal `extends`', async () => {
+          config.extends = [
+            'security:openssf-scorecard',
+            'local>username/preset-repo',
+          ];
+          local.getPreset.mockResolvedValueOnce({
+            labels: ['self-hosted resolved'],
+          });
+          config.packageRules = [
+            {
+              extends: ['packages:eslint'],
+              groupName: 'eslint',
+            },
+          ];
+
+          const { config: res } = await presets.resolveConfigPresets(
+            config,
+            undefined,
+            undefined,
+            undefined,
+            true,
+          );
+
+          expect(res).toEqual({
+            description: ['Show OpenSSF badge on pull requests.'],
+            labels: ['self-hosted resolved'],
+            packageRules: [
+              {
+                matchSourceUrls: ['https://github.com/**'],
+                prBodyColumns: [
+                  'Package',
+                  'Type',
+                  'Update',
+                  'Change',
+                  'Pending',
+                  'OpenSSF',
+                ],
+                prBodyDefinitions: {
+                  OpenSSF:
+                    '[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/{{sourceRepo}}/badge)](https://securityscorecards.dev/viewer/?uri=github.com/{{sourceRepo}})',
+                },
+              },
+              {
+                groupName: 'eslint',
+                matchPackageNames: [
+                  '*/eslint-plugin',
+                  '@babel/eslint-parser',
+                  '@eslint/**',
+                  '@eslint-community/**',
+                  '@stylistic/eslint-plugin**',
+                  '@types/eslint',
+                  '@types/eslint__**',
+                  '@typescript-eslint/**',
+                  'babel-eslint',
+                  'eslint**',
+                  'typescript-eslint',
+                ],
+              },
+            ],
+          });
+        });
+
+        it('does not return any unmerged presets', async () => {
+          config.extends = [
+            'security:openssf-scorecard',
+            'local>username/preset-repo',
+          ];
+          local.getPreset.mockResolvedValueOnce({
+            labels: ['self-hosted resolved'],
+          });
+          config.packageRules = [
+            {
+              extends: ['packages:eslint'],
+              groupName: 'eslint',
+            },
+          ];
+
+          const {
+            visitedPresets: { unmerged },
+          } = await presets.resolveConfigPresets(
+            config,
+            undefined,
+            undefined,
+            undefined,
+            true,
+          );
+
+          expect(unmerged).toBeEmptyArray();
+        });
+      });
+    });
+
+    describe('when using mergeInternalPresets=false', () => {
+      describe('when resolving an internal preset', () => {
+        it('does not merge `extends`', async () => {
+          config.extends = ['security:openssf-scorecard'];
+          config.packageRules = [
+            {
+              extends: ['packages:eslint'],
+              groupName: 'eslint',
+            },
+          ];
+
+          const { config: res } = await presets.resolveConfigPresets(
+            config,
+            undefined,
+            undefined,
+            undefined,
+            false,
+          );
+
+          expect(res).toEqual({
+            packageRules: [
+              {
+                groupName: 'eslint',
+              },
+            ],
+          });
+        });
+
+        it('returns the presets in the unmerged array', async () => {
+          config.extends = ['security:openssf-scorecard'];
+          config.packageRules = [
+            {
+              extends: ['packages:eslint'],
+              groupName: 'eslint',
+            },
+          ];
+
+          const {
+            visitedPresets: { unmerged },
+          } = await presets.resolveConfigPresets(
+            config,
+            undefined,
+            undefined,
+            undefined,
+            false,
+          );
+
+          expect(unmerged).toEqual([
+            'security:openssf-scorecard',
+            'packages:eslint',
+          ]);
+        });
+      });
+
+      describe('when resolving an internal, parameterised preset', () => {
+        it('does not merge `extends`', async () => {
+          config.extends = [':assignee(renovate-tests)'];
+
+          const { config: res } = await presets.resolveConfigPresets(
+            config,
+            undefined,
+            undefined,
+            undefined,
+            false,
+          );
+
+          expect(res).toEqual({});
+        });
+
+        it('returns the preset in the unmerged array', async () => {
+          config.extends = [':assignee(renovate-tests)'];
+
+          const {
+            visitedPresets: { unmerged },
+          } = await presets.resolveConfigPresets(
+            config,
+            undefined,
+            undefined,
+            undefined,
+            false,
+          );
+
+          expect(unmerged).toEqual([':assignee(renovate-tests)']);
+        });
+      });
+
+      describe('when resolving an internal preset which includes many other internal presets', () => {
+        it('does not merge `extends`', async () => {
+          config.extends = ['config:recommended'];
+
+          const { config: res } = await presets.resolveConfigPresets(
+            config,
+            undefined,
+            undefined,
+            undefined,
+            false,
+          );
+
+          expect(res).toEqual({});
+        });
+
+        it('returns the unmerged internal presets', async () => {
+          config.extends = ['config:recommended'];
+
+          const {
+            visitedPresets: { merged, unmerged },
+          } = await presets.resolveConfigPresets(
+            config,
+            undefined,
+            undefined,
+            undefined,
+            false,
+          );
+
+          expect(merged).toEqual([]);
+          expect(unmerged).toEqual(['config:recommended']);
+        });
+      });
+
+      describe('when resolving an external preset which references an internal preset', () => {
+        it('does not merge `extends`', async () => {
+          config.extends = ['local>username/preset-repo'];
+          local.getPreset.mockResolvedValueOnce({
+            extends: ['security:openssf-scorecard'],
+            labels: ['self-hosted resolved'],
+          });
+
+          const { config: res } = await presets.resolveConfigPresets(
+            config,
+            undefined,
+            undefined,
+            undefined,
+            false,
+          );
+
+          expect(res).toEqual({
+            labels: ['self-hosted resolved'],
+          });
+        });
+
+        it('returns the unmerged internal presets', async () => {
+          config.extends = ['local>username/preset-repo'];
+          local.getPreset.mockResolvedValueOnce({
+            extends: ['security:openssf-scorecard'],
+            labels: ['self-hosted resolved'],
+          });
+
+          const {
+            visitedPresets: { unmerged },
+          } = await presets.resolveConfigPresets(
+            config,
+            undefined,
+            undefined,
+            undefined,
+            false,
+          );
+
+          expect(unmerged).toEqual(['security:openssf-scorecard']);
+        });
+      });
+
+      describe('when resolving mixed internal and external presets', () => {
+        it('does not expand internal `extends`', async () => {
+          config.extends = [
+            'security:openssf-scorecard',
+            'local>username/preset-repo',
+          ];
+          local.getPreset.mockResolvedValueOnce({
+            labels: ['self-hosted resolved'],
+          });
+          config.packageRules = [
+            {
+              extends: ['packages:eslint'],
+              groupName: 'eslint',
+            },
+          ];
+
+          const { config: res } = await presets.resolveConfigPresets(
+            config,
+            undefined,
+            undefined,
+            undefined,
+            false,
+          );
+
+          expect(res).toEqual({
+            labels: ['self-hosted resolved'],
+            packageRules: [
+              {
+                groupName: 'eslint',
+              },
+            ],
+          });
+        });
+
+        it('returns the unmerged internal presets', async () => {
+          config.extends = [
+            'security:openssf-scorecard',
+            'local>username/preset-repo',
+          ];
+          local.getPreset.mockResolvedValueOnce({
+            labels: ['self-hosted resolved'],
+          });
+          config.packageRules = [
+            {
+              extends: ['packages:eslint'],
+              groupName: 'eslint',
+            },
+          ];
+
+          const {
+            visitedPresets: { unmerged },
+          } = await presets.resolveConfigPresets(
+            config,
+            undefined,
+            undefined,
+            undefined,
+            false,
+          );
+
+          expect(unmerged).toEqual([
+            'security:openssf-scorecard',
+            'packages:eslint',
+          ]);
+        });
+      });
+
+      describe('when resolving an internal preset inside a nested object config value', () => {
+        it('returns the unmerged internal presets from a datasource', async () => {
+          config.extends = ['local>username/preset-repo'];
+          local.getPreset.mockResolvedValueOnce({
+            artifactory: {
+              extends: ['security:openssf-scorecard'],
+              enabled: true,
+            },
+          });
+
+          const {
+            visitedPresets: { unmerged },
+          } = await presets.resolveConfigPresets(
+            config,
+            undefined,
+            undefined,
+            undefined,
+            false,
+          );
+
+          expect(unmerged).toEqual(['security:openssf-scorecard']);
+        });
+      });
+
+      describe('when duplicate internal presets are found', () => {
+        it('they are de-duplicated when returned as unmerged', async () => {
+          config.extends = [
+            'security:openssf-scorecard',
+            'local>username/preset-repo',
+          ];
+          local.getPreset.mockResolvedValueOnce({
+            extends: ['security:openssf-scorecard'],
+          });
+          config.packageRules = [
+            {
+              extends: ['security:openssf-scorecard'],
+            },
+          ];
+
+          const {
+            visitedPresets: { unmerged },
+          } = await presets.resolveConfigPresets(
+            config,
+            undefined,
+            undefined,
+            undefined,
+            false,
+          );
+
+          expect(unmerged).toEqual(['security:openssf-scorecard']);
+        });
+      });
     });
   });
 
@@ -513,486 +1465,20 @@ describe('config/presets/index', () => {
     });
   });
 
-  describe('parsePreset', () => {
-    // default namespace
-    it('returns default package name', () => {
-      expect(presets.parsePreset(':base')).toEqual({
-        repo: 'default',
-        params: undefined,
-        presetName: 'base',
-        presetPath: undefined,
-        presetSource: 'internal',
-      });
-    });
-
-    it('parses github', () => {
-      expect(presets.parsePreset('github>some/repo')).toEqual({
-        repo: 'some/repo',
-        params: undefined,
-        presetName: 'default',
-        presetPath: undefined,
-        presetSource: 'github',
-      });
-    });
-
-    it('handles special chars', () => {
-      expect(presets.parsePreset('github>some/repo:foo+bar')).toEqual({
-        repo: 'some/repo',
-        params: undefined,
-        presetName: 'foo+bar',
-        presetPath: undefined,
-        presetSource: 'github',
-      });
-    });
-
-    it('parses github subfiles', () => {
-      expect(presets.parsePreset('github>some/repo:somefile')).toEqual({
-        repo: 'some/repo',
-        params: undefined,
-        presetName: 'somefile',
-        presetPath: undefined,
-        presetSource: 'github',
-      });
-    });
-
-    it('parses github subfiles with preset name', () => {
-      expect(
-        presets.parsePreset('github>some/repo:somefile/somepreset'),
-      ).toEqual({
-        repo: 'some/repo',
-        params: undefined,
-        presetName: 'somefile/somepreset',
-        presetPath: undefined,
-        presetSource: 'github',
-      });
-    });
-
-    it('parses github file with preset name with .json extension', () => {
-      expect(presets.parsePreset('github>some/repo:somefile.json')).toEqual({
-        repo: 'some/repo',
-        params: undefined,
-        presetName: 'somefile.json',
-        presetPath: undefined,
-        presetSource: 'github',
-        tag: undefined,
-      });
-    });
-
-    it('parses github file with preset name with .json5 extension', () => {
-      expect(presets.parsePreset('github>some/repo:somefile.json5')).toEqual({
-        repo: 'some/repo',
-        params: undefined,
-        presetName: 'somefile.json5',
-        presetPath: undefined,
-        presetSource: 'github',
-        tag: undefined,
-      });
-    });
-
-    it('parses github subfiles with preset name with .json extension', () => {
-      expect(
-        presets.parsePreset('github>some/repo:somefile.json/somepreset'),
-      ).toEqual({
-        repo: 'some/repo',
-        params: undefined,
-        presetName: 'somefile.json/somepreset',
-        presetPath: undefined,
-        presetSource: 'github',
-        tag: undefined,
-      });
-    });
-
-    it('parses github subfiles with preset name with .json5 extension', () => {
-      expect(
-        presets.parsePreset('github>some/repo:somefile.json5/somepreset'),
-      ).toEqual({
-        repo: 'some/repo',
-        params: undefined,
-        presetName: 'somefile.json5/somepreset',
-        presetPath: undefined,
-        presetSource: 'github',
-        tag: undefined,
-      });
-    });
-
-    it('parses github subfiles with preset and sub-preset name', () => {
-      expect(
-        presets.parsePreset(
-          'github>some/repo:somefile/somepreset/somesubpreset',
-        ),
-      ).toEqual({
-        repo: 'some/repo',
-        params: undefined,
-        presetName: 'somefile/somepreset/somesubpreset',
-        presetPath: undefined,
-        presetSource: 'github',
-      });
-    });
-
-    it('parses github subdirectories', () => {
-      expect(
-        presets.parsePreset('github>some/repo//somepath/somesubpath/somefile'),
-      ).toEqual({
-        repo: 'some/repo',
-        params: undefined,
-        presetName: 'somefile',
-        presetPath: 'somepath/somesubpath',
-        presetSource: 'github',
-      });
-    });
-
-    it('parses github toplevel file using subdirectory syntax', () => {
-      expect(presets.parsePreset('github>some/repo//somefile')).toEqual({
-        repo: 'some/repo',
-        params: undefined,
-        presetName: 'somefile',
-        presetPath: undefined,
-        presetSource: 'github',
-      });
-    });
-
-    it('parses gitlab', () => {
-      expect(presets.parsePreset('gitlab>some/repo')).toEqual({
-        repo: 'some/repo',
-        params: undefined,
-        presetName: 'default',
-        presetPath: undefined,
-        presetSource: 'gitlab',
-      });
-    });
-
-    it('parses gitea', () => {
-      expect(presets.parsePreset('gitea>some/repo')).toEqual({
-        repo: 'some/repo',
-        params: undefined,
-        presetName: 'default',
-        presetPath: undefined,
-        presetSource: 'gitea',
-      });
-    });
-
-    it('parses local', () => {
-      expect(presets.parsePreset('local>some/repo')).toEqual({
-        repo: 'some/repo',
-        params: undefined,
-        presetName: 'default',
-        presetPath: undefined,
-        presetSource: 'local',
-      });
-    });
-
-    it('parses local with spaces', () => {
-      expect(presets.parsePreset('local>A2B CD/A2B_Renovate')).toEqual({
-        repo: 'A2B CD/A2B_Renovate',
-        params: undefined,
-        presetName: 'default',
-        presetPath: undefined,
-        presetSource: 'local',
-      });
-    });
-
-    it('parses local with subdirectory', () => {
-      expect(
-        presets.parsePreset('local>some-group/some-repo//some-dir/some-file'),
-      ).toEqual({
-        repo: 'some-group/some-repo',
-        params: undefined,
-        presetName: 'some-file',
-        presetPath: 'some-dir',
-        presetSource: 'local',
-      });
-    });
-
-    it('parses local with spaces and subdirectory', () => {
-      expect(
-        presets.parsePreset('local>A2B CD/A2B_Renovate//some-dir/some-file'),
-      ).toEqual({
-        repo: 'A2B CD/A2B_Renovate',
-        params: undefined,
-        presetName: 'some-file',
-        presetPath: 'some-dir',
-        presetSource: 'local',
-      });
-    });
-
-    it('parses local with sub preset and tag', () => {
-      expect(
-        presets.parsePreset(
-          'local>some-group/some-repo:some-file/subpreset#1.2.3',
-        ),
-      ).toEqual({
-        repo: 'some-group/some-repo',
-        params: undefined,
-        presetName: 'some-file/subpreset',
-        presetPath: undefined,
-        presetSource: 'local',
-        tag: '1.2.3',
-      });
-    });
-
-    it('parses local with subdirectory and tag', () => {
-      expect(
-        presets.parsePreset(
-          'local>some-group/some-repo//some-dir/some-file#1.2.3',
-        ),
-      ).toEqual({
-        repo: 'some-group/some-repo',
-        params: undefined,
-        presetName: 'some-file',
-        presetPath: 'some-dir',
-        presetSource: 'local',
-        tag: '1.2.3',
-      });
-    });
-
-    it('parses local with subdirectory and branch/tag with a slash', () => {
-      expect(
-        presets.parsePreset(
-          'local>PROJECT/repository//path/to/preset#feature/branch',
-        ),
-      ).toEqual({
-        repo: 'PROJECT/repository',
-        params: undefined,
-        presetName: 'preset',
-        presetPath: 'path/to',
-        presetSource: 'local',
-        tag: 'feature/branch',
-      });
-    });
-
-    it('parses local with sub preset and branch/tag with a slash', () => {
-      expect(
-        presets.parsePreset(
-          'local>PROJECT/repository:preset/subpreset#feature/branch',
-        ),
-      ).toEqual({
-        repo: 'PROJECT/repository',
-        params: undefined,
-        presetName: 'preset/subpreset',
-        presetPath: undefined,
-        presetSource: 'local',
-        tag: 'feature/branch',
-      });
-    });
-
-    it('parses no prefix as local', () => {
-      expect(presets.parsePreset('some/repo')).toEqual({
-        repo: 'some/repo',
-        params: undefined,
-        presetName: 'default',
-        presetPath: undefined,
-        presetSource: 'local',
-      });
-    });
-
-    it('parses local Bitbucket user repo with preset name', () => {
-      expect(presets.parsePreset('local>~john_doe/repo//somefile')).toEqual({
-        repo: '~john_doe/repo',
-        params: undefined,
-        presetName: 'somefile',
-        presetPath: undefined,
-        presetSource: 'local',
-      });
-    });
-
-    it('parses local Bitbucket user repo', () => {
-      expect(presets.parsePreset('local>~john_doe/renovate-config')).toEqual({
-        repo: '~john_doe/renovate-config',
-        params: undefined,
-        presetName: 'default',
-        presetPath: undefined,
-        presetSource: 'local',
-      });
-    });
-
-    it('returns default package name with params', () => {
-      expect(presets.parsePreset(':group(packages/eslint, eslint)')).toEqual({
-        repo: 'default',
-        params: ['packages/eslint', 'eslint'],
-        presetName: 'group',
-        presetPath: undefined,
-        presetSource: 'internal',
-      });
-    });
-
-    // scoped namespace
-    it('returns simple scope', () => {
-      expect(presets.parsePreset('@somescope')).toEqual({
-        repo: '@somescope/renovate-config',
-        params: undefined,
-        presetName: 'default',
-        presetPath: undefined,
-        presetSource: 'npm',
-      });
-    });
-
-    it('returns simple scope and params', () => {
-      expect(presets.parsePreset('@somescope(param1)')).toEqual({
-        repo: '@somescope/renovate-config',
-        params: ['param1'],
-        presetName: 'default',
-        presetPath: undefined,
-        presetSource: 'npm',
-      });
-    });
-
-    it('returns scope with repo and default', () => {
-      expect(presets.parsePreset('@somescope/somepackagename')).toEqual({
-        repo: '@somescope/somepackagename',
-        params: undefined,
-        presetName: 'default',
-        presetPath: undefined,
-        presetSource: 'npm',
-      });
-    });
-
-    it('returns scope with repo and params and default', () => {
-      expect(
-        presets.parsePreset(
-          '@somescope/somepackagename(param1, param2, param3)',
-        ),
-      ).toEqual({
-        repo: '@somescope/somepackagename',
-        params: ['param1', 'param2', 'param3'],
-        presetName: 'default',
-        presetPath: undefined,
-        presetSource: 'npm',
-      });
-    });
-
-    it('returns scope with presetName', () => {
-      expect(presets.parsePreset('@somescope:somePresetName')).toEqual({
-        repo: '@somescope/renovate-config',
-        params: undefined,
-        presetName: 'somePresetName',
-        presetPath: undefined,
-        presetSource: 'npm',
-      });
-    });
-
-    it('returns scope with presetName and params', () => {
-      expect(presets.parsePreset('@somescope:somePresetName(param1)')).toEqual({
-        repo: '@somescope/renovate-config',
-        params: ['param1'],
-        presetName: 'somePresetName',
-        presetPath: undefined,
-        presetSource: 'npm',
-      });
-    });
-
-    it('returns scope with repo and presetName', () => {
-      expect(
-        presets.parsePreset('@somescope/somepackagename:somePresetName'),
-      ).toEqual({
-        repo: '@somescope/somepackagename',
-        params: undefined,
-        presetName: 'somePresetName',
-        presetPath: undefined,
-        presetSource: 'npm',
-      });
-    });
-
-    it('returns scope with repo and presetName and params', () => {
-      expect(
-        presets.parsePreset(
-          '@somescope/somepackagename:somePresetName(param1, param2)',
-        ),
-      ).toEqual({
-        repo: '@somescope/somepackagename',
-        params: ['param1', 'param2'],
-        presetName: 'somePresetName',
-        presetPath: undefined,
-        presetSource: 'npm',
-      });
-    });
-
-    // non-scoped namespace
-    it('returns non-scoped default', () => {
-      expect(presets.parsePreset('somepackage')).toEqual({
-        repo: 'renovate-config-somepackage',
-        params: undefined,
-        presetName: 'default',
-        presetPath: undefined,
-        presetSource: 'npm',
-      });
-    });
-
-    it('returns non-scoped package name', () => {
-      expect(presets.parsePreset('somepackage:webapp')).toEqual({
-        repo: 'renovate-config-somepackage',
-        params: undefined,
-        presetName: 'webapp',
-        presetPath: undefined,
-        presetSource: 'npm',
-      });
-    });
-
-    it('returns non-scoped package name full', () => {
-      expect(presets.parsePreset('renovate-config-somepackage:webapp')).toEqual(
-        {
-          repo: 'renovate-config-somepackage',
-          params: undefined,
-          presetName: 'webapp',
-          presetPath: undefined,
-          presetSource: 'npm',
-        },
-      );
-    });
-
-    it('returns non-scoped package name with params', () => {
-      expect(presets.parsePreset('somepackage:webapp(param1)')).toEqual({
-        repo: 'renovate-config-somepackage',
-        params: ['param1'],
-        presetName: 'webapp',
-        presetPath: undefined,
-        presetSource: 'npm',
-      });
-    });
-
-    it('parses HTTPS URLs', () => {
-      expect(
-        presets.parsePreset(
-          'https://my.server/gitea/renovate-config/raw/branch/main/default.json',
-        ),
-      ).toEqual({
-        repo: 'https://my.server/gitea/renovate-config/raw/branch/main/default.json',
-        params: undefined,
-        presetName: '',
-        presetPath: undefined,
-        presetSource: 'http',
-      });
-    });
-
-    it('parses HTTP URLs', () => {
-      expect(
-        presets.parsePreset(
-          'http://my.server/users/me/repos/renovate-presets/raw/default.json?at=refs%2Fheads%2Fmain',
-        ),
-      ).toEqual({
-        repo: 'http://my.server/users/me/repos/renovate-presets/raw/default.json?at=refs%2Fheads%2Fmain',
-        params: undefined,
-        presetName: '',
-        presetPath: undefined,
-        presetSource: 'http',
-      });
-    });
-
-    it('parses HTTPS URLs with parameters', () => {
-      expect(
-        presets.parsePreset(
-          'https://my.server/gitea/renovate-config/raw/branch/main/default.json(param1)',
-        ),
-      ).toEqual({
-        repo: 'https://my.server/gitea/renovate-config/raw/branch/main/default.json',
-        params: ['param1'],
-        presetName: '',
-        presetPath: undefined,
-        presetSource: 'http',
-      });
-    });
-  });
-
   describe('getPreset', () => {
+    beforeEach(() => {
+      memCache.init();
+    });
+
+    it('does not use cache for internal presets', async () => {
+      const memCacheGetSpy = vi.spyOn(memCache, 'get');
+      await expect(
+        presets.getPreset(':dependencyDashboard', {}),
+      ).resolves.toBeDefined();
+      expect(memCacheGetSpy).not.toHaveBeenCalled();
+      expect(packageCache.get).not.toHaveBeenCalled();
+    });
+
     it('handles removed presets with a migration', async () => {
       const res = await presets.getPreset(':base', {});
       expect(res).toEqual({
@@ -1002,8 +1488,16 @@ describe('config/presets/index', () => {
           ':ignoreModulesAndTests',
           'group:monorepos',
           'group:recommended',
+          'mergeConfidence:age-confidence-badges',
           'replacements:all',
           'workarounds:all',
+          'helpers:forgejoDigestChangelogs',
+          'helpers:giteaDigestChangelogs',
+          'helpers:githubDigestChangelogs',
+          'helpers:gitlabDigestChangelogs',
+          'helpers:goXPackagesChangelogLink',
+          'helpers:goXPackagesNameLink',
+          'helpers:renovateChangelog',
         ],
       });
     });
@@ -1062,9 +1556,23 @@ describe('config/presets/index', () => {
 
     it('gets linters', async () => {
       const res = await presets.getPreset('packages:linters', {});
-      expect(res).toMatchSnapshot();
-      expect(res.matchPackageNames).toHaveLength(3);
-      expect(res.extends).toHaveLength(5);
+      expect(res).toEqual({
+        description: ['All lint-related packages.'],
+        extends: [
+          'packages:emberTemplateLint',
+          'packages:eslint',
+          'packages:phpLinters',
+          'packages:stylelint',
+          'packages:tslint',
+        ],
+        matchPackageNames: [
+          '@oxlint/**',
+          'oxlint',
+          'prettier',
+          'remark-lint',
+          'standard',
+        ],
+      });
     });
 
     it('gets parameterised configs', async () => {
@@ -1106,6 +1614,33 @@ describe('config/presets/index', () => {
       });
     });
 
+    it('substitutes {{args}}', async () => {
+      local.getPreset.mockResolvedValueOnce({
+        customManagers: [
+          {
+            customType: 'regex',
+            managerFilePatterns: ['{{args}}'],
+            matchStrings: ['# renovate: ...'],
+          },
+        ],
+      });
+      const res = await presets.getPreset(
+        'local>customManager(**/{*.py, *.yaml})',
+        {},
+      );
+      expect(res).toEqual({
+        customManagers: [
+          {
+            customType: 'regex',
+            // The space after comma is obviously incorrect here.
+            // But the test must ensure that spaces aren't removed.
+            managerFilePatterns: ['**/{*.py, *.yaml}'],
+            matchStrings: ['# renovate: ...'],
+          },
+        ],
+      });
+    });
+
     it('handles 404 packages', async () => {
       let e: Error | undefined;
       try {
@@ -1114,9 +1649,9 @@ describe('config/presets/index', () => {
         e = err;
       }
       expect(e).toBeDefined();
-      expect(e!.validationSource).toMatchSnapshot();
-      expect(e!.validationError).toMatchSnapshot();
-      expect(e!.validationMessage).toMatchSnapshot();
+      expect(e!.validationSource).toBeUndefined();
+      expect(e!.validationError).toBeUndefined();
+      expect(e!.validationMessage).toBeUndefined();
     });
 
     it('handles no config', async () => {
@@ -1143,6 +1678,37 @@ describe('config/presets/index', () => {
       expect(e!.validationSource).toBeUndefined();
       expect(e!.validationError).toBeUndefined();
       expect(e!.validationMessage).toBeUndefined();
+    });
+
+    it('canonicalizes relative presets', async () => {
+      gitHub.getPreset.mockResolvedValueOnce({
+        extends: ['./system/registries', 'github>other/repo'],
+        packageRules: [{ extends: ['./rules/docker'] }],
+      });
+
+      const res = await presets.getPreset('github>some/repo#v1.0.0', {});
+
+      expect(res).toEqual({
+        extends: [
+          'github>some/repo//system/registries#v1.0.0',
+          'github>other/repo',
+        ],
+        packageRules: [{ extends: ['github>some/repo//rules/docker#v1.0.0'] }],
+      });
+    });
+
+    it('leaves relative presets of npm presets unchanged', async () => {
+      npm.getPreset.mockResolvedValueOnce({
+        extends: ['./system/registries'],
+        ignorePresets: ['./optional'],
+      });
+
+      const res = await presets.getPreset('somepackage:webapp', {});
+
+      expect(res).toEqual({
+        extends: ['./system/registries'],
+        ignorePresets: ['./optional'],
+      });
     });
 
     it('handles preset not found', async () => {

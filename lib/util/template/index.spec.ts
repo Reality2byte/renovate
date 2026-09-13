@@ -1,11 +1,11 @@
-import { mocked } from '../../../test/util';
-import { getOptions } from '../../config/options';
-import * as _execUtils from '../exec/utils';
-import * as template from '.';
+import { getOptions } from '../../config/options/index.ts';
+import { pkg } from '../../expose.ts';
+import * as _execUtils from '../exec/utils.ts';
+import * as template from './index.ts';
 
-jest.mock('../exec/utils');
+vi.mock('../exec/utils.ts');
 
-const execUtils = mocked(_execUtils);
+const execUtils = vi.mocked(_execUtils);
 
 describe('util/template/index', () => {
   beforeEach(() => {
@@ -41,12 +41,41 @@ describe('util/template/index', () => {
     expect(output).toBe('github token = ""');
   });
 
+  it('exposes renovateVersion to every template, without needing to pass it explicitly', () => {
+    const output = template.compile('{{renovateVersion}}', {});
+    expect(output).toBe(pkg.version);
+  });
+
   it('containsString', () => {
     const userTemplate =
       "{{#if (containsString platform 'git')}}True{{else}}False{{/if}}";
     const input = { platform: 'github' };
     const output = template.compile(userTemplate, input, false);
     expect(output).toContain('True');
+  });
+
+  it('unless with equals - 1', () => {
+    const userTemplate =
+      '{{{depNameLinked}}}{{#if newName}}{{#unless (equals depName newName)}} -> {{{newNameLinked}}}{{/unless}}{{/if}}';
+    const input = {
+      depName: 'nodemon',
+      depNameLinked: 'nodemonLinked',
+      newName: 'nodemon-new',
+      newNameLinked: 'nodemonNewLinked',
+    };
+    const output = template.compile(userTemplate, input, false);
+    expect(output).toBe('nodemonLinked -> nodemonNewLinked');
+  });
+
+  it('unless with equals - 2', () => {
+    const userTemplate =
+      '{{{depNameLinked}}}{{#if newName}}{{#unless (equals depName newName)}} -> {{{newNameLinked}}}{{/unless}}{{/if}}';
+    const input = {
+      depName: 'nodemon',
+      depNameLinked: 'nodemonLinked',
+    };
+    const output = template.compile(userTemplate, input, false);
+    expect(output).toBe('nodemonLinked');
   });
 
   it('not containsString', () => {
@@ -89,11 +118,11 @@ describe('util/template/index', () => {
     expect(output).toContain('False');
   });
 
-  it('string to pretty JSON ', () => {
+  it('string to pretty JSON', () => {
     const userTemplate =
       '{{{ stringToPrettyJSON \'{"some":{"fancy":"json"}}\'}}}';
-    const output = template.compile(userTemplate, undefined as never);
-    expect(output).toMatchSnapshot();
+    const output = template.compile(userTemplate, {});
+    expect(output).toBe('{\n  "some": {\n    "fancy": "json"\n  }\n}');
   });
 
   it('to JSON', () => {
@@ -125,8 +154,10 @@ describe('util/template/index', () => {
 
   it('to Object passing illegal number of elements', () => {
     const userTemplate = "{{{ toJSON (toObject 'foo') }}}";
-    const outputFunc = () => template.compile(userTemplate, {});
-    expect(outputFunc).toThrow();
+    function outputFunc() {
+      return template.compile(userTemplate, {});
+    }
+    expect(outputFunc).toThrow('Must contain an even number of elements');
   });
 
   it('build complex json', () => {
@@ -148,9 +179,26 @@ describe('util/template/index', () => {
     });
   });
 
+  it.each`
+    input                      | expected
+    ${'foo'}                   | ${'foo'}
+    ${'>='}                    | ${'>='}
+    ${'<~'}                    | ${'<~'}
+    ${'<= {{ newVersion }}'}   | ${'<= 1.6.0'}
+    ${'<= {{{ newVersion }}}'} | ${'<= 1.6.0'}
+    ${'& {{ newValue}}'}       | ${'& >= 1.6.0'}
+  `(
+    'do not escape common range symbols: $input -> $output',
+    ({ input, expected }) => {
+      expect(
+        template.compile(input, { newVersion: '1.6.0', newValue: '>= 1.6.0' }),
+      ).toBe(expected);
+    },
+  );
+
   it('lowercase', () => {
     const userTemplate = "{{{ lowercase 'FOO'}}}";
-    const output = template.compile(userTemplate, undefined as never);
+    const output = template.compile(userTemplate, {});
     expect(output).toBe('foo');
   });
 
@@ -189,6 +237,19 @@ describe('util/template/index', () => {
       depName: 'some.github.com/dep',
     });
     expect(output).toBe('ghc/dep');
+  });
+
+  it('add', () => {
+    const userTemplate = '{{add 1 2}}';
+    const output = template.compile(userTemplate, {});
+    expect(output).toBe('3');
+  });
+
+  it('add - throws if inputs are invalid', () => {
+    const userTemplate = '{{add undefined null}}';
+    expect(() => template.compile(userTemplate, {})).toThrow(
+      'add: inputs are not valid',
+    );
   });
 
   describe('proxyCompileInput', () => {
@@ -257,7 +318,7 @@ describe('util/template/index', () => {
     it('encodes values', () => {
       const output = template.compile(
         '{{{encodeURIComponent "@fsouza/prettierd"}}}',
-        undefined as never,
+        {},
       );
       expect(output).toBe('%40fsouza%2Fprettierd');
     });
@@ -265,7 +326,7 @@ describe('util/template/index', () => {
     it('decodes values', () => {
       const output = template.compile(
         '{{{decodeURIComponent "%40fsouza/prettierd"}}}',
-        undefined as never,
+        {},
       );
       expect(output).toBe('@fsouza/prettierd');
     });
@@ -275,7 +336,7 @@ describe('util/template/index', () => {
     it('encodes values', () => {
       const output = template.compile(
         '{{{encodeBase64 "@fsouza/prettierd"}}}',
-        undefined as never,
+        {},
       );
       expect(output).toBe('QGZzb3V6YS9wcmV0dGllcmQ=');
     });
@@ -289,6 +350,30 @@ describe('util/template/index', () => {
 
     it('handles undefined values gracefully', () => {
       const output = template.compile('{{{encodeBase64 packageName}}}', {
+        packageName: undefined,
+      });
+      expect(output).toBe('');
+    });
+  });
+
+  describe('base64 decoding', () => {
+    it('decode values', () => {
+      const output = template.compile(
+        '{{{decodeBase64 "QGZzb3V6YS9wcmV0dGllcmQ="}}}',
+        {},
+      );
+      expect(output).toBe('@fsouza/prettierd');
+    });
+
+    it('handles null values gracefully', () => {
+      const output = template.compile('{{{decodeBase64 packageName}}}', {
+        packageName: null,
+      });
+      expect(output).toBe('');
+    });
+
+    it('handles undefined values gracefully', () => {
+      const output = template.compile('{{{decodeBase64 packageName}}}', {
         packageName: undefined,
       });
       expect(output).toBe('');

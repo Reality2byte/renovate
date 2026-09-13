@@ -1,6 +1,5 @@
-import { Fixtures } from '../../../../test/fixtures';
-
-import { extractPackageFile } from '.';
+import { Fixtures } from '~test/fixtures.ts';
+import { extractPackageFile } from './index.ts';
 
 const droneciRegistryAlias = Fixtures.get('.drone2.yml');
 
@@ -12,8 +11,77 @@ describe('modules/manager/droneci/extract', () => {
 
     it('extracts multiple image lines', () => {
       const res = extractPackageFile(Fixtures.get('.drone.yml'), '', {});
-      expect(res?.deps).toMatchSnapshot();
-      expect(res?.deps).toHaveLength(6);
+      expect(res?.deps).toEqual([
+        {
+          autoReplaceStringTemplate:
+            '{{depName}}{{#if newValue}}:{{newValue}}{{/if}}{{#if newDigest}}@{{newDigest}}{{/if}}',
+          currentValue: '1.8.1-alpine',
+          datasource: 'docker',
+          depName: 'elixir',
+          depType: 'docker',
+          packageName: 'elixir',
+          replaceString: 'elixir:1.8.1-alpine',
+        },
+        {
+          autoReplaceStringTemplate:
+            '{{packageName}}{{#if newValue}}:{{newValue}}{{/if}}{{#if newDigest}}@{{newDigest}}{{/if}}',
+          currentDigest:
+            'sha256:36adc17e9cceab32179d3314da9cb9c737ffb11f0de4e688f407ad6d9ca32201',
+          currentValue: '10.0.0',
+          datasource: 'docker',
+          depName: 'node',
+          depType: 'docker',
+          packageName: 'amd64/node',
+          replaceString:
+            'amd64/node:10.0.0@sha256:36adc17e9cceab32179d3314da9cb9c737ffb11f0de4e688f407ad6d9ca32201',
+        },
+        {
+          autoReplaceStringTemplate:
+            '{{depName}}{{#if newValue}}:{{newValue}}{{/if}}{{#if newDigest}}@{{newDigest}}{{/if}}',
+          currentValue: '5.7.24',
+          datasource: 'docker',
+          depName: 'mysql',
+          depType: 'docker',
+          packageName: 'mysql',
+          replaceString: 'mysql:5.7.24',
+        },
+        {
+          autoReplaceStringTemplate:
+            '{{depName}}{{#if newValue}}:{{newValue}}{{/if}}{{#if newDigest}}@{{newDigest}}{{/if}}',
+          currentValue: 'alpine',
+          datasource: 'docker',
+          depName: 'redis',
+          depType: 'docker',
+          packageName: 'redis',
+          replaceString: 'redis:alpine',
+        },
+        {
+          autoReplaceStringTemplate:
+            '"{{packageName}}{{#if newValue}}:{{newValue}}{{/if}}{{#if newDigest}}\\\n            @{{newDigest}}{{/if}}"',
+          currentDigest:
+            'sha256:36adc17e9cceab32179d3314da9cb9c737ffb11f0de4e688f407ad6d9ca32201',
+          currentValue: '10.0.0',
+          datasource: 'docker',
+          depName: 'node',
+          depType: 'docker',
+          packageName: 'amd64/node',
+          replaceString:
+            '"amd64/node:10.0.0\\\n            @sha256:36adc17e9cceab32179d3314da9cb9c737ffb11f0de4e688f407ad6d9ca32201"',
+        },
+        {
+          autoReplaceStringTemplate:
+            '"{{packageName}}{{#if newValue}}:{{newValue}}{{/if}}{{#if newDigest}}\\\n            @{{newDigest}}{{/if}}"',
+          currentDigest:
+            'sha256:36adc17e9cceab32179d3314da9cb9c737ffb11f0de4e688f407ad6d9ca32201',
+          currentValue: '10.0.0',
+          datasource: 'docker',
+          depName: 'node',
+          depType: 'docker',
+          packageName: 'amd64/node',
+          replaceString:
+            "'amd64/node\\\n            :10.0.0\\\n            @sha256:36adc17e9cceab32179d3314da9cb9c737ffb11f0de4e688f407ad6d9ca32201'",
+        },
+      ]);
     });
   });
 
@@ -31,7 +99,8 @@ describe('modules/manager/droneci/extract', () => {
           currentDigest: undefined,
           currentValue: '1.8.1-alpine',
           datasource: 'docker',
-          depName: 'my-quay-mirror.registry.com/elixir',
+          depName: 'quay.io/elixir',
+          packageName: 'my-quay-mirror.registry.com/elixir',
           replaceString: 'quay.io/elixir:1.8.1-alpine',
           depType: 'docker',
         },
@@ -54,6 +123,7 @@ describe('modules/manager/droneci/extract', () => {
           currentValue: '1.8.1-alpine',
           datasource: 'docker',
           depName: 'quay.io/elixir',
+          packageName: 'quay.io/elixir',
           replaceString: 'quay.io/elixir:1.8.1-alpine',
           depType: 'docker',
         },
@@ -76,7 +146,8 @@ describe('modules/manager/droneci/extract', () => {
           currentDigest: undefined,
           currentValue: '1.8.1-alpine',
           datasource: 'docker',
-          depName: 'my-quay-mirror.registry.com/elixir',
+          depName: 'quay.io/elixir',
+          packageName: 'my-quay-mirror.registry.com/elixir',
           replaceString: 'quay.io/elixir:1.8.1-alpine',
           depType: 'docker',
         },

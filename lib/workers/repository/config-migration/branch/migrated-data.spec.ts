@@ -1,24 +1,34 @@
 import detectIndent from 'detect-indent';
-import { Fixtures } from '../../../../../test/fixtures';
-import { mockedFunction, scm } from '../../../../../test/util';
+import { weave } from 'jsonc-weaver';
+import { Fixtures } from '~test/fixtures.ts';
+import { platform, scm } from '~test/util.ts';
+import { migrateConfig } from '../../../../config/migration.ts';
+import { logger } from '../../../../logger/index.ts';
+import { readLocalFile } from '../../../../util/fs/index.ts';
+import { EditorConfig } from '../../../../util/json-writer/index.ts';
+import { detectRepoFileConfig } from '../../init/merge.ts';
+import {
+  MigratedDataFactory,
+  applyPrettierFormatting,
+} from './migrated-data.ts';
 
-import { migrateConfig } from '../../../../config/migration';
-import { logger } from '../../../../logger';
-import { readLocalFile } from '../../../../util/fs';
-import { EditorConfig } from '../../../../util/json-writer';
-import { detectRepoFileConfig } from '../../init/merge';
-import { MigratedDataFactory, applyPrettierFormatting } from './migrated-data';
-
-jest.mock('../../../../config/migration');
-jest.mock('../../../../util/git');
-jest.mock('../../../../util/fs');
-jest.mock('../../../../util/json-writer');
-jest.mock('../../init/merge');
-jest.mock('detect-indent');
+vi.mock('../../../../config/migration.ts');
+vi.mock('../../../../util/fs/index.ts');
+vi.mock('../../../../util/json-writer/index.ts');
+vi.mock('../../init/merge.ts');
+vi.mock('detect-indent');
+vi.mock('jsonc-weaver', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('jsonc-weaver')>();
+  return {
+    ...actual,
+    weave: vi.fn(actual.weave),
+  };
+});
 
 const migratedData = Fixtures.getJson('./migrated-data.json');
 const migratedDataJson5 = Fixtures.getJson('./migrated-data.json5');
-const migratedConfigObj = Fixtures.getJson('./migrated.json');
+const migratedConfigObj = Fixtures.getJsonc('./migrated.json');
+const renovateJson = Fixtures.get('./renovate.json');
 const formattedMigratedData = Fixtures.getJson(
   './migrated-data-formatted.json',
 );
@@ -26,22 +36,23 @@ const formattedMigratedData = Fixtures.getJson(
 describe('workers/repository/config-migration/branch/migrated-data', () => {
   describe('MigratedDataFactory.getAsync', () => {
     beforeEach(() => {
-      mockedFunction(detectIndent).mockReturnValue({
+      vi.mocked(detectIndent).mockReturnValue({
         type: 'space',
         amount: 2,
         indent: '  ',
       });
-      mockedFunction(detectRepoFileConfig).mockResolvedValue({
+      vi.mocked(detectRepoFileConfig).mockResolvedValue({
         configFileName: 'renovate.json',
       });
-      mockedFunction(migrateConfig).mockReturnValue({
+      vi.mocked(migrateConfig).mockReturnValue({
         isMigrated: true,
         migratedConfig: migratedConfigObj,
       });
+      platform.getRawFile.mockResolvedValue(renovateJson);
     });
 
     it('Calls getAsync a first when migration not needed', async () => {
-      mockedFunction(migrateConfig).mockReturnValueOnce({
+      vi.mocked(migrateConfig).mockReturnValueOnce({
         isMigrated: false,
         migratedConfig: {},
       });
@@ -88,7 +99,7 @@ describe('workers/repository/config-migration/branch/migrated-data', () => {
         // TODO: incompatible types (#22198)
         indent: null as never,
       };
-      mockedFunction(detectIndent).mockReturnValueOnce(indent);
+      vi.mocked(detectIndent).mockReturnValueOnce(indent);
       MigratedDataFactory.reset();
       await expect(MigratedDataFactory.getAsync()).resolves.toEqual({
         ...migratedData,
@@ -97,7 +108,7 @@ describe('workers/repository/config-migration/branch/migrated-data', () => {
     });
 
     it('Migrate a JSON5 config file', async () => {
-      mockedFunction(detectRepoFileConfig).mockResolvedValueOnce({
+      vi.mocked(detectRepoFileConfig).mockResolvedValueOnce({
         configFileName: 'renovate.json5',
       });
       MigratedDataFactory.reset();
@@ -106,11 +117,42 @@ describe('workers/repository/config-migration/branch/migrated-data', () => {
       );
     });
 
+    it('Falls back to JSON.stringify when weave fails', async () => {
+      const err = new Error('weave error');
+      vi.mocked(weave).mockImplementationOnce(() => {
+        throw err;
+      });
+      MigratedDataFactory.reset();
+
+      const res = await MigratedDataFactory.getAsync();
+
+      expect(logger.warn).toHaveBeenCalledWith(
+        { err },
+        'Error weaving JSONC to preserve comments, falling back to JSON.stringify',
+      );
+      expect(res?.content).toBe(
+        `${JSON.stringify(migratedConfigObj, undefined, 2)}\n`,
+      );
+    });
+
+    it('Uses JSON.stringify when raw is null', async () => {
+      platform.getRawFile.mockResolvedValueOnce(null);
+      MigratedDataFactory.reset();
+
+      const res = await MigratedDataFactory.getAsync();
+
+      expect(weave).not.toHaveBeenCalled();
+      expect(res?.content).toBe(
+        `${JSON.stringify(migratedConfigObj, undefined, 2)}\n`,
+      );
+    });
+
     it('Returns nothing due to detectRepoFileConfig throwing', async () => {
       const err = new Error('error-message');
-      mockedFunction(detectRepoFileConfig).mockRejectedValueOnce(err);
+      vi.mocked(detectRepoFileConfig).mockRejectedValueOnce(err);
       MigratedDataFactory.reset();
       await expect(MigratedDataFactory.getAsync()).resolves.toBeNull();
+
       expect(logger.debug).toHaveBeenCalledWith(
         { err },
         'MigratedDataFactory.getAsync() Error initializing renovate MigratedData',
@@ -120,15 +162,15 @@ describe('workers/repository/config-migration/branch/migrated-data', () => {
 
   describe('MigratedDataFactory.applyPrettierFormatting', () => {
     beforeAll(() => {
-      mockedFunction(detectIndent).mockReturnValueOnce({
+      vi.mocked(detectIndent).mockReturnValueOnce({
         type: 'space',
         amount: 2,
         indent: '  ',
       });
-      mockedFunction(detectRepoFileConfig).mockResolvedValueOnce({
+      vi.mocked(detectRepoFileConfig).mockResolvedValueOnce({
         configFileName: 'renovate.json',
       });
-      mockedFunction(migrateConfig).mockReturnValueOnce({
+      vi.mocked(migrateConfig).mockReturnValueOnce({
         isMigrated: true,
         migratedConfig: migratedConfigObj,
       });
@@ -136,12 +178,12 @@ describe('workers/repository/config-migration/branch/migrated-data', () => {
     });
 
     beforeEach(() => {
-      mockedFunction(scm.getFileList).mockResolvedValue([]);
+      vi.mocked(scm.getFileList).mockResolvedValue([]);
     });
 
     it('does not format when no prettier config is present', async () => {
       const { content: unformatted } = migratedData;
-      mockedFunction(readLocalFile).mockResolvedValueOnce(null);
+      vi.mocked(readLocalFile).mockResolvedValueOnce(null);
       await MigratedDataFactory.getAsync();
       await expect(
         MigratedDataFactory.applyPrettierFormatting(migratedData),
@@ -150,7 +192,7 @@ describe('workers/repository/config-migration/branch/migrated-data', () => {
 
     it('does not format when failing to fetch package.json file', async () => {
       const { content: unformatted } = migratedData;
-      mockedFunction(readLocalFile).mockRejectedValueOnce(null);
+      vi.mocked(readLocalFile).mockRejectedValueOnce(null);
       await MigratedDataFactory.getAsync();
       await expect(
         MigratedDataFactory.applyPrettierFormatting(migratedData),
@@ -159,7 +201,7 @@ describe('workers/repository/config-migration/branch/migrated-data', () => {
 
     it('does not format when there is an invalid package.json file', async () => {
       const { content: unformatted } = migratedData;
-      mockedFunction(readLocalFile).mockResolvedValueOnce('invalid json');
+      vi.mocked(readLocalFile).mockResolvedValueOnce('invalid json');
       await MigratedDataFactory.getAsync();
       await expect(
         MigratedDataFactory.applyPrettierFormatting(migratedData),
@@ -168,19 +210,30 @@ describe('workers/repository/config-migration/branch/migrated-data', () => {
 
     it('formats when prettier config file is found', async () => {
       const formatted = formattedMigratedData.content;
-      mockedFunction(scm.getFileList).mockResolvedValue(['.prettierrc']);
+      vi.mocked(scm.getFileList).mockResolvedValue(['.prettierrc']);
       await MigratedDataFactory.getAsync();
       await expect(
         MigratedDataFactory.applyPrettierFormatting(migratedData),
       ).resolves.toEqual(formatted);
     });
 
+    it('formats without prettier if in .renovaterc', async () => {
+      vi.mocked(scm.getFileList).mockResolvedValue(['.prettierrc']);
+      await MigratedDataFactory.getAsync();
+      await expect(
+        MigratedDataFactory.applyPrettierFormatting({
+          ...migratedData,
+          filename: '.renovaterc',
+        }),
+      ).resolves.toEqual(migratedData.content);
+    });
+
     it('formats when finds prettier config inside the package.json file', async () => {
       const formatted = formattedMigratedData.content;
-      mockedFunction(detectRepoFileConfig).mockResolvedValueOnce({
+      vi.mocked(detectRepoFileConfig).mockResolvedValueOnce({
         configFileName: 'renovate.json',
       });
-      mockedFunction(readLocalFile).mockResolvedValueOnce('{"prettier":{}}');
+      vi.mocked(readLocalFile).mockResolvedValueOnce('{"prettier":{}}');
       await MigratedDataFactory.getAsync();
       await expect(
         MigratedDataFactory.applyPrettierFormatting(migratedData),
@@ -188,11 +241,11 @@ describe('workers/repository/config-migration/branch/migrated-data', () => {
     });
 
     it('formats with default 2 spaces', async () => {
-      mockedFunction(scm.getFileList).mockResolvedValue([
+      vi.mocked(scm.getFileList).mockResolvedValue([
         '.prettierrc',
         '.editorconfig',
       ]);
-      mockedFunction(EditorConfig.getCodeFormat).mockResolvedValueOnce({
+      vi.mocked(EditorConfig.getCodeFormat).mockResolvedValueOnce({
         maxLineLength: 80,
       });
       await expect(
@@ -204,11 +257,11 @@ describe('workers/repository/config-migration/branch/migrated-data', () => {
     });
 
     it('formats with printWith=Infinity', async () => {
-      mockedFunction(scm.getFileList).mockResolvedValue([
+      vi.mocked(scm.getFileList).mockResolvedValue([
         '.prettierrc',
         '.editorconfig',
       ]);
-      mockedFunction(EditorConfig.getCodeFormat).mockResolvedValueOnce({
+      vi.mocked(EditorConfig.getCodeFormat).mockResolvedValueOnce({
         maxLineLength: 'off',
       });
       await expect(

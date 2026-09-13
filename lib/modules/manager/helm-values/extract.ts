@@ -1,29 +1,26 @@
-import { logger } from '../../../logger';
-import { parseYaml } from '../../../util/yaml';
-import { id as dockerVersioning } from '../../versioning/docker';
-import { getDep } from '../dockerfile/extract';
+import { isObject } from '@sindresorhus/is';
+import { logger } from '../../../logger/index.ts';
+import { parseYaml } from '../../../util/yaml.ts';
+import { id as dockerVersioning } from '../../versioning/docker/index.ts';
+import { getDep } from '../dockerfile/extract.ts';
 import type {
   ExtractConfig,
   PackageDependency,
   PackageFileContent,
-} from '../types';
-import type { HelmDockerImageDependency } from './types';
+} from '../types.ts';
+import type { HelmDockerImageDependency } from './types.ts';
 import {
   matchesHelmValuesDockerHeuristic,
   matchesHelmValuesInlineImage,
-} from './util';
+} from './util.ts';
 
 function getHelmDep(
   registry: string,
   repository: string,
   tag: string,
-  config: ExtractConfig,
+  registryAliases: Record<string, string> | undefined,
 ): PackageDependency {
-  const dep = getDep(
-    `${registry}${repository}:${tag}`,
-    false,
-    config.registryAliases,
-  );
+  const dep = getDep(`${registry}${repository}:${tag}`, false, registryAliases);
   dep.replaceString = tag;
   dep.versioning = dockerVersioning;
   dep.autoReplaceStringTemplate =
@@ -36,12 +33,18 @@ function getHelmDep(
  *
  * @param parsedContent
  */
-function findDependencies(
+export function findDependencies(
   parsedContent: Record<string, unknown> | HelmDockerImageDependency,
-  packageDependencies: Array<PackageDependency>,
-  config: ExtractConfig,
-): Array<PackageDependency> {
-  if (!parsedContent || typeof parsedContent !== 'object') {
+  registryAliases: Record<string, string> | undefined,
+): PackageDependency[] {
+  return findDependenciesInternal(parsedContent, [], registryAliases);
+}
+export function findDependenciesInternal(
+  parsedContent: Record<string, unknown> | HelmDockerImageDependency,
+  packageDependencies: PackageDependency[],
+  registryAliases: Record<string, string> | undefined,
+): PackageDependency[] {
+  if (!isObject(parsedContent)) {
     return packageDependencies;
   }
 
@@ -53,14 +56,16 @@ function findDependencies(
       registry = registry ? `${registry}/` : '';
       const repository = String(currentItem.repository);
       const tag = `${currentItem.tag ?? currentItem.version}`;
-      packageDependencies.push(getHelmDep(registry, repository, tag, config));
+      packageDependencies.push(
+        getHelmDep(registry, repository, tag, registryAliases),
+      );
     } else if (matchesHelmValuesInlineImage(key, value)) {
-      packageDependencies.push(getDep(value, true, config.registryAliases));
+      packageDependencies.push(getDep(value, true, registryAliases));
     } else {
-      findDependencies(
+      findDependenciesInternal(
         value as Record<string, unknown>,
         packageDependencies,
-        config,
+        registryAliases,
       );
     }
   });
@@ -83,10 +88,10 @@ export function extractPackageFile(
     return null;
   }
   try {
-    const deps: PackageDependency<Record<string, any>>[] = [];
+    const deps: PackageDependency[] = [];
 
     for (const con of parsedContent) {
-      deps.push(...findDependencies(con, [], config));
+      deps.push(...findDependencies(con, config.registryAliases));
     }
 
     if (deps.length) {

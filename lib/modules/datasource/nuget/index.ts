@@ -1,10 +1,11 @@
-import { logger } from '../../../logger';
-import * as nugetVersioning from '../../versioning/nuget';
-import { Datasource } from '../datasource';
-import type { GetReleasesConfig, ReleaseResult } from '../types';
-import { parseRegistryUrl } from './common';
-import { NugetV2Api } from './v2';
-import { NugetV3Api } from './v3';
+import { logger } from '../../../logger/index.ts';
+import * as nugetVersioning from '../../versioning/nuget/index.ts';
+import { Datasource } from '../datasource.ts';
+import type { GetReleasesConfig, ReleaseResult } from '../types.ts';
+import { isCrossOriginPaginationAllowed } from '../util.ts';
+import { parseRegistryUrl } from './common.ts';
+import { NugetV2Api } from './v2.ts';
+import { NugetV3Api } from './v3.ts';
 
 // https://api.nuget.org/v3/index.json is a default official nuget feed
 export const nugetOrg = 'https://api.nuget.org/v3/index.json';
@@ -38,13 +39,18 @@ export class NugetDatasource extends Datasource {
     registryUrl,
   }: GetReleasesConfig): Promise<ReleaseResult | null> {
     logger.trace(`nuget.getReleases(${packageName})`);
-    // istanbul ignore if
+    /* v8 ignore next -- should never happen */
     if (!registryUrl) {
       return null;
     }
     const { feedUrl, protocolVersion } = parseRegistryUrl(registryUrl);
     if (protocolVersion === 2) {
-      return this.v2Api.getReleases(this.http, feedUrl, packageName);
+      return this.v2Api.getReleases(
+        this.http,
+        feedUrl,
+        packageName,
+        isCrossOriginPaginationAllowed(NugetDatasource.id),
+      );
     }
     if (protocolVersion === 3) {
       const queryUrl = await this.v3Api.getResourceUrl(this.http, feedUrl);

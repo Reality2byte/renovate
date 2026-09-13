@@ -1,23 +1,30 @@
 import type { S3Client } from '@aws-sdk/client-s3';
-import { mockDeep } from 'jest-mock-extended';
-import { s3 } from '../../test/s3';
-import { fs, logger } from '../../test/util';
-import type { RenovateConfig } from '../config/types';
-import type { PackageFile } from '../modules/manager/types';
-import type { BranchCache } from '../util/cache/repository/types';
+import { mock, mockDeep } from 'vitest-mock-extended';
+import { s3 } from '~test/s3.ts';
+import { fs, logger } from '~test/util.ts';
+import type { RenovateConfig } from '../config/types.ts';
+import type { PackageFile } from '../modules/manager/types.ts';
+import type { BranchCache } from '../util/cache/repository/types.ts';
 import {
   addBranchStats,
   addExtractionStats,
+  addLibYears,
   exportStats,
   finalizeReport,
   getReport,
-} from './reporting';
+  resetReport,
+} from './reporting.ts';
+import type { Report } from './types.ts';
 
-jest.mock('../util/fs', () => mockDeep());
-jest.mock('../util/s3', () => mockDeep());
-jest.mock('../logger', () => mockDeep());
+vi.mock('../util/fs/index.ts', () => mockDeep());
+vi.mock('../util/s3.ts', () => mockDeep());
+vi.mock('../logger/index.ts', () => mockDeep());
 
 describe('instrumentation/reporting', () => {
+  beforeEach(() => {
+    resetReport();
+  });
+
   const branchInformation: Partial<BranchCache>[] = [
     {
       branchName: 'a-branch-name',
@@ -53,7 +60,7 @@ describe('instrumentation/reporting', () => {
     ],
   };
 
-  const expectedReport = {
+  const expectedReport: Report = {
     problems: [],
     repositories: {
       'myOrg/myRepo': {
@@ -71,6 +78,10 @@ describe('instrumentation/reporting', () => {
       branchList: [],
       branches: [],
       packageFiles: {},
+    });
+    addLibYears(config, {
+      libYears: { managers: {}, total: 0 },
+      dependencyStatus: { outdated: 0, total: 0 },
     });
 
     expect(getReport()).toEqual({
@@ -101,6 +112,7 @@ describe('instrumentation/reporting', () => {
     addExtractionStats(config, { branchList: [], branches: [], packageFiles });
 
     await exportStats(config);
+
     expect(logger.logger.info).toHaveBeenCalledWith(
       { report: expectedReport },
       'Printing report',
@@ -118,16 +130,33 @@ describe('instrumentation/reporting', () => {
     addExtractionStats(config, { branchList: [], branches: [], packageFiles });
 
     await exportStats(config);
-    expect(fs.writeSystemFile).toHaveBeenCalledWith(
+    expect(fs.writeSystemFile).toHaveBeenCalledExactlyOnceWith(
       config.reportPath,
       JSON.stringify(expectedReport),
     );
   });
 
+  it('write formatted report if reportFormatting is enabled', async () => {
+    const config: RenovateConfig = {
+      repository: 'myOrg/myRepo',
+      reportType: 'file',
+      reportPath: './report.json',
+      reportFormatting: true,
+    };
+
+    addBranchStats(config, branchInformation);
+    addExtractionStats(config, { branchList: [], branches: [], packageFiles });
+
+    await exportStats(config);
+
+    const [[, writtenContent]] = fs.writeSystemFile.mock.calls;
+    expect(JSON.parse(writtenContent as string)).toEqual(expectedReport);
+    expect(writtenContent).not.toBe(JSON.stringify(expectedReport));
+  });
+
   it('send report to an S3 bucket if reportType is s3', async () => {
-    const mockClient = mockDeep<S3Client>();
+    const mockClient = mock<S3Client>();
     s3.parseS3Url.mockReturnValue({ Bucket: 'bucket-name', Key: 'key-name' });
-    // @ts-expect-error TS2589
     s3.getS3Client.mockReturnValue(mockClient);
 
     const config: RenovateConfig = {
@@ -160,6 +189,7 @@ describe('instrumentation/reporting', () => {
     addExtractionStats(config, { branchList: [], branches: [], packageFiles });
 
     await exportStats(config);
+
     expect(logger.logger.warn).toHaveBeenCalledWith(
       { reportPath: config.reportPath },
       'Failed to parse s3 URL',
@@ -178,6 +208,19 @@ describe('instrumentation/reporting', () => {
 
     fs.writeSystemFile.mockRejectedValue(null);
     await expect(exportStats(config)).toResolve();
+  });
+
+  it('reports nothing when reportType=null', async () => {
+    const config: RenovateConfig = {
+      repository: 'myOrg/myRepo',
+      reportType: null,
+    };
+
+    await exportStats(config);
+
+    expect(logger.logger.debug).not.toHaveBeenCalled();
+    expect(logger.logger.info).not.toHaveBeenCalled();
+    expect(logger.logger.warn).not.toHaveBeenCalled();
   });
 
   it('should add problems to report', () => {
@@ -223,5 +266,42 @@ describe('instrumentation/reporting', () => {
     finalizeReport();
 
     expect(getReport()).toEqual(expectedReport);
+  });
+
+  it('should handle libyears addition', () => {
+    const config: RenovateConfig = {
+      repository: 'myOrg/myRepo',
+      reportType: 'logging',
+    };
+
+    addBranchStats(config, branchInformation);
+    addExtractionStats(config, { branchList: [], branches: [], packageFiles });
+    addLibYears(config, {
+      libYears: { managers: { npm: 1 }, total: 1 },
+      dependencyStatus: { outdated: 1, total: 1 },
+    });
+
+    expect(getReport()).toEqual({
+      problems: [],
+      repositories: {
+        'myOrg/myRepo': {
+          problems: [],
+          branches: branchInformation,
+          packageFiles,
+          libYearsWithStatus: {
+            libYears: {
+              managers: {
+                npm: 1,
+              },
+              total: 1,
+            },
+            dependencyStatus: {
+              outdated: 1,
+              total: 1,
+            },
+          },
+        },
+      },
+    });
   });
 });

@@ -1,7 +1,7 @@
-export interface AdoptiumJavaVersion {
-  semver: string;
-}
+import type { Nullish } from '../../../types/index.ts';
 
-export interface AdoptiumJavaResponse {
-  versions?: AdoptiumJavaVersion[];
+export interface PackageConfig {
+  imageType: string;
+  architecture: Nullish<string>;
+  os: Nullish<string>;
 }

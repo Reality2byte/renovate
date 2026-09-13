@@ -1,40 +1,43 @@
-import { mockDeep } from 'jest-mock-extended';
-import { join } from 'upath';
-import { envMock, mockExecAll } from '../../../../test/exec-util';
-import { env, fs, git, mocked, partial } from '../../../../test/util';
-import { GlobalConfig } from '../../../config/global';
-import type { RepoGlobalConfig } from '../../../config/types';
-import * as docker from '../../../util/exec/docker';
-import type { StatusResult } from '../../../util/git/types';
-import * as hostRules from '../../../util/host-rules';
-import * as _datasource from '../../datasource';
-import { GitTagsDatasource } from '../../datasource/git-tags';
-import { PackagistDatasource } from '../../datasource/packagist';
-import type { UpdateArtifactsConfig } from '../types';
-import * as composer from '.';
+import upath from 'upath';
+import { mockDeep } from 'vitest-mock-extended';
+import { envMock, mockExecAll } from '~test/exec-util.ts';
+import { env, fs, git, partial } from '~test/util.ts';
+import { GlobalConfig } from '../../../config/global.ts';
+import type {
+  InternalGlobalConfigOptions,
+  RepoGlobalConfig,
+} from '../../../config/types.ts';
+import * as docker from '../../../util/exec/docker/index.ts';
+import type { StatusResult } from '../../../util/git/types.ts';
+import * as hostRules from '../../../util/host-rules.ts';
+import { GitTagsDatasource } from '../../datasource/git-tags/index.ts';
+import * as _datasource from '../../datasource/index.ts';
+import { PackagistDatasource } from '../../datasource/packagist/index.ts';
+import type { UpdateArtifactsConfig } from '../types.ts';
+import * as composer from './index.ts';
 
-jest.mock('../../../util/exec/env');
-jest.mock('../../datasource', () => mockDeep());
-jest.mock('../../../util/fs');
-jest.mock('../../../util/git');
+vi.mock('../../../util/exec/env.ts');
+vi.mock('../../datasource/index.ts', () => mockDeep());
+vi.mock('../../../util/fs/index.ts');
 
 process.env.CONTAINERBASE = 'true';
 
-const datasource = mocked(_datasource);
+const datasource = vi.mocked(_datasource);
 
 const config: UpdateArtifactsConfig = {
   composerIgnorePlatformReqs: [],
   ignoreScripts: false,
 };
 
-const adminConfig: RepoGlobalConfig = {
+const adminConfig: RepoGlobalConfig & InternalGlobalConfigOptions = {
   allowPlugins: false,
   allowScripts: false,
   // `join` fixes Windows CI
-  localDir: join('/tmp/github/some/repo'),
-  cacheDir: join('/tmp/renovate/cache'),
-  containerbaseDir: join('/tmp/renovate/cache/containerbase'),
-  dockerSidecarImage: 'ghcr.io/containerbase/sidecar',
+  localDir: upath.join('/tmp/github/some/repo'),
+  cacheDir: upath.join('/tmp/renovate/cache'),
+  containerbaseDir: upath.join('/tmp/renovate/cache/containerbase'),
+  dockerSidecarImage: 'ghcr.io/renovatebot/base-image',
+  binarySource: 'global',
 };
 
 const repoStatus = partial<StatusResult>({
@@ -68,14 +71,14 @@ describe('modules/manager/composer/artifacts', () => {
   });
 
   it('returns if no composer.lock found', async () => {
-    expect(
-      await composer.updateArtifacts({
+    await expect(
+      composer.updateArtifacts({
         packageFileName: 'composer.json',
         updatedDeps: [],
         newPackageFileContent: '{}',
         config,
       }),
-    ).toBeNull();
+    ).resolves.toBeNull();
   });
 
   it('returns null if unchanged', async () => {
@@ -88,8 +91,8 @@ describe('modules/manager/composer/artifacts', () => {
       allowScripts: true,
       allowPlugins: true,
     });
-    expect(
-      await composer.updateArtifacts({
+    await expect(
+      composer.updateArtifacts({
         packageFileName: 'composer.json',
         updatedDeps: [
           { depName: 'foo', newVersion: '1.0.0' },
@@ -98,7 +101,7 @@ describe('modules/manager/composer/artifacts', () => {
         newPackageFileContent: '{}',
         config,
       }),
-    ).toBeNull();
+    ).resolves.toBeNull();
     expect(execSnapshots).toMatchObject([
       {
         cmd: 'composer update foo:1.0.0 bar:2.0.0 --with-dependencies --ignore-platform-reqs --no-ansi --no-interaction',
@@ -159,14 +162,14 @@ describe('modules/manager/composer/artifacts', () => {
       registryUrls: ['https://packagist.renovatebot.com'],
     };
     git.getRepoStatus.mockResolvedValueOnce(repoStatus);
-    expect(
-      await composer.updateArtifacts({
+    await expect(
+      composer.updateArtifacts({
         packageFileName: 'composer.json',
         updatedDeps: [],
         newPackageFileContent: '{}',
         config: authConfig,
       }),
-    ).toBeNull();
+    ).resolves.toBeNull();
     expect(execSnapshots).toMatchObject([
       {
         cmd: 'composer update --with-dependencies --ignore-platform-reqs --no-ansi --no-interaction --no-scripts --no-autoloader --no-plugins',
@@ -203,14 +206,14 @@ describe('modules/manager/composer/artifacts', () => {
       registryUrls: ['https://packagist.renovatebot.com'],
     };
     git.getRepoStatus.mockResolvedValueOnce(repoStatus);
-    expect(
-      await composer.updateArtifacts({
+    await expect(
+      composer.updateArtifacts({
         packageFileName: 'composer.json',
         updatedDeps: [],
         newPackageFileContent: '{}',
         config: authConfig,
       }),
-    ).toBeNull();
+    ).resolves.toBeNull();
 
     expect(execSnapshots).toMatchObject([
       {
@@ -242,14 +245,14 @@ describe('modules/manager/composer/artifacts', () => {
       registryUrls: ['https://packagist.renovatebot.com'],
     };
     git.getRepoStatus.mockResolvedValueOnce(repoStatus);
-    expect(
-      await composer.updateArtifacts({
+    await expect(
+      composer.updateArtifacts({
         packageFileName: 'composer.json',
         updatedDeps: [],
         newPackageFileContent: '{}',
         config: authConfig,
       }),
-    ).toBeNull();
+    ).resolves.toBeNull();
     expect(execSnapshots).toMatchObject([
       {
         options: {
@@ -275,14 +278,14 @@ describe('modules/manager/composer/artifacts', () => {
       registryUrls: ['https://packagist.renovatebot.com'],
     };
     git.getRepoStatus.mockResolvedValueOnce(repoStatus);
-    expect(
-      await composer.updateArtifacts({
+    await expect(
+      composer.updateArtifacts({
         packageFileName: 'composer.json',
         updatedDeps: [],
         newPackageFileContent: '{}',
         config: authConfig,
       }),
-    ).toBeNull();
+    ).resolves.toBeNull();
 
     expect(execSnapshots).toMatchObject([
       {
@@ -315,14 +318,14 @@ describe('modules/manager/composer/artifacts', () => {
       registryUrls: ['https://packagist.renovatebot.com'],
     };
     git.getRepoStatus.mockResolvedValueOnce(repoStatus);
-    expect(
-      await composer.updateArtifacts({
+    await expect(
+      composer.updateArtifacts({
         packageFileName: 'composer.json',
         updatedDeps: [],
         newPackageFileContent: '{}',
         config: authConfig,
       }),
-    ).toBeNull();
+    ).resolves.toBeNull();
     expect(execSnapshots).toMatchObject([
       {
         options: {
@@ -354,14 +357,14 @@ describe('modules/manager/composer/artifacts', () => {
       registryUrls: ['https://packagist.renovatebot.com'],
     };
     git.getRepoStatus.mockResolvedValueOnce(repoStatus);
-    expect(
-      await composer.updateArtifacts({
+    await expect(
+      composer.updateArtifacts({
         packageFileName: 'composer.json',
         updatedDeps: [],
         newPackageFileContent: '{}',
         config: authConfig,
       }),
-    ).toBeNull();
+    ).resolves.toBeNull();
     expect(execSnapshots).toMatchObject([
       {
         options: {
@@ -394,14 +397,14 @@ describe('modules/manager/composer/artifacts', () => {
       registryUrls: ['https://packagist.renovatebot.com'],
     };
     git.getRepoStatus.mockResolvedValueOnce(repoStatus);
-    expect(
-      await composer.updateArtifacts({
+    await expect(
+      composer.updateArtifacts({
         packageFileName: 'composer.json',
         updatedDeps: [],
         newPackageFileContent: '{}',
         config: authConfig,
       }),
-    ).toBeNull();
+    ).resolves.toBeNull();
     expect(execSnapshots[0].options?.env).not.toContainKey('COMPOSER_AUTH');
   });
 
@@ -426,14 +429,14 @@ describe('modules/manager/composer/artifacts', () => {
       registryUrls: ['https://packagist.renovatebot.com'],
     };
     git.getRepoStatus.mockResolvedValueOnce(repoStatus);
-    expect(
-      await composer.updateArtifacts({
+    await expect(
+      composer.updateArtifacts({
         packageFileName: 'composer.json',
         updatedDeps: [],
         newPackageFileContent: '{}',
         config: authConfig,
       }),
-    ).toBeNull();
+    ).resolves.toBeNull();
 
     expect(execSnapshots).toMatchObject([
       {
@@ -487,14 +490,14 @@ describe('modules/manager/composer/artifacts', () => {
       registryUrls: ['https://packagist.renovatebot.com'],
     };
     git.getRepoStatus.mockResolvedValueOnce(repoStatus);
-    expect(
-      await composer.updateArtifacts({
+    await expect(
+      composer.updateArtifacts({
         packageFileName: 'composer.json',
         updatedDeps: [],
         newPackageFileContent: '{}',
         config: authConfig,
       }),
-    ).toBeNull();
+    ).resolves.toBeNull();
 
     expect(execSnapshots).toMatchObject([
       {
@@ -528,14 +531,14 @@ describe('modules/manager/composer/artifacts', () => {
       registryUrls: ['https://packagist.renovatebot.com'],
     };
     git.getRepoStatus.mockResolvedValueOnce(repoStatus);
-    expect(
-      await composer.updateArtifacts({
+    await expect(
+      composer.updateArtifacts({
         packageFileName: 'composer.json',
         updatedDeps: [],
         newPackageFileContent: '{}',
         config: authConfig,
       }),
-    ).toBeNull();
+    ).resolves.toBeNull();
 
     expect(execSnapshots).toMatchObject([
       {
@@ -592,14 +595,14 @@ describe('modules/manager/composer/artifacts', () => {
       registryUrls: ['https://packagist.renovatebot.com'],
     };
     git.getRepoStatus.mockResolvedValueOnce(repoStatus);
-    expect(
-      await composer.updateArtifacts({
+    await expect(
+      composer.updateArtifacts({
         packageFileName: 'composer.json',
         updatedDeps: [],
         newPackageFileContent: '{}',
         config: authConfig,
       }),
-    ).toBeNull();
+    ).resolves.toBeNull();
 
     expect(execSnapshots).toMatchObject([
       {
@@ -626,14 +629,14 @@ describe('modules/manager/composer/artifacts', () => {
       ...repoStatus,
       modified: ['composer.lock'],
     });
-    expect(
-      await composer.updateArtifacts({
+    await expect(
+      composer.updateArtifacts({
         packageFileName: 'composer.json',
         updatedDeps: [],
         newPackageFileContent: '{}',
         config,
       }),
-    ).toEqual([
+    ).resolves.toEqual([
       {
         file: {
           contents: '{}',
@@ -651,9 +654,9 @@ describe('modules/manager/composer/artifacts', () => {
   });
 
   it('supports vendor directory update', async () => {
-    const foo = join('vendor/foo/Foo.php');
-    const bar = join('vendor/bar/Bar.php');
-    const baz = join('vendor/baz/Baz.php');
+    const foo = upath.join('vendor/foo/Foo.php');
+    const bar = upath.join('vendor/bar/Bar.php');
+    const baz = upath.join('vendor/baz/Baz.php');
     fs.localPathExists.mockResolvedValueOnce(true);
     fs.readLocalFile.mockResolvedValueOnce('{}');
     const execSnapshots = mockExecAll();
@@ -719,8 +722,8 @@ describe('modules/manager/composer/artifacts', () => {
       ...repoStatus,
       modified: ['composer.lock'],
     });
-    expect(
-      await composer.updateArtifacts({
+    await expect(
+      composer.updateArtifacts({
         packageFileName: 'composer.json',
         updatedDeps: [],
         newPackageFileContent: '{}',
@@ -729,7 +732,7 @@ describe('modules/manager/composer/artifacts', () => {
           isLockFileMaintenance: true,
         },
       }),
-    ).toEqual([
+    ).resolves.toEqual([
       {
         file: {
           contents: '{  }',
@@ -738,10 +741,11 @@ describe('modules/manager/composer/artifacts', () => {
         },
       },
     ]);
+    expect(fs.deleteLocalFile).toHaveBeenCalledTimes(1);
     expect(execSnapshots).toMatchObject([
       {
         cmd: 'composer update --ignore-platform-reqs --no-ansi --no-interaction --no-scripts --no-autoloader --no-plugins',
-        options: { cwd: '/tmp/github/some/repo', encoding: 'utf-8' },
+        options: { cwd: '/tmp/github/some/repo' },
       },
     ]);
   });
@@ -769,14 +773,14 @@ describe('modules/manager/composer/artifacts', () => {
       modified: ['composer.lock'],
     });
 
-    expect(
-      await composer.updateArtifacts({
+    await expect(
+      composer.updateArtifacts({
         packageFileName: 'composer.json',
         updatedDeps: [],
         newPackageFileContent: '{}',
         config: { ...config, constraints: { composer: '^1.10.0', php: '7.3' } },
       }),
-    ).toEqual([
+    ).resolves.toEqual([
       {
         file: {
           contents: '{  }',
@@ -787,33 +791,30 @@ describe('modules/manager/composer/artifacts', () => {
     ]);
     expect(execSnapshots).toMatchObject([
       {
-        cmd: 'docker pull ghcr.io/containerbase/sidecar',
-        options: {
-          encoding: 'utf-8',
-        },
+        cmd: 'docker pull ghcr.io/renovatebot/base-image',
+        options: {},
       },
       {
         cmd: 'docker ps --filter name=renovate_sidecar -aq',
-        options: {
-          encoding: 'utf-8',
-        },
+        options: {},
       },
       {
         cmd:
           'docker run --rm --name=renovate_sidecar --label=renovate_child ' +
           '-v "/tmp/github/some/repo":"/tmp/github/some/repo" ' +
           '-v "/tmp/renovate/cache":"/tmp/renovate/cache" ' +
+          '-e CI ' +
           '-e COMPOSER_CACHE_DIR ' +
           '-e CONTAINERBASE_CACHE_DIR ' +
           '-w "/tmp/github/some/repo" ' +
-          'ghcr.io/containerbase/sidecar' +
-          ' bash -l -c "' +
+          'ghcr.io/renovatebot/base-image' +
+          " bash -l -c '" +
           'install-tool php 7.3' +
           ' && ' +
           'install-tool composer 1.10.17' +
           ' && ' +
           'composer update --with-dependencies --ignore-platform-reqs --no-ansi --no-interaction --no-scripts --no-autoloader --no-plugins' +
-          '"',
+          "'",
         options: {
           cwd: '/tmp/github/some/repo',
           env: {
@@ -847,14 +848,14 @@ describe('modules/manager/composer/artifacts', () => {
       modified: ['composer.lock'],
     });
 
-    expect(
-      await composer.updateArtifacts({
+    await expect(
+      composer.updateArtifacts({
         packageFileName: 'composer.json',
         updatedDeps: [],
         newPackageFileContent: '{}',
         config: { ...config, constraints: { composer: '^1.10.0', php: '7.3' } },
       }),
-    ).toEqual([
+    ).resolves.toEqual([
       {
         file: {
           contents: '{  }',
@@ -891,14 +892,14 @@ describe('modules/manager/composer/artifacts', () => {
       ...repoStatus,
       modified: ['composer.lock'],
     });
-    expect(
-      await composer.updateArtifacts({
+    await expect(
+      composer.updateArtifacts({
         packageFileName: 'composer.json',
         updatedDeps: [],
         newPackageFileContent: '{}',
         config,
       }),
-    ).toEqual([
+    ).resolves.toEqual([
       {
         file: {
           contents: '{ }',
@@ -921,17 +922,17 @@ describe('modules/manager/composer/artifacts', () => {
     fs.writeLocalFile.mockImplementationOnce(() => {
       throw new Error('not found');
     });
-    expect(
-      await composer.updateArtifacts({
+    await expect(
+      composer.updateArtifacts({
         packageFileName: 'composer.json',
         updatedDeps: [],
         newPackageFileContent: '{}',
         config,
       }),
-    ).toEqual([
+    ).resolves.toEqual([
       {
         artifactError: {
-          lockFile: 'composer.lock',
+          fileName: 'composer.lock',
           stderr: 'not found',
         },
       },
@@ -947,14 +948,16 @@ describe('modules/manager/composer/artifacts', () => {
     fs.writeLocalFile.mockImplementationOnce(() => {
       throw new Error(stderr);
     });
-    expect(
-      await composer.updateArtifacts({
+    await expect(
+      composer.updateArtifacts({
         packageFileName: 'composer.json',
         updatedDeps: [],
         newPackageFileContent: '{}',
         config,
       }),
-    ).toEqual([{ artifactError: { lockFile: 'composer.lock', stderr } }]);
+    ).resolves.toEqual([
+      { artifactError: { fileName: 'composer.lock', stderr } },
+    ]);
     expect(execSnapshots).toBeEmptyArray();
   });
 
@@ -973,7 +976,7 @@ describe('modules/manager/composer/artifacts', () => {
         newPackageFileContent: '{}',
         config,
       }),
-    ).rejects.toThrow();
+    ).rejects.toThrow('disk-space');
     expect(execSnapshots).toBeEmptyArray();
   });
 
@@ -985,8 +988,8 @@ describe('modules/manager/composer/artifacts', () => {
       ...repoStatus,
       modified: ['composer.lock'],
     });
-    expect(
-      await composer.updateArtifacts({
+    await expect(
+      composer.updateArtifacts({
         packageFileName: 'composer.json',
         updatedDeps: [],
         newPackageFileContent: '{}',
@@ -995,7 +998,7 @@ describe('modules/manager/composer/artifacts', () => {
           composerIgnorePlatformReqs: undefined,
         },
       }),
-    ).toEqual([
+    ).resolves.toEqual([
       {
         file: {
           contents: '{ }',
@@ -1020,8 +1023,8 @@ describe('modules/manager/composer/artifacts', () => {
       ...repoStatus,
       modified: ['composer.lock'],
     });
-    expect(
-      await composer.updateArtifacts({
+    await expect(
+      composer.updateArtifacts({
         packageFileName: 'composer.json',
         updatedDeps: [],
         newPackageFileContent: '{}',
@@ -1030,7 +1033,7 @@ describe('modules/manager/composer/artifacts', () => {
           composerIgnorePlatformReqs: ['ext-posix', 'ext-sodium'],
         },
       }),
-    ).toEqual([
+    ).resolves.toEqual([
       {
         file: {
           contents: '{ }',
@@ -1057,8 +1060,8 @@ describe('modules/manager/composer/artifacts', () => {
       ...repoStatus,
       modified: ['composer.lock'],
     });
-    expect(
-      await composer.updateArtifacts({
+    await expect(
+      composer.updateArtifacts({
         packageFileName: 'composer.json',
         updatedDeps: [],
         newPackageFileContent: '{}',
@@ -1066,7 +1069,7 @@ describe('modules/manager/composer/artifacts', () => {
           ...config,
         },
       }),
-    ).toEqual([
+    ).resolves.toEqual([
       {
         file: {
           contents: '{ }',
@@ -1084,7 +1087,10 @@ describe('modules/manager/composer/artifacts', () => {
         options: { cwd: '/tmp/github/some/repo' },
       },
       {
-        cmd: 'git stash pop || true',
+        cmd: {
+          command: ['git', 'stash', 'pop'],
+          ignoreFailure: true,
+        },
       },
       {
         cmd: 'composer update --with-dependencies --ignore-platform-reqs --no-ansi --no-interaction --no-scripts --no-autoloader --no-plugins',
@@ -1103,8 +1109,8 @@ describe('modules/manager/composer/artifacts', () => {
       ...repoStatus,
       modified: ['composer.lock'],
     });
-    expect(
-      await composer.updateArtifacts({
+    await expect(
+      composer.updateArtifacts({
         packageFileName: 'composer.json',
         updatedDeps: [],
         newPackageFileContent: '{}',
@@ -1112,7 +1118,7 @@ describe('modules/manager/composer/artifacts', () => {
           ...config,
         },
       }),
-    ).toEqual([
+    ).resolves.toEqual([
       {
         file: {
           contents: '{ }',
@@ -1127,14 +1133,17 @@ describe('modules/manager/composer/artifacts', () => {
       },
       {
         cmd: 'composer install --ignore-platform-reqs --no-ansi --no-interaction --no-scripts --no-autoloader --no-plugins',
-        options: { cwd: '/tmp/github/some/repo', encoding: 'utf-8' },
+        options: { cwd: '/tmp/github/some/repo' },
       },
       {
-        cmd: 'git stash pop || true',
+        cmd: {
+          command: ['git', 'stash', 'pop'],
+          ignoreFailure: true,
+        },
       },
       {
         cmd: 'composer update --with-dependencies --ignore-platform-reqs --no-ansi --no-interaction --no-scripts --no-autoloader --no-plugins',
-        options: { cwd: '/tmp/github/some/repo', encoding: 'utf-8' },
+        options: { cwd: '/tmp/github/some/repo' },
       },
     ]);
   });
@@ -1145,8 +1154,8 @@ describe('modules/manager/composer/artifacts', () => {
     fs.readLocalFile.mockResolvedValueOnce('{}');
     git.getRepoStatus.mockResolvedValueOnce(repoStatus);
     GlobalConfig.set({ ...adminConfig, allowPlugins: true });
-    expect(
-      await composer.updateArtifacts({
+    await expect(
+      composer.updateArtifacts({
         packageFileName: 'composer.json',
         updatedDeps: [
           { depName: 'foo', newVersion: '1.0.0' },
@@ -1155,7 +1164,7 @@ describe('modules/manager/composer/artifacts', () => {
         newPackageFileContent: '{}',
         config,
       }),
-    ).toBeNull();
+    ).resolves.toBeNull();
     expect(execSnapshots).toMatchObject([
       {
         cmd: 'composer update foo:1.0.0 bar:2.0.0 --with-dependencies --ignore-platform-reqs --no-ansi --no-interaction --no-scripts --no-autoloader',
@@ -1170,8 +1179,8 @@ describe('modules/manager/composer/artifacts', () => {
     fs.readLocalFile.mockResolvedValueOnce('{}');
     git.getRepoStatus.mockResolvedValueOnce(repoStatus);
     GlobalConfig.set({ ...adminConfig, allowPlugins: true });
-    expect(
-      await composer.updateArtifacts({
+    await expect(
+      composer.updateArtifacts({
         packageFileName: 'composer.json',
         updatedDeps: [{ depName: 'foo' }, { depName: 'bar' }],
         newPackageFileContent: '{}',
@@ -1180,7 +1189,7 @@ describe('modules/manager/composer/artifacts', () => {
           ignorePlugins: true,
         },
       }),
-    ).toBeNull();
+    ).resolves.toBeNull();
     expect(execSnapshots).toMatchObject([
       {
         cmd: 'composer update foo bar --with-dependencies --ignore-platform-reqs --no-ansi --no-interaction --no-scripts --no-autoloader --no-plugins',
@@ -1195,17 +1204,42 @@ describe('modules/manager/composer/artifacts', () => {
     fs.readLocalFile.mockResolvedValueOnce('{}');
     git.getRepoStatus.mockResolvedValueOnce(repoStatus);
 
-    expect(
-      await composer.updateArtifacts({
+    await expect(
+      composer.updateArtifacts({
         packageFileName: 'composer.json',
         updatedDeps: [{ depName: 'foo', newVersion: '1.1.0' }],
         newPackageFileContent: '{}',
         config,
       }),
-    ).toBeNull();
+    ).resolves.toBeNull();
     expect(execSnapshots).toMatchObject([
       {
         cmd: 'composer update foo:1.1.0 --with-dependencies --ignore-platform-reqs --no-ansi --no-interaction --no-scripts --no-autoloader --no-plugins',
+        options: { cwd: '/tmp/github/some/repo' },
+      },
+    ]);
+  });
+
+  it('uses --with-all-dependencies instead of --with-dependencies when composerUpdateAllDependencies is set in postUpdateOptions', async () => {
+    fs.readLocalFile.mockResolvedValueOnce('{}');
+    const execSnapshots = mockExecAll();
+    fs.readLocalFile.mockResolvedValueOnce('{}');
+    git.getRepoStatus.mockResolvedValueOnce(repoStatus);
+
+    await expect(
+      composer.updateArtifacts({
+        packageFileName: 'composer.json',
+        updatedDeps: [{ depName: 'foo', newVersion: '1.1.0' }],
+        newPackageFileContent: '{}',
+        config: {
+          ...config,
+          postUpdateOptions: ['composerWithAll'],
+        },
+      }),
+    ).resolves.toBeNull();
+    expect(execSnapshots).toMatchObject([
+      {
+        cmd: 'composer update foo:1.1.0 --with-all-dependencies --ignore-platform-reqs --no-ansi --no-interaction --no-scripts --no-autoloader --no-plugins',
         options: { cwd: '/tmp/github/some/repo' },
       },
     ]);

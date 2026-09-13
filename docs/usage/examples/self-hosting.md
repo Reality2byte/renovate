@@ -1,5 +1,14 @@
 # Self-Hosting Examples
 
+!!! warning
+  All self-hosted Renovate instances must operate under a trust relationship with the developers of the monitored repositories. Because of this, there are [security implications](../security-and-permissions.md#security-awareness-for-self-hosted-renovate-instances) when running a self-hosted Renovate instance, which you must consider carefully.
+
+!!! warning
+  Most Open Source packages are hosted on github.com, including a number of tools that Renovate may pull at run-time.
+  GitHub greatly rate limits unauthenticated API requests, so you need to configure credentials for `github.com` or your deployment will get rate limited quickly.
+  &nbsp;
+  Read [Running Renovate, GitHub.com token for changelogs](../getting-started/running.md#githubcom-token-for-changelogs-and-tools) to learn more.
+
 ## Installing Renovate OSS CLI
 
 ### npmjs
@@ -24,15 +33,14 @@ It builds `latest` based on the `main` branch and all SemVer tags are published 
 
 ```sh title="Example of valid tags"
 docker run --rm renovate/renovate
-docker run --rm renovate/renovate:38
-docker run --rm renovate/renovate:38.142
-docker run --rm renovate/renovate:38.142.5
+docker run --rm renovate/renovate:44
+docker run --rm renovate/renovate:44.52
+docker run --rm renovate/renovate:44.52.1
 ```
 
-<!-- prettier-ignore -->
 !!! warning
-    Do not use the example tags listed above, as they will be out-of-date.
-    Go to [the `renovate/renovate` tags on DockerHub](https://hub.docker.com/r/renovate/renovate/tags) to grab the latest tagged release from Renovate.
+  Do not use the example tags listed above, as they will be out-of-date.
+  Go to [the `renovate/renovate` tags on DockerHub](https://hub.docker.com/r/renovate/renovate/tags) to grab the latest tagged release from Renovate.
 
 If you want to configure Renovate using a `config.js` file then map it to `/usr/src/app/config.js` using Docker volumes.
 For example:
@@ -62,7 +70,7 @@ spec:
             - name: renovate
               # Update this to the latest available and then enable Renovate on
               # the manifest
-              image: renovate/renovate:38.142.5
+              image: renovate/renovate:44.52.1
               args:
                 - user/repo
               # Environment Variables
@@ -84,11 +92,11 @@ metadata:
   name: renovate-env
 type: Opaque
 stringData:
-  GITHUB_COM_TOKEN: 'any-personal-user-token-for-github-com-for-fetching-changelogs'
+  RENOVATE_GITHUB_COM_TOKEN: 'any-personal-user-token-for-github-com-for-fetching-changelogs'
   # You can set RENOVATE_AUTODISCOVER to true to run Renovate on all repos you have push access to
   RENOVATE_AUTODISCOVER: 'false'
   RENOVATE_ENDPOINT: 'https://github.company.com/api/v3'
-  RENOVATE_GIT_AUTHOR: 'Renovate Bot <bot@renovateapp.com>'
+  RENOVATE_GIT_AUTHOR: 'Renovate <bot@renovateapp.com>'
   RENOVATE_PLATFORM: 'github'
   RENOVATE_TOKEN: 'your-github-enterprise-renovate-user-token'
 ```
@@ -121,7 +129,7 @@ spec:
       template:
         spec:
           containers:
-            - image: renovate/renovate:38.142.5
+            - image: renovate/renovate:44.52.1
               name: renovate-bot
               env: # For illustration purposes, please use secrets.
                 - name: RENOVATE_PLATFORM
@@ -152,17 +160,16 @@ spec:
 
 ### CircleCI
 
-<!-- prettier-ignore -->
 !!! warning
-    The CircleCI configuration examples are for version `2` of `daniel-shuy/renovate`, which is outdated.
-    Do you know how to get `daniel-shuy/renovate` version `3` working?
-    Then please open a pull request to update the docs and close [Renovate issue #13428](https://github.com/renovatebot/renovate/issues/13428).
+  The CircleCI configuration examples are for version `2` of `daniel-shuy/renovate`, which is outdated.
+  Do you know how to get `daniel-shuy/renovate` version `3` working?
+  Then please open a pull request to update the docs and close [Renovate issue #13428](https://github.com/renovatebot/renovate/issues/13428).
 
 If you are using CircleCI, you can use the third-party [daniel-shuy/renovate](https://circleci.com/developer/orbs/orb/daniel-shuy/renovate) orb to run a self-hosted instance of Renovate on CircleCI.
 
 By default, the orb looks for the self-hosted configuration file in the project root, but you can specify another path to the configuration file with the `config_file_path` parameter.
 
-Secrets should be configured using environment variables (e.g. `RENOVATE_TOKEN`, `GITHUB_COM_TOKEN`).
+Secrets should be configured using environment variables (e.g. `RENOVATE_TOKEN`, `RENOVATE_GITHUB_COM_TOKEN`).
 
 [Configure environment variables in CircleCI Project Settings](https://circleci.com/docs/2.0/env-vars/#setting-an-environment-variable-in-a-project).
 To share environment variables across projects, use [CircleCI Contexts](https://circleci.com/docs/2.0/contexts/).
@@ -230,7 +237,7 @@ If you want to override the cache directory then set your own value for `cacheDi
 
 The following example uses the Renovate CLI tool, which you can install by running `npm i -g renovate`.
 
-If running your own Renovate bot then you will need a user account that Renovate will run as.
+If running your own Renovate deployment, then you will need a user account that Renovate will run as.
 We recommend you create and use a dedicated account for the bot, e.g. name it `renovate-bot` if on your own instance.
 Create and save a PAT for this account.
 
@@ -263,7 +270,7 @@ Most people use `cron` to schedule when Renovate runs, usually on an hourly sche
 export PATH="/home/user/.yarn/bin:/usr/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
 export RENOVATE_CONFIG_FILE="/home/user/renovate-config.js"
 export RENOVATE_TOKEN="**some-token**" # GitHub, GitLab, Azure DevOps
-export GITHUB_COM_TOKEN="**github-token**" # Delete this if using github.com
+export RENOVATE_GITHUB_COM_TOKEN="**github-token**" # Delete this if using github.com
 
 # Renovate
 renovate
@@ -272,10 +279,9 @@ renovate
 Save the script file, and run the script manually.
 Only add the script to `cron` after you checked it works.
 
-<!-- prettier-ignore -->
 !!! note
-    The GitHub.com token as an environment variable is needed to fetch changelogs that are usually hosted on github.com.
-    You don't need to add it if you are already running the bot against github.com, but you do need to add it if you're using GitHub Enterprise Server, GitLab, Azure DevOps, or Bitbucket.
+  The GitHub.com token as an environment variable is needed to fetch changelogs that are usually hosted on github.com.
+  You don't need to add it if you are already running Renovate against github.com, but you do need to add it if you're using GitHub Enterprise Server, GitLab, Azure DevOps, or Bitbucket.
 
 ## Kubernetes for GitLab, using Git over SSH
 
@@ -331,10 +337,10 @@ metadata:
   namespace: <namespace>
 type: Opaque
 stringData:
-  GITHUB_COM_TOKEN: 'any-personal-user-token-for-github-com-for-fetching-changelogs'
+  RENOVATE_GITHUB_COM_TOKEN: 'any-personal-user-token-for-github-com-for-fetching-changelogs'
   RENOVATE_AUTODISCOVER: 'false'
   RENOVATE_ENDPOINT: 'https://github.company.com/api/v3'
-  RENOVATE_GIT_AUTHOR: 'Renovate Bot <bot@renovateapp.com>'
+  RENOVATE_GIT_AUTHOR: 'Renovate <bot@renovateapp.com>'
   RENOVATE_PLATFORM: 'github'
   RENOVATE_TOKEN: 'your-github-enterprise-renovate-user-token'
 ---
@@ -367,7 +373,7 @@ spec:
           containers:
             - name: renovate
               # Update this to the latest available and then enable Renovate on the manifest
-              image: renovate/renovate:38.142.5
+              image: renovate/renovate:44.52.1
               volumeMounts:
                 - name: ssh-key-volume
                   readOnly: true
@@ -441,3 +447,23 @@ USER 12021
 # OpenSSL
 ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 ```
+
+## Proxy Environment Variable Configuration
+
+If your environment uses an HTTP proxy configured via environment variables (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, and their lowercase variants), Renovate inherits these settings and prefers the lowercase variant.
+
+In some cases, you may need to adjust the `NO_PROXY` variable if Renovate encounters network or TLS errors when accessing internal or excluded domains.
+
+Renovate uses the [global-agent](https://github.com/gajus/global-agent) library to manage proxy connections.
+
+To exclude a domain and all its subdomains, you must use a wildcard — for example:
+
+```
+NO_PROXY=*.example.org
+```
+
+This configuration ensures that both `example.org` and `www.example.org` are accessed directly, bypassing the proxy for Renovate.
+
+If a tool that Renovate runs (such as git) still has proxy-related issues, note that different tools interpret NO_PROXY formats differently. See [GitLab’s detailed explanation](https://about.gitlab.com/blog/we-need-to-talk-no-proxy/#no_proxy-format) for guidance on tool-specific behavior.
+
+To debug the proxy configuration behavior you can set the environment variable `ROARR_LOG=true` to enable log printing to stdout.

@@ -1,14 +1,14 @@
 import { codeBlock } from 'common-tags';
-import _findUp from 'find-up';
+import { findUp as _findUp } from 'find-up';
 import upath from 'upath';
-import { mockExecAll } from '../../../test/exec-util';
-import { mockedFunction, partial } from '../../../test/util';
-import { GlobalConfig } from '../../config/global';
-import { findHermitCwd, getHermitEnvs, isHermit } from './hermit';
-import type { RawExecOptions } from './types';
+import { mockExecAll } from '~test/exec-util.ts';
+import { partial } from '~test/util.ts';
+import { GlobalConfig } from '../../config/global.ts';
+import { findHermitCwd, getHermitEnvs, isHermit } from './hermit.ts';
+import type { RawExecOptions } from './types.ts';
 
-jest.mock('find-up');
-const findUp = mockedFunction(_findUp);
+vi.mock('find-up');
+const findUp = vi.mocked(_findUp);
 const localDir = '/tmp/renovate/repository/project-a';
 
 describe('util/exec/hermit', () => {
@@ -24,7 +24,6 @@ describe('util/exec/hermit', () => {
   describe('findHermitCwd', () => {
     beforeEach(() => {
       GlobalConfig.set({ localDir });
-      findUp.mockClear();
     });
 
     it.each`
@@ -40,7 +39,9 @@ describe('util/exec/hermit', () => {
 
         findUp.mockResolvedValueOnce(upath.join(localDir, hermitLocation));
 
-        expect(await findHermitCwd(cwd)).toBe(upath.join(localDir, expected));
+        await expect(findHermitCwd(cwd)).resolves.toBe(
+          upath.join(localDir, expected),
+        );
 
         expect(findUp.mock.calls[0][1]?.cwd).toBe(cwd);
       },
@@ -56,7 +57,6 @@ describe('util/exec/hermit', () => {
   describe('getHermitEnvs', () => {
     beforeEach(() => {
       GlobalConfig.set({ localDir });
-      findUp.mockClear();
     });
 
     it('should return hermit environment variables when hermit env returns successfully', async () => {

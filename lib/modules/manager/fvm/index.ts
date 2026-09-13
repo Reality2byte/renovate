@@ -1,11 +1,18 @@
-import { FlutterVersionDatasource } from '../../datasource/flutter-version';
-import * as semverVersioning from '../../versioning/semver';
+import type { Category } from '../../../constants/index.ts';
+import { FlutterVersionDatasource } from '../../datasource/flutter-version/index.ts';
 
-export { extractPackageFile } from './extract';
+export const categories: Category[] = ['dart'];
 
-export const supportedDatasources = [FlutterVersionDatasource.id];
+import * as semverVersioning from '../../versioning/semver/index.ts';
+
+export { extractPackageFile } from './extract.ts';
+
+export const displayName = 'FVM';
+export const url = 'https://fvm.app';
 
 export const defaultConfig = {
-  fileMatch: ['(^|/)\\.fvm/fvm_config\\.json$', '(^|/)\\.fvmrc$'],
+  managerFilePatterns: ['/(^|/)\\.fvm/fvm_config\\.json$/', '/(^|/)\\.fvmrc$/'],
   versioning: semverVersioning.id,
 };
+
+export const supportedDatasources = [FlutterVersionDatasource.id];

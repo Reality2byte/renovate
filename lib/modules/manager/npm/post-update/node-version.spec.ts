@@ -1,12 +1,12 @@
-import { fs } from '../../../../../test/util';
-import { Lazy } from '../../../../util/lazy';
+import { fs } from '~test/util.ts';
+import { Lazy } from '../../../../util/lazy.ts';
 import {
   getNodeConstraint,
   getNodeToolConstraint,
   getNodeUpdate,
-} from './node-version';
+} from './node-version.ts';
 
-jest.mock('../../../../util/fs');
+vi.mock('../../../../util/fs/index.ts');
 
 describe('modules/manager/npm/post-update/node-version', () => {
   const config = {
@@ -70,6 +70,31 @@ describe('modules/manager/npm/post-update/node-version', () => {
       );
       expect(res).toBe('^12.16.3');
     });
+
+    it('returns from package.json volta', async () => {
+      const res = await getNodeConstraint(
+        {},
+        [],
+        '',
+        new Lazy(() => Promise.resolve({ volta: { node: '14.17.0' } })),
+      );
+      expect(res).toBe('14.17.0');
+    });
+
+    it('prefers volta over engines', async () => {
+      const res = await getNodeConstraint(
+        {},
+        [],
+        '',
+        new Lazy(() =>
+          Promise.resolve({
+            volta: { node: '14.17.0' },
+            engines: { node: '^12.16.3' },
+          }),
+        ),
+      );
+      expect(res).toBe('14.17.0');
+    });
   });
 
   describe('getNodeUpdate()', () => {
@@ -86,28 +111,28 @@ describe('modules/manager/npm/post-update/node-version', () => {
 
   describe('getNodeToolConstraint()', () => {
     it('returns getNodeUpdate', async () => {
-      expect(
-        await getNodeToolConstraint(
+      await expect(
+        getNodeToolConstraint(
           config,
           [{ depName: 'node', newValue: '16.15.0' }],
           '',
           new Lazy(() => Promise.resolve({})),
         ),
-      ).toEqual({
+      ).resolves.toEqual({
         toolName: 'node',
         constraint: '16.15.0',
       });
     });
 
     it('returns getNodeConstraint', async () => {
-      expect(
-        await getNodeToolConstraint(
+      await expect(
+        getNodeToolConstraint(
           config,
           [],
           '',
           new Lazy(() => Promise.resolve({})),
         ),
-      ).toEqual({
+      ).resolves.toEqual({
         toolName: 'node',
         constraint: '^12.16.0',
       });

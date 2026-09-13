@@ -1,10 +1,10 @@
-import is from '@sindresorhus/is';
-import { logger } from '../../../logger';
-import { cache } from '../../../util/cache/package/decorator';
-import * as pep440Versioning from '../../versioning/pep440';
-import { Datasource } from '../datasource';
-import type { GetReleasesConfig, Release, ReleaseResult } from '../types';
-import { GalaxyV1 } from './schema';
+import { isNonEmptyString } from '@sindresorhus/is';
+import { logger } from '../../../logger/index.ts';
+import { withCache } from '../../../util/cache/package/with-cache.ts';
+import * as pep440Versioning from '../../versioning/pep440/index.ts';
+import { Datasource } from '../datasource.ts';
+import type { GetReleasesConfig, Release, ReleaseResult } from '../types.ts';
+import { GalaxyV1 } from './schema.ts';
 
 export class GalaxyDatasource extends Datasource {
   static readonly id = 'galaxy';
@@ -26,12 +26,7 @@ export class GalaxyDatasource extends Datasource {
   override readonly sourceUrlNote =
     'The source URL is determined from the `github_user` and `github_repo` fields in the results.';
 
-  @cache({
-    namespace: 'datasource-galaxy',
-    key: (getReleasesConfig: GetReleasesConfig) =>
-      getReleasesConfig.packageName,
-  })
-  async getReleases({
+  private async _getReleases({
     packageName,
     registryUrl,
   }: GetReleasesConfig): Promise<ReleaseResult | null> {
@@ -57,15 +52,14 @@ export class GalaxyDatasource extends Datasource {
       if (!body.results.length) {
         logger.warn(
           { dependency: packageName, userName },
-          `Multiple results from galaxy for ${packageName}, none match`,
+          `No matching result from galaxy for package`,
         );
         return null;
       }
     }
     if (body.results.length === 0) {
-      logger.info(
-        { dependency: packageName },
-        `Received no results from ${galaxyAPIUrl}`,
+      logger.debug(
+        `Received no results for ${packageName} from ${galaxyAPIUrl} `,
       );
       return null;
     }
@@ -79,23 +73,29 @@ export class GalaxyDatasource extends Datasource {
 
     result.dependencyUrl = galaxyProjectUrl;
     const { github_user: user, github_repo: repo } = resultObject;
-    if (is.nonEmptyString(user) && is.nonEmptyString(repo)) {
+    if (isNonEmptyString(user) && isNonEmptyString(repo)) {
       result.sourceUrl = `https://github.com/${user}/${repo}`;
     }
 
-    result.releases = versions.map(
-      (version: { name: string; created?: string }) => {
-        const release: Release = {
-          version: version.name,
-        };
-
-        if (is.nonEmptyString(version.created)) {
-          release.releaseTimestamp = version.created;
-        }
-        return release;
-      },
-    );
+    result.releases = versions.map(({ version, releaseTimestamp }) => {
+      const release: Release = { version };
+      if (releaseTimestamp) {
+        release.releaseTimestamp = releaseTimestamp;
+      }
+      return release;
+    });
 
     return result;
+  }
+
+  getReleases(config: GetReleasesConfig): Promise<ReleaseResult | null> {
+    return withCache(
+      {
+        namespace: 'datasource-galaxy',
+        key: config.packageName,
+        fallback: true,
+      },
+      () => this._getReleases(config),
+    );
   }
 }

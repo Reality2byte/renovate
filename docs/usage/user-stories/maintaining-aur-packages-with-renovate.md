@@ -13,10 +13,9 @@ title: Maintaining AUR packages with Renovate
 
 > This article was written by [Jamie Magee](https://github.com/JamieMagee) and originally published on [Jamie Magee's blog](https://jamiemagee.co.uk/blog/maintaining-aur-packages-with-renovate/).
 
-<!-- prettier-ignore -->
 !!! note
-    Jamie Magee helps to maintain Renovate.
-    They obviously like Renovate, and want you to use it.
+  Jamie Magee helps to maintain Renovate.
+  They obviously like Renovate, and want you to use it.
 
 One big advantage that Arch Linux has over other distributions, apart from being able to say “BTW I use Arch.”, is the Arch User Repository (AUR).
 It’s a community-driven repository with over 80,000 packages.
@@ -46,7 +45,7 @@ I can create a `renovate.json` configuration with the following custom manager c
   "customManagers": [
     {
       "customType": "regex",
-      "fileMatch": ["(^|/)PKGBUILD$"],
+      "managerFilePatterns": ["/(^|/)PKGBUILD$/"],
       "matchStrings": [
         "pkgver=(?<currentValue>.*) # renovate: datasource=(?<datasource>.*) depName=(?<depName>.*)"
       ],
@@ -58,7 +57,7 @@ I can create a `renovate.json` configuration with the following custom manager c
 
 Breaking that down:
 
-- The `fileMatch` setting tells Renovate to look for any `PKGBUILD` files in a repository
+- The `managerFilePatterns` setting tells Renovate to look for any `PKGBUILD` files in a repository
 - The `matchStrings` is the regex format to extract the version, datasource, and dependency name from the `PKGBUILD`
 - The `extractVersionTemplate` is to handle a “v” in front of any version number that is sometimes added to Git tags
 

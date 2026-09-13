@@ -1,16 +1,16 @@
 The `helmsman` manager is currently limited and does not support the full feature set of [Helmsman](https://github.com/Praqma/helmsman), read about the limitations below.
 
-### Non-configured fileMatch
+### Non-configured managerFilePatterns
 
-By default the `helmsman` manager has an empty array for its `fileMatch` configuration option, because there is no convention for file naming in practice.
+By default the `helmsman` manager has an empty array for its `managerFilePatterns` configuration option, because there is no convention for file naming in practice.
 This means that `helmsman` won't search for any files, and you won't get any updates from the manager.
 
-To enable the `helmsman` manager, provide a valid `fileMatch` yourself, for example:
+To enable the `helmsman` manager, provide a valid `managerFilePatterns` yourself, for example:
 
 ```json
 {
   "helmsman": {
-    "fileMatch": ["(^|/)desired_state\\.yaml$"]
+    "managerFilePatterns": ["/(^|/)desired_state\\.yaml$/"]
   }
 }
 ```
@@ -19,3 +19,8 @@ To enable the `helmsman` manager, provide a valid `fileMatch` yourself, for exam
 
 Currently, state files must be in the `.yaml` format.
 The `.toml` format is not supported.
+
+### OCI Helm charts
+
+Renovate looks up Helm charts stored in OCI registries with the `docker` datasource.
+Use [`registryAliases`](../../../configuration-options.md#registryaliases) to map a registry host, for example a pull-through cache, to the registry Renovate should query instead.

@@ -1,34 +1,8 @@
 import { DateTime } from 'luxon';
-import { z } from 'zod';
-import { logger } from '../../../logger';
-import * as memCache from '../../../util/cache/memory';
-import { getCache } from '../../../util/cache/repository';
-
-const GithubIssueBase = z.object({
-  number: z.number(),
-  state: z.string().transform((val) => val.toLowerCase()),
-  title: z.string(),
-  body: z.string(),
-});
-
-const GithubGraphqlIssue = GithubIssueBase.extend({
-  updatedAt: z.string(),
-}).transform((issue) => {
-  const lastModified = issue.updatedAt;
-  const { number, state, title, body } = issue;
-  return { number, state, title, body, lastModified };
-});
-
-const GithubRestIssue = GithubIssueBase.extend({
-  updated_at: z.string(),
-}).transform((issue) => {
-  const lastModified = issue.updated_at;
-  const { number, state, title, body } = issue;
-  return { number, state, title, body, lastModified };
-});
-
-export const GithubIssue = z.union([GithubGraphqlIssue, GithubRestIssue]);
-export type GithubIssue = z.infer<typeof GithubIssue>;
+import { logger } from '../../../logger/index.ts';
+import * as memCache from '../../../util/cache/memory/index.ts';
+import { getCache } from '../../../util/cache/repository/index.ts';
+import type { GithubIssue } from './schema.ts';
 
 type CacheData = Record<number, GithubIssue>;
 
@@ -75,13 +49,24 @@ export class GithubIssueCache {
     for (const issue of issues) {
       cacheData[issue.number] = issue;
     }
+
+    logger.debug(`Issues cache: Setting ${issues.length} issues in cache`);
     this.reset(cacheData);
   }
 
   static updateIssue(issue: GithubIssue): void {
     const cacheData = this.data;
     if (cacheData) {
+      logger.debug(`Issues cache: Updating issue ${issue.number} in cache`);
       cacheData[issue.number] = issue;
+    }
+  }
+
+  static deleteIssue(number: number): void {
+    const cacheData = this.data;
+    if (cacheData) {
+      logger.debug(`Issues cache: Deleting issue ${number} from cache`);
+      delete cacheData[number];
     }
   }
 
@@ -90,6 +75,9 @@ export class GithubIssueCache {
    * What we can do is to store issues for later reconciliation.
    */
   static addIssuesToReconcile(issues: GithubIssue[] | undefined): void {
+    logger.debug(
+      `Issues cache: Adding ${issues?.length} issues to reconcile queue`,
+    );
     memCache.set('github-issues-reconcile-queue', issues);
   }
 
@@ -109,11 +97,11 @@ export class GithubIssueCache {
       // If we reached the item which is already in the cache,
       // it means sync is done.
       if (
-        cachedIssue &&
-        cachedIssue.number === issue.number &&
+        cachedIssue?.number === issue.number &&
         cachedIssue.lastModified === issue.lastModified
       ) {
         isReconciled = true;
+        logger.debug(`Issues cache: Done reconciling at issue ${issue.number}`);
         break;
       }
 
@@ -123,6 +111,9 @@ export class GithubIssueCache {
     // If we've just iterated over all the items in the cache,
     // it means sync is also done.
     if (issuesToReconcile.length >= Object.keys(cacheData).length) {
+      logger.debug(
+        `Issues cache: Done reconciling by iterating over all items`,
+      );
       isReconciled = true;
     }
 

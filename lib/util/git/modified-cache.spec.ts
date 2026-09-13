@@ -1,13 +1,13 @@
-import { logger, mocked, partial } from '../../../test/util';
-import * as _repositoryCache from '../cache/repository';
-import type { BranchCache, RepoCacheData } from '../cache/repository/types';
+import { logger, partial } from '~test/util.ts';
+import * as _repositoryCache from '../cache/repository/index.ts';
+import type { BranchCache, RepoCacheData } from '../cache/repository/types.ts';
 import {
   getCachedModifiedResult,
   setCachedModifiedResult,
-} from './modified-cache';
+} from './modified-cache.ts';
 
-jest.mock('../cache/repository');
-const repositoryCache = mocked(_repositoryCache);
+vi.mock('../cache/repository/index.ts');
+const repositoryCache = vi.mocked(_repositoryCache);
 
 describe('util/git/modified-cache', () => {
   let repoCache: RepoCacheData = {};
@@ -66,6 +66,7 @@ describe('util/git/modified-cache', () => {
     it('returns without updating when cache not populated', () => {
       setCachedModifiedResult('foo', false);
       expect(repoCache).toEqual({});
+
       expect(logger.logger.debug).toHaveBeenCalledWith(
         'setCachedModifiedResult(): Branch cache not present',
       );
@@ -74,6 +75,7 @@ describe('util/git/modified-cache', () => {
     it('returns without updating when branch not found', () => {
       setCachedModifiedResult('foo', false);
       expect(repoCache).toEqual({});
+
       expect(logger.logger.debug).toHaveBeenCalledWith(
         'setCachedModifiedResult(): Branch cache not present',
       );

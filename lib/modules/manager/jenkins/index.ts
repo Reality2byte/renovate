@@ -1,11 +1,13 @@
-import type { Category } from '../../../constants';
-import { JenkinsPluginsDatasource } from '../../datasource/jenkins-plugins';
-export { extractPackageFile } from './extract';
+import type { Category } from '../../../constants/index.ts';
+import { JenkinsPluginsDatasource } from '../../datasource/jenkins-plugins/index.ts';
+
+export { extractPackageFile } from './extract.ts';
+
+export const url = 'https://www.jenkins.io/doc';
+export const categories: Category[] = ['ci'];
 
 export const defaultConfig = {
-  fileMatch: ['(^|/)plugins\\.(txt|ya?ml)$'],
+  managerFilePatterns: ['/(^|/)plugins\\.(txt|ya?ml)$/'],
 };
-
-export const categories: Category[] = ['ci'];
 
 export const supportedDatasources = [JenkinsPluginsDatasource.id];

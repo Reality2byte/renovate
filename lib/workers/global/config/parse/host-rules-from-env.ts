@@ -1,13 +1,12 @@
-import { logger } from '../../../../logger';
-import { getDatasourceList } from '../../../../modules/datasource';
-import type { HostRule } from '../../../../types';
+import { logger } from '../../../../logger/index.ts';
+import { getDatasourceList } from '../../../../modules/datasource/index.ts';
+import type { HostRule } from '../../../../types/index.ts';
+import { regEx } from '../../../../util/regex.ts';
 
 type AuthField = 'token' | 'username' | 'password';
 
 type HttpsAuthField =
-  | 'httpscertificate'
-  | 'httpsprivatekey'
-  | 'httpscertificateauthority';
+  'httpscertificate' | 'httpsprivatekey' | 'httpscertificateauthority';
 
 function isAuthField(x: unknown): x is AuthField {
   return x === 'token' || x === 'username' || x === 'password';
@@ -61,15 +60,19 @@ export function hostRulesFromEnv(env: NodeJS.ProcessEnv): HostRule[] {
   const npmEnvPrefixes = ['npm_config_', 'npm_lifecycle_', 'npm_package_'];
 
   for (const envName of Object.keys(env).sort()) {
-    if (envName === 'GITHUB_COM_TOKEN') {
+    if (['GITHUB_COM_TOKEN', 'RENOVATE_GITHUB_COM_TOKEN'].includes(envName)) {
       continue;
     }
     if (npmEnvPrefixes.some((prefix) => envName.startsWith(prefix))) {
-      logger.trace('Ignoring npm env: ' + envName);
+      logger.trace(`Ignoring npm env: ${envName}`);
       continue;
     }
     // Double underscore __ is used in place of hyphen -
-    const splitEnv = envName.toLowerCase().replace(/__/g, '-').split('_');
+    const splitEnv = envName
+      .replace(regEx(/^RENOVATE_/), '')
+      .toLowerCase()
+      .replace(regEx(/__/g), '-')
+      .split('_');
     const hostType = splitEnv.shift()!;
     if (
       datasources.has(hostType) ||

@@ -1,15 +1,17 @@
-import is from '@sindresorhus/is';
-import { logger } from '../../../logger';
-import { filterMap } from '../../../util/filter-map';
+import { isNonEmptyString } from '@sindresorhus/is';
+import { logger } from '../../../logger/index.ts';
+import type { ConstraintName } from '../../../util/exec/types.ts';
+import { filterMap } from '../../../util/filter-map.ts';
 import {
   getSiblingFileName,
   localPathExists,
   readLocalFile,
-} from '../../../util/fs';
-import { Result } from '../../../util/result';
-import { GithubReleasesDatasource } from '../../datasource/github-releases';
-import type { PackageFileContent } from '../types';
-import { Lockfile, PoetrySchemaToml } from './schema';
+} from '../../../util/fs/index.ts';
+import { Result } from '../../../util/result.ts';
+import { massage as massageToml } from '../../../util/toml.ts';
+import { GithubReleasesDatasource } from '../../datasource/github-releases/index.ts';
+import type { PackageFileContent } from '../types.ts';
+import { Lockfile, PoetryPyProject } from './schema.ts';
 
 export async function extractPackageFile(
   content: string,
@@ -17,8 +19,8 @@ export async function extractPackageFile(
 ): Promise<PackageFileContent | null> {
   logger.trace(`poetry.extractPackageFile(${packageFile})`);
   const { val: res, err } = Result.parse(
-    content,
-    PoetrySchemaToml.transform(({ packageFileContent }) => packageFileContent),
+    massageToml(content),
+    PoetryPyProject.transform(({ packageFileContent }) => packageFileContent),
   ).unwrap();
   if (err) {
     logger.debug({ packageFile, err }, `Poetry: error parsing pyproject.toml`);
@@ -30,7 +32,7 @@ export async function extractPackageFile(
   const lockfileMapping = Result.parse(
     lockContents,
     Lockfile.transform(({ lock }) => lock),
-  ).unwrapOrElse({});
+  ).unwrapOr({});
 
   let pythonVersion: string | undefined;
   filterMap(res.deps, (dep) => {
@@ -61,9 +63,9 @@ export async function extractPackageFile(
     return null;
   }
 
-  const extractedConstraints: Record<string, any> = {};
+  const extractedConstraints: Partial<Record<ConstraintName, string>> = {};
 
-  if (is.nonEmptyString(pythonVersion)) {
+  if (isNonEmptyString(pythonVersion)) {
     extractedConstraints.python = pythonVersion;
   }
   res.extractedConstraints = extractedConstraints;

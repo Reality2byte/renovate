@@ -1,12 +1,14 @@
-import type { Category } from '../../../constants';
-import { RubyVersionDatasource } from '../../datasource/ruby-version';
-import { RubygemsDatasource } from '../../datasource/rubygems';
-import * as rubyVersioning from '../../versioning/ruby';
-import { updateArtifacts } from './artifacts';
-import { extractPackageFile } from './extract';
-import { updateLockedDependency } from './update-locked';
+import type { Category } from '../../../constants/index.ts';
+import { RubyVersionDatasource } from '../../datasource/ruby-version/index.ts';
+import { RubygemsDatasource } from '../../datasource/rubygems/index.ts';
+import * as rubyVersioning from '../../versioning/ruby/index.ts';
+import { updateArtifacts } from './artifacts.ts';
+import { extractPackageFile } from './extract.ts';
+import { updateLockedDependency } from './update-locked.ts';
 
 export const supportsLockFileMaintenance = true;
+export const lockFileNames = ['Gemfile.lock'];
+export const lockFileMaintenanceIsDelegatedToPackageManager = true;
 
 /*
  * Each of the below functions contain some explanations within their own files.
@@ -19,12 +21,13 @@ export {
   updateLockedDependency,
 };
 
+export const url = 'https://bundler.io/docs.html';
+export const categories: Category[] = ['ruby'];
+
 export const defaultConfig = {
-  fileMatch: ['(^|/)Gemfile$'],
+  managerFilePatterns: ['/(^|/)Gemfile$/'],
   versioning: rubyVersioning.id,
 };
-
-export const categories: Category[] = ['ruby'];
 
 export const supportedDatasources = [
   RubygemsDatasource.id,

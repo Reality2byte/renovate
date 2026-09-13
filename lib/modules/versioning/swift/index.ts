@@ -1,18 +1,19 @@
 import semver from 'semver';
 import stable from 'semver-stable';
-import type { RangeStrategy } from '../../../types/versioning';
-import { regEx } from '../../../util/regex';
-import type { VersioningApi } from '../types';
-import { getNewValue, toSemverRange } from './range';
+import type { RangeStrategy } from '../../../types/versioning.ts';
+import { regEx } from '../../../util/regex.ts';
+import type { VersioningApi } from '../types.ts';
+import { getNewValue, toSemverRange } from './range.ts';
 
 export const id = 'swift';
 export const displayName = 'Swift';
-export const urls = ['https://swift.org/package-manager/'];
+export const urls = [
+  '[Swift Package Manager](https://swift.org/package-manager/)',
+];
 export const supportsRanges = true;
 export const supportedRangeStrategies: RangeStrategy[] = [
   'bump',
   'widen',
-  'pin',
   'replace',
 ];
 
@@ -33,10 +34,13 @@ const {
   eq: equals,
 } = semver;
 
-export const isValid = (input: string): boolean =>
-  !!valid(input) || !!validRange(toSemverRange(input));
+export function isValid(input: string): boolean {
+  return !!valid(input) || !!validRange(toSemverRange(input));
+}
 
-export const isVersion = (input: string): boolean => !!valid(input);
+export function isVersion(input: string): boolean {
+  return !!valid(input);
+}
 
 function getSatisfyingVersion(
   versions: string[],

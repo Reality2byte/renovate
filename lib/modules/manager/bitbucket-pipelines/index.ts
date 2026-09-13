@@ -1,17 +1,19 @@
-import type { Category } from '../../../constants';
-import { DockerDatasource } from '../../datasource/docker';
-import { extractPackageFile } from './extract';
+import type { Category } from '../../../constants/index.ts';
+import { DockerDatasource } from '../../datasource/docker/index.ts';
+import { extractPackageFile } from './extract.ts';
 
+export { knownDepTypes } from './dep-types.ts';
 export { extractPackageFile };
 
+export const url =
+  'https://support.atlassian.com/bitbucket-cloud/docs/get-started-with-bitbucket-pipelines';
+export const categories: Category[] = ['ci'];
+export const urls = [
+  'https://support.atlassian.com/bitbucket-cloud/docs/bitbucket-pipelines-configuration-reference',
+];
+
 export const defaultConfig = {
-  fileMatch: ['(^|/)\\.?bitbucket-pipelines\\.ya?ml$'],
+  managerFilePatterns: ['**/*-pipelines.yml'],
 };
 
-export const categories: Category[] = ['ci'];
-
 export const supportedDatasources = [DockerDatasource.id];
-
-export const urls = [
-  'https://support.atlassian.com/bitbucket-cloud/docs/bitbucket-pipelines-configuration-reference/',
-];

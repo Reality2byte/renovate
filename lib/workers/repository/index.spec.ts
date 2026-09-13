@@ -1,18 +1,17 @@
-import { mock } from 'jest-mock-extended';
-import type { RenovateConfig } from '../../../test/util';
-import { mocked } from '../../../test/util';
-import { getConfig } from '../../config/defaults';
-import { GlobalConfig } from '../../config/global';
-import * as _process from './process';
-import type { ExtractResult } from './process/extract-update';
-import { renovateRepository } from '.';
+import { mock } from 'vitest-mock-extended';
+import type { RenovateConfig } from '~test/util.ts';
+import { getConfig } from '../../config/defaults.ts';
+import { renovateRepository } from './index.ts';
+import { initRepo } from './init/index.ts';
+import type { ExtractResult } from './process/extract-update.ts';
+import * as _process from './process/index.ts';
 
-const process = mocked(_process);
+const process = vi.mocked(_process);
 
-jest.mock('./init');
-jest.mock('./process');
-jest.mock('./result');
-jest.mock('./error');
+vi.mock('./init/index.ts');
+vi.mock('./process/index.ts');
+vi.mock('./result.ts');
+vi.mock('./error.ts');
 
 describe('workers/repository/index', () => {
   describe('renovateRepository()', () => {
@@ -20,12 +19,15 @@ describe('workers/repository/index', () => {
 
     beforeEach(() => {
       config = getConfig();
-      GlobalConfig.set({ localDir: '' });
+      config.localDir = '';
     });
 
-    it('runs', async () => {
+    it('does not process a repository, but also does not error', async () => {
       process.extractDependencies.mockResolvedValue(mock<ExtractResult>());
+      vi.mocked(initRepo).mockRejectedValueOnce(new Error('init error'));
       const res = await renovateRepository(config);
+      // this returns `undefined`, as we do not actually process a repository, so no `ProcessResult` is returned
+      // but importantly, no errors are thrown, either
       expect(res).toBeUndefined();
     });
   });

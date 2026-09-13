@@ -1,13 +1,14 @@
-import is from '@sindresorhus/is';
+import { isString } from '@sindresorhus/is';
 import type { SemVer } from 'semver';
 import semver from 'semver';
 import stable from 'semver-stable';
-import { regEx } from '../../../util/regex';
-import type { NewValueConfig, VersioningApi } from '../types';
+import { regEx } from '../../../util/regex.ts';
+import { isBreaking as semverIsBreaking } from '../semver/index.ts';
+import type { NewValueConfig, VersioningApi } from '../types.ts';
 
 export const id = 'semver-coerced';
 export const displayName = 'Coerced Semantic Versioning';
-export const urls = ['https://semver.org/'];
+export const urls = ['[Semantic Versioning](https://semver.org/)'];
 export const supportsRanges = false;
 
 function isStable(version: string): boolean {
@@ -22,10 +23,10 @@ function isStable(version: string): boolean {
     return false;
   }
 
-  const major = m.groups['major'];
-  const newMinor = m.groups['minor'] ?? '.0';
-  const newPatch = m.groups['patch'] ?? '.0';
-  const others = m.groups['others'] ?? '';
+  const major = m.groups.major;
+  const newMinor = m.groups.minor ?? '.0';
+  const newPatch = m.groups.patch ?? '.0';
+  const others = m.groups.others ?? '';
   const fixed = major + newMinor + newPatch + others;
   return stable.is(fixed);
 }
@@ -75,7 +76,7 @@ function getSatisfyingVersion(
     .map((version) =>
       semver.valid(version) ? version : semver.coerce(version)?.version,
     )
-    .filter(is.string);
+    .filter(isString);
 
   return semver.maxSatisfying(coercedVersions, range);
 }
@@ -86,7 +87,7 @@ function minSatisfyingVersion(
 ): string | null {
   const coercedVersions = versions
     .map((version) => semver.coerce(version)?.version)
-    .filter(is.string);
+    .filter(isString);
 
   return semver.minSatisfying(coercedVersions, range);
 }
@@ -118,9 +119,11 @@ function isSingleVersion(version: string): boolean {
 }
 
 // If this is left as an alias, inputs like "17.04.0" throw errors
-export const isVersion = (input: string): boolean => isValid(input);
+export function isVersion(input: string): boolean {
+  return isValid(input);
+}
 
-export { isVersion as isValid, getSatisfyingVersion };
+export { getSatisfyingVersion, isVersion as isValid };
 
 function getNewValue({
   currentValue,
@@ -128,9 +131,19 @@ function getNewValue({
   newVersion,
 }: NewValueConfig): string {
   if (currentVersion === `v${currentValue}`) {
-    return newVersion.replace(/^v/, '');
+    return newVersion.replace(regEx(/^v/), '');
   }
   return newVersion;
+}
+
+function isBreaking(version: string, current: string): boolean {
+  const coercedVersion = semver.coerce(version)?.toString();
+  const coercedCurrent = semver.coerce(current)?.toString();
+  return !!(
+    coercedVersion &&
+    coercedCurrent &&
+    semverIsBreaking(coercedVersion, coercedCurrent)
+  );
 }
 
 function isCompatible(version: string): boolean {
@@ -142,6 +155,7 @@ export const api: VersioningApi = {
   getMajor,
   getMinor,
   getPatch,
+  isBreaking,
   isCompatible,
   isGreaterThan,
   isLessThanRange,

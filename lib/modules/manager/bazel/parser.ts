@@ -1,10 +1,10 @@
-import type { lexer, parser } from 'good-enough-parser';
-import { lang, query as q } from 'good-enough-parser';
-import { logger } from '../../../logger';
-import * as memCache from '../../../util/cache/memory';
-import { hash } from '../../../util/hash';
-import { supportedRulesRegex } from './rules';
-import type { NestedFragment, RecordFragment } from './types';
+import type { lexer, parser } from '@renovatebot/good-enough-parser';
+import { lang, query as q } from '@renovatebot/good-enough-parser';
+import { logger } from '../../../logger/index.ts';
+import * as memCache from '../../../util/cache/memory/index.ts';
+import { hash } from '../../../util/hash.ts';
+import { supportedRulesRegex } from './rules/index.ts';
+import type { NestedFragment, RecordFragment } from './types.ts';
 
 interface Ctx {
   readonly source: string;
@@ -24,7 +24,7 @@ function emptyCtx(source: string): Ctx {
 }
 
 function currentFragment(ctx: Ctx): NestedFragment {
-  const deepestFragment = ctx.stack[ctx.stack.length - 1];
+  const deepestFragment = ctx.stack.at(-1)!;
   return deepestFragment;
 }
 
@@ -253,7 +253,7 @@ function recordStartHandler(ctx: Ctx, { offset }: lexer.Token): Ctx {
 function ruleNameHandler(ctx: Ctx, { value, offset }: lexer.Token): Ctx {
   const ruleFragment = currentFragment(ctx);
   if (ruleFragment.type === 'record') {
-    ruleFragment.children['rule'] = { type: 'string', value, offset };
+    ruleFragment.children.rule = { type: 'string', value, offset };
   }
 
   return ctx;

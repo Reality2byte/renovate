@@ -1,26 +1,37 @@
 import is from '@sindresorhus/is';
-import { GlobalConfig } from '../../../config/global';
-import { logger } from '../../../logger';
-import { isNotNullOrUndefined } from '../../../util/array';
-import { detectPlatform } from '../../../util/common';
-import { newlineRegex, regEx } from '../../../util/regex';
-import { parseSingleYaml } from '../../../util/yaml';
-import { GiteaTagsDatasource } from '../../datasource/gitea-tags';
-import { GithubRunnersDatasource } from '../../datasource/github-runners';
-import { GithubTagsDatasource } from '../../datasource/github-tags';
-import * as dockerVersioning from '../../versioning/docker';
-import { getDep } from '../dockerfile/extract';
-import type { PackageDependency, PackageFileContent } from '../types';
-import type { Workflow } from './types';
-
-const dockerActionRe = regEx(/^\s+uses\s*: ['"]?docker:\/\/([^'"]+)\s*$/);
-const actionRe = regEx(
-  /^\s+-?\s+?uses\s*: (?<replaceString>['"]?(?<registryUrl>https:\/\/[.\w-]+\/)?(?<depName>[\w-]+\/[.\w-]+)(?<path>\/.*)?@(?<currentValue>[^\s'"]+)['"]?(?:\s+#\s*(((?:renovate\s*:\s*)?(?:pin\s+|tag\s*=\s*)?|(?:ratchet:[\w-]+\/[.\w-]+)?)@?(?<tag>([\w-]*-)?v?\d+(?:\.\d+(?:\.\d+)?)?)|(?:ratchet:exclude)))?)/,
-);
-
-// SHA1 or SHA256, see https://github.blog/2020-10-19-git-2-29-released/
-const shaRe = regEx(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/);
-const shaShortRe = regEx(/^[a-f0-9]{6,7}$/);
+import { GlobalConfig } from '../../../config/global.ts';
+import { logger, withMeta } from '../../../logger/index.ts';
+import * as memCache from '../../../util/cache/memory/index.ts';
+import { detectPlatform } from '../../../util/common.ts';
+import { readLocalFile } from '../../../util/fs/index.ts';
+import { newlineRegex, regEx } from '../../../util/regex.ts';
+import { parseUrl } from '../../../util/url.ts';
+import { ForgejoTagsDatasource } from '../../datasource/forgejo-tags/index.ts';
+import { GiteaTagsDatasource } from '../../datasource/gitea-tags/index.ts';
+import { GithubDigestDatasource } from '../../datasource/github-digest/index.ts';
+import { GithubReleasesDatasource } from '../../datasource/github-releases/index.ts';
+import { GithubRunnersDatasource } from '../../datasource/github-runners/index.ts';
+import { GithubTagsDatasource } from '../../datasource/github-tags/index.ts';
+import * as dockerVersioning from '../../versioning/docker/index.ts';
+import * as exactVersioning from '../../versioning/exact/index.ts';
+import * as githubActionsVersioning from '../../versioning/github-actions/index.ts';
+import * as nodeVersioning from '../../versioning/node/index.ts';
+import * as npmVersioning from '../../versioning/npm/index.ts';
+import { getDep } from '../dockerfile/extract.ts';
+import type {
+  ExtractConfig,
+  PackageDependency,
+  PackageFileContent,
+} from '../types.ts';
+import { actionsLockFile, isLockfileManaged } from './common.ts';
+import { isSha, isShortSha, parseUsesLine, versionLikeRe } from './parse.ts';
+import type { UsesStep } from './schema.ts';
+import { ActionsLockfile, CommunityActions, Workflow } from './schema.ts';
+import type {
+  DockerReference,
+  LockfileState,
+  RepositoryReference,
+} from './types.ts';
 
 // detects if we run against a Github Enterprise Server and adds the URL to the beginning of the registryURLs for looking up Actions
 // This reflects the behavior of how GitHub looks up Actions
@@ -29,7 +40,11 @@ function detectCustomGitHubRegistryUrlsForActions(): PackageDependency {
   const endpoint = GlobalConfig.get('endpoint');
   const registryUrls = ['https://github.com'];
   if (endpoint && GlobalConfig.get('platform') === 'github') {
-    const parsedEndpoint = new URL(endpoint);
+    const parsedEndpoint = parseUrl(endpoint);
+    if (!parsedEndpoint) {
+      logger.warn({ endpoint }, 'Failed to parse endpoint url');
+      return {};
+    }
 
     if (
       parsedEndpoint.host !== 'github.com' &&
@@ -44,66 +59,145 @@ function detectCustomGitHubRegistryUrlsForActions(): PackageDependency {
   return {};
 }
 
-function extractWithRegex(content: string): PackageDependency[] {
+function extractDockerAction(
+  actionRef: DockerReference,
+  config: ExtractConfig,
+): PackageDependency {
+  const dep = getDep(actionRef.originalRef, true, config.registryAliases);
+  dep.depType = 'docker';
+  dep.replaceString = actionRef.originalRef;
+  return dep;
+}
+
+const reusableWorkflowPathRe = regEx(/^\.github\/workflows\/[^/]+\.ya?ml$/);
+
+function extractRepositoryAction(
+  actionRef: RepositoryReference,
+  parsed: ReturnType<typeof parseUsesLine> & object,
+  customRegistryUrlsPackageDependency: PackageDependency,
+): PackageDependency {
+  const {
+    replaceString: valueString,
+    quote,
+    commentData,
+    commentPrecedingWhitespace,
+  } = parsed;
+  const {
+    owner,
+    repo,
+    path: subPath,
+    ref,
+    hostname,
+    isExplicitHostname,
+  } = actionRef;
+
+  const registryUrl = isExplicitHostname ? `https://${hostname}/` : '';
+  const packageName = `${owner}/${repo}`;
+  const depName = `${registryUrl}${packageName}`;
+  const pathSuffix = subPath ? `/${subPath}` : '';
+  const commentWs = commentPrecedingWhitespace || ' ';
+  const isReusableWorkflow = !!subPath && reusableWorkflowPathRe.test(subPath);
+
+  const dep: PackageDependency = {
+    depName,
+    commitMessageTopic: '{{{depName}}} action',
+    versioning: githubActionsVersioning.id,
+    depType: isReusableWorkflow ? 'workflow' : 'action',
+    replaceString: valueString,
+    autoReplaceStringTemplate: `${quote}{{depName}}${pathSuffix}@{{#if newDigest}}{{newDigest}}${quote}{{#if newValue}}${commentWs}# {{newValue}}{{/if}}{{/if}}{{#unless newDigest}}{{newValue}}${quote}{{/unless}}`,
+    ...(isExplicitHostname
+      ? detectDatasource(registryUrl)
+      : customRegistryUrlsPackageDependency),
+  };
+
+  if (packageName !== depName) {
+    dep.packageName = packageName;
+  }
+
+  // Extend replaceString to include relevant comment portions:
+  // - Pinned version or ref: include only up to the matched token (truncate trailing text)
+  // - Ratchet exclude: include the full comment to preserve the marker
+  const pinComment =
+    commentData.pinnedVersion ??
+    (isSha(ref) || isShortSha(ref) ? commentData.ref : undefined);
+  if (
+    pinComment &&
+    !is.undefined(commentData.index) &&
+    !is.undefined(commentData.matchedString)
+  ) {
+    const cleanComment = parsed.commentString.slice(1);
+    const matchEndIndex = commentData.index + commentData.matchedString.length;
+    const commentSuffix = cleanComment.slice(0, matchEndIndex);
+    dep.replaceString = `${valueString}${commentPrecedingWhitespace}#${commentSuffix}`;
+  } else if (commentData.ratchetExclude) {
+    dep.replaceString =
+      valueString + commentPrecedingWhitespace + parsed.commentString;
+  }
+
+  if (isSha(ref)) {
+    dep.currentValue = commentData.pinnedVersion ?? commentData.ref;
+    dep.currentDigest = ref;
+  } else if (isShortSha(ref)) {
+    dep.currentValue = commentData.pinnedVersion ?? commentData.ref;
+    dep.currentDigestShort = ref;
+  } else {
+    dep.currentValue = ref;
+  }
+
+  if (!dep.currentValue) {
+    dep.enabled = false;
+    dep.skipReason = 'unversioned-reference';
+  }
+
+  const isVersionLike =
+    dep.currentValue && versionLikeRe.test(dep.currentValue);
+  if (!dep.datasource && dep.currentValue && !isVersionLike) {
+    dep.datasource = GithubDigestDatasource.id;
+    dep.versioning = exactVersioning.id;
+  }
+
+  dep.datasource ??= GithubTagsDatasource.id;
+
+  return dep;
+}
+
+function extractWithRegex(
+  content: string,
+  config: ExtractConfig,
+): PackageDependency[] {
   const customRegistryUrlsPackageDependency =
     detectCustomGitHubRegistryUrlsForActions();
   logger.trace('github-actions.extractWithRegex()');
   const deps: PackageDependency[] = [];
+
   for (const line of content.split(newlineRegex)) {
     if (line.trim().startsWith('#')) {
       continue;
     }
 
-    const dockerMatch = dockerActionRe.exec(line);
-    if (dockerMatch) {
-      const [, currentFrom] = dockerMatch;
-      const dep = getDep(currentFrom);
-      dep.depType = 'docker';
-      deps.push(dep);
+    const parsed = parseUsesLine(line);
+    if (!parsed?.actionRef) {
       continue;
     }
 
-    const tagMatch = actionRe.exec(line);
-    if (tagMatch?.groups) {
-      const {
-        depName,
-        currentValue,
-        path = '',
-        tag,
-        replaceString,
-        registryUrl = '',
-      } = tagMatch.groups;
-      let quotes = '';
-      if (replaceString.indexOf("'") >= 0) {
-        quotes = "'";
-      }
-      if (replaceString.indexOf('"') >= 0) {
-        quotes = '"';
-      }
-      const dep: PackageDependency = {
-        depName,
-        commitMessageTopic: '{{{depName}}} action',
-        datasource: GithubTagsDatasource.id,
-        versioning: dockerVersioning.id,
-        depType: 'action',
-        replaceString,
-        autoReplaceStringTemplate: `${quotes}${registryUrl}{{depName}}${path}@{{#if newDigest}}{{newDigest}}${quotes}{{#if newValue}} # {{newValue}}{{/if}}{{/if}}{{#unless newDigest}}{{newValue}}${quotes}{{/unless}}`,
-        ...(registryUrl
-          ? detectDatasource(registryUrl)
-          : customRegistryUrlsPackageDependency),
-      };
-      if (shaRe.test(currentValue)) {
-        dep.currentValue = tag;
-        dep.currentDigest = currentValue;
-      } else if (shaShortRe.test(currentValue)) {
-        dep.currentValue = tag;
-        dep.currentDigestShort = currentValue;
-      } else {
-        dep.currentValue = currentValue;
-      }
-      deps.push(dep);
+    const { actionRef } = parsed;
+
+    if (actionRef.kind === 'docker') {
+      deps.push(extractDockerAction(actionRef, config));
+      continue;
+    }
+
+    if (actionRef.kind === 'repository') {
+      deps.push(
+        extractRepositoryAction(
+          actionRef,
+          parsed,
+          customRegistryUrlsPackageDependency,
+        ),
+      );
     }
   }
+
   return deps;
 }
 
@@ -111,27 +205,23 @@ function detectDatasource(registryUrl: string): PackageDependency {
   const platform = detectPlatform(registryUrl);
 
   switch (platform) {
-    case 'github':
-      return { registryUrls: [registryUrl] };
+    case 'forgejo':
+      return {
+        registryUrls: [registryUrl],
+        datasource: ForgejoTagsDatasource.id,
+      };
     case 'gitea':
       return {
         registryUrls: [registryUrl],
         datasource: GiteaTagsDatasource.id,
       };
+    case 'github':
+      return { registryUrls: [registryUrl] };
   }
 
   return {
     skipReason: 'unsupported-url',
   };
-}
-
-function extractContainer(container: unknown): PackageDependency | undefined {
-  if (is.string(container)) {
-    return getDep(container);
-  } else if (is.plainObject(container) && is.string(container.image)) {
-    return getDep(container.image);
-  }
-  return undefined;
 }
 
 const runnerVersionRegex = regEx(
@@ -166,68 +256,191 @@ function extractRunner(runner: string): PackageDependency | null {
   return dependency;
 }
 
-function extractRunners(runner: unknown): PackageDependency[] {
-  const runners: string[] = [];
-  if (is.string(runner)) {
-    runners.push(runner);
-  } else if (is.array(runner, is.string)) {
-    runners.push(...runner);
+// For official https://github.com/actions
+const versionedActions: Record<string, string> = {
+  go: npmVersioning.id,
+  node: nodeVersioning.id,
+  python: npmVersioning.id,
+
+  // Not covered yet because they use different datasources/packageNames:
+  // - dotnet
+  // - java
+};
+
+function extractVersionedAction(step: UsesStep): PackageDependency | null {
+  for (const [action, versioning] of Object.entries(versionedActions)) {
+    const actionName = `actions/setup-${action}`;
+    if (step.uses !== actionName && !step.uses?.startsWith(`${actionName}@`)) {
+      continue;
+    }
+
+    const fieldName = `${action}-version`;
+    const currentValue = step.with?.[fieldName];
+    if (!currentValue) {
+      return null;
+    }
+
+    return {
+      datasource: GithubReleasesDatasource.id,
+      depName: action,
+      packageName: `actions/${action}-versions`,
+      versioning,
+      extractVersion: '^(?<version>\\d+\\.\\d+\\.\\d+)(-\\d+)?$',
+      currentValue,
+      depType: 'uses-with',
+    };
+  }
+  return null;
+}
+
+function extractSteps(steps: UsesStep[]): PackageDependency[] {
+  const deps: PackageDependency[] = [];
+
+  for (const step of steps) {
+    const res = CommunityActions.safeParse(step);
+    if (res.success) {
+      deps.push(...res.data);
+      continue;
+    }
+
+    const versionedDep = extractVersionedAction(step);
+    if (versionedDep) {
+      deps.push(versionedDep);
+    }
   }
 
-  return runners.map(extractRunner).filter(isNotNullOrUndefined);
+  return deps;
 }
 
 function extractWithYAMLParser(
   content: string,
   packageFile: string,
+  config: ExtractConfig,
 ): PackageDependency[] {
   logger.trace('github-actions.extractWithYAMLParser()');
-  const deps: PackageDependency[] = [];
 
-  let pkg: Workflow;
-  try {
-    // TODO: use schema (#9610)
-    pkg = parseSingleYaml(content);
-  } catch (err) {
-    logger.debug(
-      { packageFile, err },
-      'Failed to parse GitHub Actions Workflow YAML',
-    );
+  const obj = withMeta({ packageFile }, () => Workflow.parse(content));
+  if (!obj) {
     return [];
   }
 
-  for (const job of Object.values(pkg?.jobs ?? {})) {
-    const dep = extractContainer(job?.container);
-    if (dep) {
-      dep.depType = 'container';
-      deps.push(dep);
+  if ('runs' in obj && obj.runs.steps) {
+    return extractSteps(obj.runs.steps);
+  }
+
+  if (!('jobs' in obj)) {
+    return [];
+  }
+
+  const deps: PackageDependency[] = [];
+
+  for (const job of Object.values(obj.jobs)) {
+    if (job.container) {
+      const dep = getDep(job.container, true, config.registryAliases);
+      if (dep) {
+        dep.depType = 'container';
+        deps.push(dep);
+      }
     }
 
-    for (const service of Object.values(job?.services ?? {})) {
-      const dep = extractContainer(service);
+    for (const service of job.services) {
+      const dep = getDep(service, true, config.registryAliases);
       if (dep) {
         dep.depType = 'service';
         deps.push(dep);
       }
     }
 
-    deps.push(...extractRunners(job?.['runs-on']));
+    for (const runner of job['runs-on']) {
+      const dep = extractRunner(runner);
+      if (dep) {
+        deps.push(dep);
+      }
+    }
+
+    deps.push(...extractSteps(job.steps));
   }
 
   return deps;
 }
 
-export function extractPackageFile(
+async function readLockfile(): Promise<LockfileState> {
+  const content = await readLocalFile(actionsLockFile, 'utf8');
+  if (!content) {
+    return { type: 'missing' };
+  }
+
+  const parsed = ActionsLockfile.safeParse(content);
+  if (!parsed.success) {
+    // `updateActionsLockfile` warns about this once per branch, so stay quiet
+    logger.debug(`Failed to parse ${actionsLockFile}`);
+    return { type: 'unparseable' };
+  }
+
+  return { type: 'parsed', onboardedWorkflows: parsed.data.workflows };
+}
+
+/**
+ * A repository has a single lock file, but can have any number of package files, so read and parse it only once.
+ */
+function getLockfile(): Promise<LockfileState> {
+  const cacheKey = `github-actions:${actionsLockFile}`;
+  const cached = memCache.get<Promise<LockfileState> | undefined>(cacheKey);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  const result = readLockfile();
+  memCache.set(cacheKey, result);
+  return result;
+}
+
+/**
+ * Whether `gh actions-lock` owns the digests in this file.
+ *
+ * It rewrites the workflows it manages back to plain refs when regenerating, so an inline digest pin would be stripped straight back out.
+ */
+async function isManagedByLockfile(packageFile: string): Promise<boolean> {
+  const lockfile = await getLockfile();
+
+  switch (lockfile.type) {
+    case 'missing':
+      return false;
+    case 'unparseable':
+      // The tool refuses to regenerate a lock file which it cannot parse, so treat everything as managed: pinning inline here would raise a PR which pins the digests the tool owns and leaves the lock file stale.
+      return true;
+    case 'parsed':
+      return isLockfileManaged(packageFile, lockfile.onboardedWorkflows);
+  }
+}
+
+export async function extractPackageFile(
   content: string,
   packageFile: string,
-): PackageFileContent | null {
+  config: ExtractConfig = {}, // TODO: enforce ExtractConfig
+): Promise<PackageFileContent | null> {
   logger.trace(`github-actions.extractPackageFile(${packageFile})`);
+
   const deps = [
-    ...extractWithRegex(content),
-    ...extractWithYAMLParser(content, packageFile),
+    ...extractWithRegex(content, config),
+    ...extractWithYAMLParser(content, packageFile, config),
   ];
+
   if (!deps.length) {
     return null;
   }
-  return { deps };
+
+  const res: PackageFileContent = { deps };
+
+  if (await isManagedByLockfile(packageFile)) {
+    // Deliberately no `lockFiles`: nothing here goes through `updateArtifacts`, and `matchFileNames` also tests `lockFiles`, so declaring it would make a negated rule such as `!.github/workflows/release.yml` match every workflow through the lock file path.
+    for (const dep of deps) {
+      // The lock file only records `OWNER/REPO@REF` pins, so a `docker://` image in a `uses:` is still ours to pin.
+      if (dep.depType === 'action' || dep.depType === 'workflow') {
+        dep.digestManagedExternally = true;
+      }
+    }
+  }
+
+  return res;
 }

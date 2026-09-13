@@ -1,15 +1,17 @@
-import type { Category } from '../../../constants';
-import { MavenDatasource } from '../../datasource/maven';
-import { id as versioning } from '../../versioning/maven';
+import type { Category } from '../../../constants/index.ts';
+import { MavenDatasource } from '../../datasource/maven/index.ts';
 
-export { extractPackageFile } from './extract';
-export { updateArtifacts } from './artifacts';
+export { updateArtifacts } from './artifacts.ts';
+export { extractPackageFile } from './extract.ts';
+
+export const url = 'https://maven.apache.org/tools/wrapper';
+export const categories: Category[] = ['java'];
 
 export const defaultConfig = {
-  fileMatch: ['(^|\\/).mvn/wrapper/maven-wrapper.properties$'],
-  versioning,
+  managerFilePatterns: [
+    '/(^|\\/).mvn/wrapper/maven-wrapper.properties$/',
+    '/(^|\\/)mvnw(.cmd)?$/',
+  ],
 };
-
-export const categories: Category[] = ['java'];
 
 export const supportedDatasources = [MavenDatasource.id];

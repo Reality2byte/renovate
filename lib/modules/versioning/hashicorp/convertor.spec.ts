@@ -1,4 +1,4 @@
-import { hashicorp2npm, npm2hashicorp } from './convertor';
+import { hashicorp2npm, npm2hashicorp } from './convertor.ts';
 
 describe('modules/versioning/hashicorp/convertor', () => {
   it.each`
@@ -25,6 +25,31 @@ describe('modules/versioning/hashicorp/convertor', () => {
     ({ hashicorp, npm }) => {
       expect(hashicorp2npm(hashicorp)).toBe(npm);
       expect(npm2hashicorp(npm)).toBe(hashicorp);
+    },
+  );
+
+  // These are cases where $hashicorp === $npm
+  it.each`
+    version
+    ${'1.0.0-0'}
+    ${'1.0.0-1'}
+    ${'1.0.0-1.1'}
+    ${'1.0.0-10.21.32'}
+    ${'1.0.0-1.alpha.2'}
+    ${'1.0.0-alpha.beta'}
+    ${'1.0.0-alpha.beta.1'}
+    ${'1.0.0-alpha0.valid'}
+    ${'1.0.0-alpha.0valid'}
+    ${'1.0.0-alpha1test'}
+    ${'1.0.0-a.b'}
+    ${'1.0.0-a-b'}
+    ${'1.0.0-a1.-1-0-.09-9-'}
+    ${'1.0.0-a--.b'}
+  `(
+    'hashicorp2npm("$version") === $version && npm2hashicorp("$version") === $version',
+    ({ version }) => {
+      expect(hashicorp2npm(version)).toBe(version);
+      expect(npm2hashicorp(version)).toBe(version);
     },
   );
 
@@ -57,15 +82,17 @@ describe('modules/versioning/hashicorp/convertor', () => {
     expect(npm2hashicorp(npm)).toBe(hashicorp);
   });
 
-  test('hashicorp2npm doesnt support !=', () => {
-    expect(() => hashicorp2npm('!= 4')).toThrow();
+  it('hashicorp2npm doesnt support !=', () => {
+    expect(() => hashicorp2npm('!= 4')).toThrow(
+      'Unsupported hashicorp constraint',
+    );
   });
 
-  test('hashicorp2npm throws on invalid', () => {
-    expect(() => hashicorp2npm('^4')).toThrow();
+  it('hashicorp2npm throws on invalid', () => {
+    expect(() => hashicorp2npm('^4')).toThrow('Invalid hashicorp constraint');
   });
 
-  test('npm2hashicorp throws on unsupported', () => {
-    expect(() => npm2hashicorp('4.x.x')).toThrow();
+  it('npm2hashicorp throws on unsupported', () => {
+    expect(() => npm2hashicorp('4.x.x')).toThrow('invalid npm constraint');
   });
 });

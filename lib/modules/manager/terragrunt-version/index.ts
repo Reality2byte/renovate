@@ -1,15 +1,16 @@
-import type { Category } from '../../../constants';
-import { GithubReleasesDatasource } from '../../datasource/github-releases';
-import * as hashicorpVersioning from '../../versioning/hashicorp';
+import type { Category } from '../../../constants/index.ts';
+import { GithubReleasesDatasource } from '../../datasource/github-releases/index.ts';
+import * as hashicorpVersioning from '../../versioning/hashicorp/index.ts';
 
-export { extractPackageFile } from './extract';
+export { extractPackageFile } from './extract.ts';
 
-export const supportedDatasources = [GithubReleasesDatasource.id];
+export const displayName = '.terragrunt-version';
+export const categories: Category[] = ['terraform'];
 
 export const defaultConfig = {
-  fileMatch: ['(^|/)\\.terragrunt-version$'],
+  managerFilePatterns: ['/(^|/)\\.terragrunt-version$/'],
   versioning: hashicorpVersioning.id,
   extractVersion: '^v(?<version>.+)$',
 };
 
-export const categories: Category[] = ['terraform'];
+export const supportedDatasources = [GithubReleasesDatasource.id];

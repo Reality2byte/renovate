@@ -1,5 +1,5 @@
-import { Fixtures } from '../../../../test/fixtures';
-import { extractPackageFile } from '.';
+import { Fixtures } from '~test/fixtures.ts';
+import { extractPackageFile } from './index.ts';
 
 describe('modules/manager/terragrunt/extract', () => {
   describe('extractPackageFile()', () => {
@@ -30,6 +30,13 @@ describe('modules/manager/terragrunt/extract', () => {
             depType: 'terragrunt',
           },
           {},
+          {
+            currentValue: '1.0.0',
+            datasource: 'terraform-module',
+            depName: 'abc/helloworld/aws',
+            depType: 'terragrunt',
+            registryUrls: ['https://registry.domain.com'],
+          },
           {
             currentValue: '1.0.0',
             datasource: 'terraform-module',
@@ -419,6 +426,13 @@ describe('modules/manager/terragrunt/extract', () => {
             packageName: 'ssh://git@mygit.com/hashicorp/example',
           },
           {
+            currentValue: 'v1.0.4',
+            datasource: 'git-tags',
+            depName: 'mygit.com/hashicorp/example',
+            depType: 'gitTags',
+            packageName: 'ssh://git@mygit.com/hashicorp/example',
+          },
+          {
             skipReason: 'no-source',
           },
           {
@@ -466,7 +480,7 @@ describe('modules/manager/terragrunt/extract', () => {
           },
         ],
       });
-      expect(res?.deps).toHaveLength(35);
+      expect(res?.deps).toHaveLength(36);
       expect(res?.deps.filter((dep) => dep.skipReason)).toHaveLength(4);
     });
 
@@ -688,6 +702,15 @@ describe('modules/manager/terragrunt/extract', () => {
       }
       `),
       ).toBeNull();
+    });
+
+    it('returns empty deps if only local terragrunt includes', () => {
+      expect(
+        extractPackageFile(`include "root" {
+        path = find_in_parent_folders("root.hcl")
+      }
+      `),
+      ).toStrictEqual({ deps: [] });
     });
   });
 });

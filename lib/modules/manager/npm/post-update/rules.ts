@@ -1,16 +1,10 @@
-import is from '@sindresorhus/is';
-import { logger } from '../../../../logger';
-import * as hostRules from '../../../../util/host-rules';
-import { regEx } from '../../../../util/regex';
-import { toBase64 } from '../../../../util/string';
-import { isHttpUrl } from '../../../../util/url';
-import type { YarnRcYmlFile } from './types';
-
-export interface HostRulesResult {
-  additionalNpmrcContent: string[];
-  additionalYarnRcYml?: any;
-}
-
+import { isNullOrUndefined, isString } from '@sindresorhus/is';
+import { logger } from '../../../../logger/index.ts';
+import * as hostRules from '../../../../util/host-rules.ts';
+import { regEx } from '../../../../util/regex.ts';
+import { toBase64 } from '../../../../util/string.ts';
+import { isHttpUrl } from '../../../../util/url.ts';
+import type { HostRulesResult, YarnRcYmlFile } from './types.ts';
 export function processHostRules(): HostRulesResult {
   const additionalYarnRcYml: YarnRcYmlFile = { npmRegistries: {} };
 
@@ -20,7 +14,27 @@ export function processHostRules(): HostRulesResult {
     hostType: 'npm',
   });
   logger.debug(`Found ${npmHostRules.length} npm host rule(s)`);
-  for (const hostRule of npmHostRules) {
+  // Include host rules without specific type to mimic the behavior used when determining dependencies with updates.
+  const noTypeHostRules = hostRules
+    .getAll()
+    .filter((rule) => isNullOrUndefined(rule.hostType));
+  logger.debug(
+    `Found ${noTypeHostRules.length} host rule(s) without host type`,
+  );
+  // Drop duplicates for the same matchHost while prefering the more specific rules with hostType npm.
+  const noTypeHostRulesWithoutDuplicates = noTypeHostRules.filter(
+    (rule) => !npmHostRules.some((elem) => elem.matchHost === rule.matchHost),
+  );
+  logger.debug(
+    `Found ${noTypeHostRulesWithoutDuplicates.length} host rule(s) without host type after dropping duplicates`,
+  );
+  const effectiveHostRules = npmHostRules.concat(
+    noTypeHostRulesWithoutDuplicates,
+  );
+  logger.trace(
+    `Found ${effectiveHostRules.length} effective npm host rule(s) after deduplication`,
+  );
+  for (const hostRule of effectiveHostRules) {
     if (!hostRule.resolvedHost) {
       logger.debug('Skipping host rule without resolved host');
       continue;
@@ -28,7 +42,7 @@ export function processHostRules(): HostRulesResult {
 
     const matchedHost = hostRule.matchHost;
     // Should never be necessary as if we have a resolvedHost, there has to be a matchHost
-    // istanbul ignore next
+    /* v8 ignore if -- unreachable: a resolvedHost implies matchHost is set (see comment above) */
     if (!matchedHost) {
       logger.debug('Skipping host rule without matchHost');
       continue;
@@ -64,7 +78,8 @@ export function processHostRules(): HostRulesResult {
       continue;
     }
 
-    if (is.string(hostRule.username) && is.string(hostRule.password)) {
+    // v8 ignore else -- TODO: add test #40625
+    if (isString(hostRule.username) && isString(hostRule.password)) {
       logger.debug(
         `Adding npmrc entry for ${cleanedUri} with username/password`,
       );

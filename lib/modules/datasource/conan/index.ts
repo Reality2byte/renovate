@@ -1,31 +1,26 @@
-import is from '@sindresorhus/is';
-import { logger } from '../../../logger';
-import { cache } from '../../../util/cache/package/decorator';
-import { GithubHttp } from '../../../util/http/github';
-import { ensureTrailingSlash, joinUrlParts } from '../../../util/url';
-import { parseSingleYaml } from '../../../util/yaml';
-import * as allVersioning from '../../versioning';
-import { Datasource } from '../datasource';
+import { isString, isUndefined } from '@sindresorhus/is';
+import { logger } from '../../../logger/index.ts';
+import { withCache } from '../../../util/cache/package/with-cache.ts';
+import { GithubHttp } from '../../../util/http/github.ts';
+import { regEx } from '../../../util/regex.ts';
+import { ensureTrailingSlash, joinUrlParts } from '../../../util/url.ts';
+import * as allVersioning from '../../versioning/index.ts';
+import { Datasource } from '../datasource.ts';
 import type {
   DigestConfig,
   GetReleasesConfig,
   Release,
   ReleaseResult,
-} from '../types';
-import { isArtifactoryServer } from '../util';
+} from '../types.ts';
+import { isArtifactoryServer } from '../util.ts';
+import { datasource, defaultRegistryUrl, getConanPackage } from './common.ts';
 import {
-  conanDatasourceRegex,
-  datasource,
-  defaultRegistryUrl,
-  getConanPackage,
-} from './common';
-import type {
+  ConanCenterReleases,
   ConanJSON,
+  ConanLatestRevision,
   ConanProperties,
   ConanRevisionJSON,
-  ConanRevisionsJSON,
-  ConanYAML,
-} from './types';
+} from './schema.ts';
 
 export class ConanDatasource extends Datasource {
   static readonly id = datasource;
@@ -59,29 +54,19 @@ export class ConanDatasource extends Datasource {
       return null;
     }
     const url = `https://api.github.com/repos/conan-io/conan-center-index/contents/recipes/${conanName}/config.yml`;
-    const res = await this.githubHttp.get(url, {
-      headers: { accept: 'application/vnd.github.v3.raw' },
-    });
-    // TODO: use schema (#9610)
-    const doc = parseSingleYaml<ConanYAML>(res.body);
-    return {
-      releases: Object.keys(doc?.versions ?? {}).map((version) => ({
-        version,
-      })),
-    };
+    const { body: result } = await this.githubHttp.getYaml(
+      url,
+      { headers: { accept: 'application/vnd.github.v3.raw' } },
+      ConanCenterReleases,
+    );
+    return result;
   }
 
-  @cache({
-    namespace: `datasource-${datasource}`,
-    key: ({ registryUrl, packageName }: DigestConfig, newValue?: string) =>
-      // TODO: types (#22198)
-      `getDigest:${registryUrl!}:${packageName}:${newValue!}`,
-  })
-  override async getDigest(
+  private async _getDigest(
     { registryUrl, packageName }: DigestConfig,
     newValue?: string,
   ): Promise<string | null> {
-    if (is.undefined(newValue) || is.undefined(registryUrl)) {
+    if (isUndefined(newValue) || isUndefined(registryUrl)) {
       return null;
     }
     const url = ensureTrailingSlash(registryUrl);
@@ -94,26 +79,36 @@ export class ConanDatasource extends Datasource {
       conanPackage.userAndChannel,
       '/revisions',
     );
-    const revisionRep =
-      await this.http.getJson<ConanRevisionsJSON>(revisionLookUp);
-    const revisions = revisionRep?.body.revisions;
-    return revisions?.[0].revision ?? null;
+    const { body: digest } = await this.http.getJson(
+      revisionLookUp,
+      ConanLatestRevision,
+    );
+    return digest;
   }
 
-  @cache({
-    namespace: `datasource-${datasource}`,
-    key: ({ registryUrl, packageName }: GetReleasesConfig) =>
-      // TODO: types (#22198)
-      `getReleases:${registryUrl}:${packageName}`,
-  })
-  async getReleases({
+  override getDigest(
+    config: DigestConfig,
+    newValue?: string,
+  ): Promise<string | null> {
+    return withCache(
+      {
+        namespace: `datasource-${datasource}`,
+        // TODO: types (#22198)
+        key: `getDigest:${config.registryUrl!}:${config.packageName}:${newValue!}`,
+        fallback: true,
+      },
+      () => this._getDigest(config, newValue),
+    );
+  }
+
+  private async _getReleases({
     registryUrl,
     packageName,
   }: GetReleasesConfig): Promise<ReleaseResult | null> {
     const conanPackage = getConanPackage(packageName);
-    const userAndChannel = '@' + conanPackage.userAndChannel;
+    const userAndChannel = `@${conanPackage.userAndChannel}`;
     if (
-      is.string(registryUrl) &&
+      isString(registryUrl) &&
       ensureTrailingSlash(registryUrl) === defaultRegistryUrl
     ) {
       return this.getConanCenterReleases(
@@ -135,31 +130,23 @@ export class ConanDatasource extends Datasource {
       );
 
       try {
-        const rep = await this.http.getJson<ConanJSON>(lookupUrl);
-        const versions = rep?.body;
-        if (versions) {
+        const rep = await this.http.getJson(lookupUrl, ConanJSON);
+        const conanJson = rep.body;
+        if (conanJson) {
           logger.trace({ lookupUrl }, 'Got conan api result');
           const dep: ReleaseResult = { releases: [] };
 
-          for (const resultString of Object.values(versions.results ?? {})) {
-            conanDatasourceRegex.lastIndex = 0;
-            const fromMatch = conanDatasourceRegex.exec(resultString);
-            if (fromMatch?.groups?.version && fromMatch?.groups?.userChannel) {
-              const version = fromMatch.groups.version;
-              if (fromMatch.groups.userChannel === userAndChannel) {
-                const result: Release = {
-                  version,
-                };
-                dep.releases.push(result);
-              }
-            }
-          }
+          const conanJsonReleases: Release[] = conanJson
+            .filter(({ userChannel }) => userChannel === userAndChannel)
+            .map(({ version }) => ({ version }));
+          dep.releases.push(...conanJsonReleases);
 
           try {
             if (isArtifactoryServer(rep)) {
-              const conanApiRegexp =
-                /(?<host>.*)\/artifactory\/api\/conan\/(?<repo>[^/]+)/;
-              const groups = url.match(conanApiRegexp)?.groups;
+              const conanApiRegexp = regEx(
+                /(?<host>.*)\/artifactory\/api\/conan\/(?<repo>[^/]+)/,
+              );
+              const groups = conanApiRegexp.exec(url)?.groups;
               if (!groups) {
                 return dep;
               }
@@ -182,25 +169,22 @@ export class ConanDatasource extends Datasource {
                 url,
                 `v2/conans/${conanPackage.conanName}/${latestVersion}/${conanPackage.userAndChannel}/latest`,
               );
-              const revResp =
-                await this.http.getJson<ConanRevisionJSON>(latestRevisionUrl);
-              const packageRev = revResp.body.revision;
+              const {
+                body: { revision: packageRev },
+              } = await this.http.getJson(latestRevisionUrl, ConanRevisionJSON);
 
               const [user, channel] = conanPackage.userAndChannel.split('/');
               const packageUrl = joinUrlParts(
                 `${groups.host}/artifactory/api/storage/${groups.repo}`,
                 `${user}/${conanPackage.conanName}/${latestVersion}/${channel}/${packageRev}/export/conanfile.py?properties=conan.package.url`,
               );
-              const packageUrlResp =
-                await this.http.getJson<ConanProperties>(packageUrl);
-
-              if (
-                packageUrlResp.body.properties &&
-                'conan.package.url' in packageUrlResp.body.properties
-              ) {
-                const conanPackageUrl =
-                  packageUrlResp.body.properties['conan.package.url'][0];
-                dep.sourceUrl = conanPackageUrl;
+              const { body: conanProperties } = await this.http.getJson(
+                packageUrl,
+                ConanProperties,
+              );
+              const { sourceUrl } = conanProperties;
+              if (sourceUrl) {
+                dep.sourceUrl = sourceUrl;
               }
             }
           } catch (err) {
@@ -214,5 +198,17 @@ export class ConanDatasource extends Datasource {
     }
 
     return null;
+  }
+
+  getReleases(config: GetReleasesConfig): Promise<ReleaseResult | null> {
+    return withCache(
+      {
+        namespace: `datasource-${datasource}`,
+        // TODO: types (#22198)
+        key: `getReleases:${config.registryUrl}:${config.packageName}`,
+        fallback: true,
+      },
+      () => this._getReleases(config),
+    );
   }
 }

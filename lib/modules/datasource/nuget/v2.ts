@@ -1,10 +1,12 @@
 import type { XmlElement } from 'xmldoc';
 import { XmlDocument } from 'xmldoc';
-import { logger } from '../../../logger';
-import type { Http } from '../../../util/http';
-import { regEx } from '../../../util/regex';
-import type { ReleaseResult } from '../types';
-import { massageUrl, removeBuildMeta } from './common';
+import { logger } from '../../../logger/index.ts';
+import type { Http } from '../../../util/http/index.ts';
+import { regEx } from '../../../util/regex.ts';
+import { asTimestamp } from '../../../util/timestamp.ts';
+import type { ReleaseResult } from '../types.ts';
+import { resolvePaginationUrl } from '../util.ts';
+import { massageUrl, removeBuildMeta } from './common.ts';
 
 export class NugetV2Api {
   getPkgProp(pkgInfo: XmlElement, propName: string): string | undefined {
@@ -15,6 +17,7 @@ export class NugetV2Api {
     http: Http,
     feedUrl: string,
     pkgName: string,
+    allowCrossOrigin: boolean,
   ): Promise<ReleaseResult | null> {
     const dep: ReleaseResult = {
       releases: [],
@@ -25,14 +28,16 @@ export class NugetV2Api {
     )}/FindPackagesById()?id=%27${pkgName}%27&$select=Version,IsLatestVersion,ProjectUrl,Published`;
     while (pkgUrlList !== null) {
       // typescript issue
-      const pkgVersionsListRaw = await http.get(pkgUrlList);
+      const pkgVersionsListRaw = await http.getText(pkgUrlList);
       const pkgVersionsListDoc = new XmlDocument(pkgVersionsListRaw.body);
 
       const pkgInfoList = pkgVersionsListDoc.childrenNamed('entry');
 
       for (const pkgInfo of pkgInfoList) {
         const version = this.getPkgProp(pkgInfo, 'Version');
-        const releaseTimestamp = this.getPkgProp(pkgInfo, 'Published');
+        const releaseTimestamp = asTimestamp(
+          this.getPkgProp(pkgInfo, 'Published'),
+        );
         dep.releases.push({
           // TODO: types (#22198)
           version: removeBuildMeta(`${version}`),
@@ -44,7 +49,7 @@ export class NugetV2Api {
             'IsLatestVersion',
           );
           if (pkgIsLatestVersion === 'true') {
-            dep['tags'] = { latest: removeBuildMeta(`${version}`) };
+            dep.tags = { latest: removeBuildMeta(`${version}`) };
             const projectUrl = this.getPkgProp(pkgInfo, 'ProjectUrl');
             if (projectUrl) {
               dep.sourceUrl = massageUrl(projectUrl);
@@ -62,7 +67,19 @@ export class NugetV2Api {
         .childrenNamed('link')
         .find((node) => node.attr.rel === 'next');
 
-      pkgUrlList = nextPkgUrlListLink ? nextPkgUrlListLink.attr.href : null;
+      // Resolve the relative-or-absolute next link, but only follow it when it stays on the same origin, or if the user has opted in via `RENOVATE_X_NUGET_PAGINATION_ALLOW_CROSS_ORIGIN`
+      const nextHref = nextPkgUrlListLink?.attr.href;
+      const nextUrl: string | null = nextHref
+        ? resolvePaginationUrl(pkgUrlList, nextHref, allowCrossOrigin)
+        : null;
+      if (nextHref && !nextUrl) {
+        // make sure that users are aware if there are any (potentially malicious, or misconfigured) pagination links being returned
+        logger.once.warn(
+          { feedUrl, nextUrl: nextHref },
+          'Ignoring cross-origin or invalid NuGet feed pagination link',
+        );
+      }
+      pkgUrlList = nextUrl;
     }
 
     // dep not found if no release, so we can try next registry

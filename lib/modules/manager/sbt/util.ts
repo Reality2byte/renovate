@@ -1,6 +1,6 @@
-import { regEx } from '../../../util/regex';
-import { get } from '../../versioning';
-import * as mavenVersioning from '../../versioning/maven';
+import { regEx } from '../../../util/regex.ts';
+import { get } from '../../versioning/index.ts';
+import * as mavenVersioning from '../../versioning/maven/index.ts';
 
 /*
   https://www.scala-sbt.org/release/docs/Cross-Build.html#Publishing+conventions
@@ -24,10 +24,15 @@ export function normalizeScalaVersion(str: string): string {
   const isScala3 = versioning.isGreaterThan(str, '3.0.0');
   if (regEx(/^\d+\.\d+\.\d+$/).test(str)) {
     if (isScala3) {
-      return str.replace(regEx(/^(\d+)\.(\d+)\.\d+$/), '$1');
-    } else {
-      return str.replace(regEx(/^(\d+)\.(\d+)\.\d+$/), '$1.$2');
+      return str.replace(
+        regEx(/^(?<major>\d+)\.(?<minor>\d+)\.\d+$/),
+        '$<major>',
+      );
     }
+    return str.replace(
+      regEx(/^(?<major>\d+)\.(?<minor>\d+)\.\d+$/),
+      '$<major>.$<minor>',
+    );
   }
   // istanbul ignore next
   return str;

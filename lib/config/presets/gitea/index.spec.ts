@@ -1,22 +1,17 @@
-import { mockDeep } from 'jest-mock-extended';
-import * as httpMock from '../../../../test/http-mock';
-import { mocked } from '../../../../test/util';
-import * as _hostRules from '../../../util/host-rules';
-import { setBaseUrl } from '../../../util/http/gitea';
-import { toBase64 } from '../../../util/string';
-import { PRESET_INVALID_JSON, PRESET_NOT_FOUND } from '../util';
-import * as gitea from '.';
-
-jest.mock('../../../util/host-rules', () => mockDeep());
-
-const hostRules = mocked(_hostRules);
+import { hostRules } from '~test/host-rules.ts';
+import * as httpMock from '~test/http-mock.ts';
+import { ExternalHostError } from '../../../types/errors/external-host-error.ts';
+import { setBaseUrl } from '../../../util/http/gitea.ts';
+import { toBase64 } from '../../../util/string.ts';
+import { PRESET_INVALID_JSON, PRESET_NOT_FOUND } from '../util.ts';
+import * as gitea from './index.ts';
 
 const giteaApiHost = gitea.Endpoint;
 const basePath = '/api/v1/repos/some/repo/contents';
 
 describe('config/presets/gitea/index', () => {
   beforeEach(() => {
-    hostRules.find.mockReturnValue({ token: 'abc' });
+    hostRules.add({ token: 'abc' });
     setBaseUrl(giteaApiHost);
   });
 
@@ -54,6 +49,41 @@ describe('config/presets/gitea/index', () => {
       );
       expect(res).toEqual({ from: 'api' });
     });
+
+    it('returns JSONC', async () => {
+      httpMock
+        .scope(giteaApiHost)
+        .get(`${basePath}/some-filename.jsonc`)
+        .reply(200, {
+          content: toBase64('{"from": /* secret! */ "api"}'),
+        });
+
+      const res = await gitea.fetchJSONFile(
+        'some/repo',
+        'some-filename.jsonc',
+        giteaApiHost,
+        null,
+      );
+      expect(res).toEqual({ from: 'api' });
+    });
+
+    it('throws external host error', async () => {
+      httpMock
+        .scope(giteaApiHost)
+        .get(`${basePath}/some-filename.json`)
+        .reply(404, {});
+
+      hostRules.add({ abortOnError: true });
+
+      await expect(
+        gitea.fetchJSONFile(
+          'some/repo',
+          'some-filename.json',
+          giteaApiHost,
+          null,
+        ),
+      ).rejects.toThrow(ExternalHostError);
+    });
   });
 
   describe('getPreset()', () => {
@@ -65,7 +95,9 @@ describe('config/presets/gitea/index', () => {
         .get(`${basePath}/renovate.json`)
         .reply(200, {});
 
-      await expect(gitea.getPreset({ repo: 'some/repo' })).rejects.toThrow();
+      await expect(gitea.getPreset({ repo: 'some/repo' })).rejects.toThrow(
+        'dep not found',
+      );
     });
 
     it('throws if invalid content', async () => {
@@ -188,9 +220,9 @@ describe('config/presets/gitea/index', () => {
         .reply(200, {
           content: toBase64('{"from":"api"}'),
         });
-      expect(
-        await gitea.getPresetFromEndpoint('some/repo', 'default', undefined),
-      ).toEqual({ from: 'api' });
+      await expect(
+        gitea.getPresetFromEndpoint('some/repo', 'default', undefined),
+      ).resolves.toEqual({ from: 'api' });
     });
 
     it('uses custom endpoint', async () => {
@@ -200,8 +232,8 @@ describe('config/presets/gitea/index', () => {
         .reply(200, {
           content: toBase64('{"from":"api"}'),
         });
-      expect(
-        await gitea
+      await expect(
+        gitea
           .getPresetFromEndpoint(
             'some/repo',
             'default',
@@ -209,7 +241,7 @@ describe('config/presets/gitea/index', () => {
             'https://api.gitea.example.org',
           )
           .catch(() => ({ from: 'api' })),
-      ).toEqual({ from: 'api' });
+      ).resolves.toEqual({ from: 'api' });
     });
 
     it('uses default endpoint with a tag', async () => {
@@ -219,15 +251,15 @@ describe('config/presets/gitea/index', () => {
         .reply(200, {
           content: toBase64('{"from":"api"}'),
         });
-      expect(
-        await gitea.getPresetFromEndpoint(
+      await expect(
+        gitea.getPresetFromEndpoint(
           'some/repo',
           'default',
           undefined,
           giteaApiHost,
           'someTag',
         ),
-      ).toEqual({ from: 'api' });
+      ).resolves.toEqual({ from: 'api' });
     });
 
     it('uses custom endpoint with a tag', async () => {
@@ -237,8 +269,8 @@ describe('config/presets/gitea/index', () => {
         .reply(200, {
           content: toBase64('{"from":"api"}'),
         });
-      expect(
-        await gitea
+      await expect(
+        gitea
           .getPresetFromEndpoint(
             'some/repo',
             'default',
@@ -247,7 +279,7 @@ describe('config/presets/gitea/index', () => {
             'someTag',
           )
           .catch(() => ({ from: 'api' })),
-      ).toEqual({ from: 'api' });
+      ).resolves.toEqual({ from: 'api' });
     });
   });
 });

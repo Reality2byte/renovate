@@ -1,15 +1,13 @@
-import type { Category } from '../../../constants';
-import { GitTagsDatasource } from '../../datasource/git-tags';
+import type { Category } from '../../../constants/index.ts';
+import { GitTagsDatasource } from '../../datasource/git-tags/index.ts';
 
-export const displayName = 'Mint';
-export const url = 'https://github.com/yonaskolb/Mint';
+export { extractPackageFile } from './extract.ts';
 
-export { extractPackageFile } from './extract';
-
+export const url = 'https://github.com/yonaskolb/Mint#readme';
 export const categories: Category[] = ['swift'];
 
-export const supportedDatasources = [GitTagsDatasource.id];
-
 export const defaultConfig = {
-  fileMatch: ['(^|/)Mintfile$'],
+  managerFilePatterns: ['/(^|/)Mintfile$/'],
 };
+
+export const supportedDatasources = [GitTagsDatasource.id];

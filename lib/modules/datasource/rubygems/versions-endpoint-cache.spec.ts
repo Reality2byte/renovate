@@ -1,18 +1,17 @@
 import { codeBlock } from 'common-tags';
-import * as httpMock from '../../../../test/http-mock';
-import { Http } from '../../../util/http';
-import { VersionsEndpointCache, memCache } from './versions-endpoint-cache';
+import * as httpMock from '~test/http-mock.ts';
+import { Http } from '../../../util/http/index.ts';
+import { VersionsEndpointCache, memCache } from './versions-endpoint-cache.ts';
 
 const rubygems = new VersionsEndpointCache(new Http('rubygems'));
 
-const fullBody =
-  codeBlock`
+const fullBody = `${codeBlock`
     created_at: 2021-05-04T00:00:00.000Z
     ---
     foo 1.1.1 11111111111111111111111111111111
     bar 2.2.2 22222222222222222222222222222222
     baz 3.3.3 33333333333333333333333333333333
-  ` + '\n';
+  `}\n`;
 
 const registryUrl = 'https://rubygems.org';
 
@@ -81,11 +80,11 @@ describe('modules/datasource/rubygems/versions-endpoint-cache', () => {
 
   describe('Delta sync', () => {
     beforeAll(() => {
-      jest.useFakeTimers({ advanceTimers: true });
+      vi.useFakeTimers({ shouldAdvanceTime: true });
     });
 
     beforeEach(() => {
-      jest.setSystemTime(new Date('2021-05-04T00:00:00.000Z'));
+      vi.setSystemTime(new Date('2021-05-04T00:00:00.000Z'));
     });
 
     it('refreshes after 15 minutes', async () => {
@@ -94,16 +93,16 @@ describe('modules/datasource/rubygems/versions-endpoint-cache', () => {
       const res1 = await rubygems.getVersions(registryUrl, 'foo');
       expect(res1.unwrap().val).toEqual(['1.1.1']);
 
-      jest.advanceTimersByTime(15 * 60 * 1000);
+      vi.advanceTimersByTime(15 * 60 * 1000);
       httpMock
         .scope(registryUrl)
         .get('/versions')
         .reply(
           206,
-          codeBlock`
+          `${codeBlock`
             33333333333333333333333333333333
             foo -1.1.1,1.2.3 44444444444444444444444444444444
-          ` + '\n',
+          `}\n`,
         );
 
       const res2 = await rubygems.getVersions(registryUrl, 'foo');
@@ -120,27 +119,27 @@ describe('modules/datasource/rubygems/versions-endpoint-cache', () => {
       const res1 = await rubygems.getVersions(registryUrl, 'foo');
       expect(res1.unwrap().val).toEqual(['1.1.1']);
 
-      jest.advanceTimersByTime(15 * 60 * 1000);
+      vi.advanceTimersByTime(15 * 60 * 1000);
       httpMock
         .scope(registryUrl)
         .get('/versions')
         .reply(
           206,
-          codeBlock`
+          `${codeBlock`
             01010101010101010101010101010101
             foo -1.1.1,1.2.3 44444444444444444444444444444444
-          ` + '\n',
+          `}\n`,
         )
         .get('/versions')
         .reply(
           200,
-          codeBlock`
+          `${codeBlock`
             created_at: 2021-05-04T00:00:00.000Z
             ---
             foo 1.2.3 11111111111111111111111111111111
             bar 2.2.2 22222222222222222222222222222222
             baz 3.3.3 01010101010101010101010101010101
-          ` + '\n',
+          `}\n`,
         );
 
       const res2 = await rubygems.getVersions(registryUrl, 'foo');
@@ -157,13 +156,13 @@ describe('modules/datasource/rubygems/versions-endpoint-cache', () => {
       const res1 = await rubygems.getVersions(registryUrl, 'foo');
       expect(res1.unwrap().val).toEqual(['1.1.1']);
 
-      jest.advanceTimersByTime(15 * 60 * 1000);
+      vi.advanceTimersByTime(15 * 60 * 1000);
       httpMock
         .scope(registryUrl)
         .get('/versions')
         .reply(
           200,
-          fullBody + `foo -1.1.1,1.2.3 44444444444444444444444444444444\n`,
+          `${fullBody}foo -1.1.1,1.2.3 44444444444444444444444444444444\n`,
         );
 
       const res2 = await rubygems.getVersions(registryUrl, 'foo');
@@ -180,7 +179,7 @@ describe('modules/datasource/rubygems/versions-endpoint-cache', () => {
 
         await rubygems.getVersions(registryUrl, 'foo');
 
-        jest.advanceTimersByTime(15 * 60 * 1000);
+        vi.advanceTimersByTime(15 * 60 * 1000);
       });
 
       it('handles 404', async () => {
@@ -201,11 +200,11 @@ describe('modules/datasource/rubygems/versions-endpoint-cache', () => {
           .get('/versions')
           .reply(
             200,
-            codeBlock`
+            `${codeBlock`
               created_at: 2021-05-05T00:00:00.000Z
               ---
               foo 9.9.9 99999999999999999999999999999999
-            ` + '\n',
+            `}\n`,
           );
 
         const res = await rubygems.getVersions(registryUrl, 'foo');

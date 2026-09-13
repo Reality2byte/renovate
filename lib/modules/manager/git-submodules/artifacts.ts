@@ -1,5 +1,5 @@
-import { logger } from '../../../logger';
-import type { UpdateArtifact, UpdateArtifactsResult } from '../types';
+import { logger } from '../../../logger/index.ts';
+import type { UpdateArtifact, UpdateArtifactsResult } from '../types.ts';
 
 export default function updateArtifacts({
   updatedDeps,
@@ -7,7 +7,7 @@ export default function updateArtifacts({
   const res: UpdateArtifactsResult[] = [];
   updatedDeps.forEach((dep) => {
     // TODO: types (#22198)
-    logger.info(`Updating submodule ${dep.depName}`);
+    logger.debug(`Updating submodule ${dep.depName}`);
     res.push({
       file: { type: 'addition', path: dep.depName!, contents: '' },
     });

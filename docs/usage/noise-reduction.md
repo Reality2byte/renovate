@@ -54,12 +54,12 @@ Grouping dependencies versus single PRs:
 
 ## Scheduling Renovate
 
-For a high level overview of scheduling when Renovate bot runs, read the [key concepts, scheduling](./key-concepts/scheduling.md) docs.
+For a high level overview of scheduling when Renovate runs, read the [key concepts, scheduling](./key-concepts/scheduling.md) docs.
 
 On its own, the Renovate CLI tool runs once and then exits.
 Hence, it only runs as often as its administrator sets it to (e.g. via `cron`).
 
-For [the Mend Renovate App](https://github.com/apps/renovate), it currently runs continuously using a job queue that gets refreshed hourly, or when you make relevant commits to your repository.
+For [the Mend Renovate App](https://github.com/apps/renovate), it currently runs continuously using a job queue that gets refreshed hourly for [Enterprise users, and every 4 hours for Community users](./mend-hosted/overview.md#resources-and-scheduling), or when you make relevant commits to your repository.
 You can expect to get PRs at any time of the day, e.g. soon after versions are published to npm.
 
 Receiving PRs at any hour can increase the feeling of being "overwhelmed" by updates and possibly interrupt your flow during working hours, so many Renovate users also consider reducing Renovate's schedule to be outside their normal working hours, for example weeknights and weekends.
@@ -91,9 +91,10 @@ You don't want to get too far behind, so how about we update `eslint` packages o
 {
   "packageRules": [
     {
+      "description": "Schedule updates on first day of each month",
       "matchPackageNames": ["/eslint/"],
       "groupName": "eslint",
-      "schedule": ["on the first day of the month"]
+      "schedule": ["* * 1 * *"]
     }
   ]
 }
@@ -105,9 +106,10 @@ Or perhaps at least weekly:
 {
   "packageRules": [
     {
+      "description": "Schedule updates on Monday mornings(before 4 AM)",
       "matchPackageNames": ["/eslint/"],
       "groupName": "eslint",
-      "schedule": ["before 4am on monday"]
+      "schedule": ["* 0-3 * * 1"]
     }
   ]
 }
@@ -165,9 +167,10 @@ Let's automerge it if all the linting updates pass:
 {
   "packageRules": [
     {
+      "description": "Schedule updates on Monday mornings(before 4 AM)",
       "matchPackageNames": ["/eslint/"],
       "groupName": "eslint",
-      "schedule": ["before 4am on monday"],
+      "schedule": ["* 0-3 * * 1"],
       "automerge": true,
       "automergeType": "branch"
     }

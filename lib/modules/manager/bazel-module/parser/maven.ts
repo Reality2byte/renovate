@@ -1,25 +1,23 @@
-import { query as q } from 'good-enough-parser';
-import { z } from 'zod';
-import { regEx } from '../../../../util/regex';
-import { MavenDatasource } from '../../../datasource/maven';
-import { id as versioning } from '../../../versioning/gradle';
-import type { PackageDependency } from '../../types';
-import type { Ctx } from '../context';
+import { z } from 'zod/v4';
+import { MavenDatasource } from '../../../datasource/maven/index.ts';
+import { id as versioning } from '../../../versioning/gradle/index.ts';
+import type { PackageDependency } from '../../types.ts';
 import {
-  RecordFragmentSchema,
-  StringArrayFragmentSchema,
-  StringFragmentSchema,
-} from '../fragments';
+  ExtensionTagFragment,
+  StringArrayFragment,
+  StringFragment,
+} from './fragments.ts';
 
-const artifactMethod = 'artifact';
-const installMethod = 'install';
+const artifactTag = 'artifact';
+const installTag = 'install';
 const commonDepType = 'maven_install';
-const mavenVariableRegex = regEx(/^maven.*/);
-const bzlmodMavenMethods = [installMethod, artifactMethod];
-const methodRegex = regEx(`^${bzlmodMavenMethods.join('|')}$`);
 
-function getParsedRuleByMethod(method: string): string {
-  return `maven_${method}`;
+export const mavenExtensionPrefix = 'maven';
+
+export const mavenExtensionTags = [artifactTag, installTag];
+
+function depTypeByTag(tag: string): string {
+  return `maven_${tag}`;
 }
 
 const ArtifactSpec = z.object({
@@ -29,36 +27,35 @@ const ArtifactSpec = z.object({
 });
 type ArtifactSpec = z.infer<typeof ArtifactSpec>;
 
-const MavenArtifactTarget = RecordFragmentSchema.extend({
+const MavenArtifactTarget = ExtensionTagFragment.extend({
+  extension: z.literal(mavenExtensionPrefix),
+  tag: z.literal(artifactTag),
   children: z.object({
-    rule: StringFragmentSchema.extend({
-      value: z.literal(getParsedRuleByMethod(artifactMethod)),
-    }),
-    artifact: StringFragmentSchema,
-    group: StringFragmentSchema,
-    version: StringFragmentSchema,
+    artifact: StringFragment,
+    group: StringFragment,
+    version: StringFragment,
   }),
 }).transform(
-  ({ children: { rule, artifact, group, version } }): PackageDependency[] => [
+  ({ children: { artifact, group, version } }): PackageDependency[] => [
     {
       datasource: MavenDatasource.id,
       versioning,
       depName: `${group.value}:${artifact.value}`,
       currentValue: version.value,
-      depType: rule.value,
+      depType: depTypeByTag(artifactTag),
     },
   ],
 );
 
-const MavenInstallTarget = RecordFragmentSchema.extend({
+const MavenInstallTarget = ExtensionTagFragment.extend({
+  extension: z.literal(mavenExtensionPrefix),
+  tag: z.literal(installTag),
   children: z.object({
-    rule: StringFragmentSchema.extend({
-      value: z.literal(getParsedRuleByMethod(installMethod)),
-    }),
-    artifacts: StringArrayFragmentSchema.transform((artifacts) => {
+    artifacts: StringArrayFragment.transform((artifacts) => {
       const result: ArtifactSpec[] = [];
       for (const { value } of artifacts.items) {
         const [group, artifact, version] = value.split(':');
+        // v8 ignore else -- TODO: add test #40625
         if (group && artifact && version) {
           result.push({ group, artifact, version });
         }
@@ -66,18 +63,17 @@ const MavenInstallTarget = RecordFragmentSchema.extend({
 
       return result;
     }),
-    repositories: StringArrayFragmentSchema,
+    repositories: StringArrayFragment,
   }),
-}).transform(
-  ({ children: { rule, artifacts, repositories } }): PackageDependency[] =>
-    artifacts.map(({ group, artifact, version: currentValue }) => ({
-      datasource: MavenDatasource.id,
-      versioning,
-      depName: `${group}:${artifact}`,
-      currentValue,
-      depType: rule.value,
-      registryUrls: repositories.items.map((i) => i.value),
-    })),
+}).transform(({ children: { artifacts, repositories } }): PackageDependency[] =>
+  artifacts.map(({ group, artifact, version: currentValue }) => ({
+    datasource: MavenDatasource.id,
+    versioning,
+    depName: `${group}:${artifact}`,
+    currentValue,
+    depType: depTypeByTag(installTag),
+    registryUrls: repositories.items.map((i) => i.value),
+  })),
 );
 
 export const RuleToMavenPackageDep = z.union([
@@ -94,12 +90,14 @@ export function fillRegistryUrls(
 
   // registry urls are specified only in maven.install, not in maven.artifact
   packageDeps.flat().forEach((dep) => {
-    if (dep.depType === getParsedRuleByMethod(installMethod)) {
+    // v8 ignore else -- TODO: add test #40625
+    if (dep.depType === depTypeByTag(installTag)) {
+      // v8 ignore else -- TODO: add test #40625
       if (Array.isArray(dep.registryUrls)) {
         registryUrls.push(...dep.registryUrls);
         result.push(dep);
       }
-    } else if (dep.depType === getParsedRuleByMethod(artifactMethod)) {
+    } else if (dep.depType === depTypeByTag(artifactTag)) {
       artifactRules.push(dep);
     }
   });
@@ -114,40 +112,3 @@ export function fillRegistryUrls(
 
   return result;
 }
-
-const kvParams = q
-  .sym<Ctx>((ctx, token) => ctx.startAttribute(token.value))
-  .op('=')
-  .alt(
-    q.str((ctx, token) => ctx.addString(token.value)),
-    q.tree({
-      type: 'wrapped-tree',
-      maxDepth: 1,
-      startsWith: '[',
-      endsWith: ']',
-      postHandler: (ctx) => ctx.endArray(),
-      preHandler: (ctx) => ctx.startArray(),
-      search: q.many(q.str<Ctx>((ctx, token) => ctx.addString(token.value))),
-    }),
-  );
-
-export const mavenRules = q
-  .sym<Ctx>(mavenVariableRegex, (ctx, token) => {
-    return ctx.startRule(token.value);
-  })
-  .op('.')
-  .sym(methodRegex, (ctx, token) => {
-    const rule = ctx.currentRecord.children.rule;
-    if (rule.type === 'string') {
-      rule.value = getParsedRuleByMethod(token.value);
-    }
-    return ctx;
-  })
-  .join(
-    q.tree({
-      type: 'wrapped-tree',
-      maxDepth: 1,
-      search: kvParams,
-      postHandler: (ctx) => ctx.endRule(),
-    }),
-  );

@@ -1,9 +1,10 @@
-import { cache } from '../../../util/cache/package/decorator';
-import { joinUrlParts } from '../../../util/url';
-import * as perlVersioning from '../../versioning/perl';
-import { Datasource } from '../datasource';
-import type { GetReleasesConfig, Release, ReleaseResult } from '../types';
-import type { MetaCpanApiFile, MetaCpanApiFileSearchResult } from './types';
+import { withCache } from '../../../util/cache/package/with-cache.ts';
+import { joinUrlParts } from '../../../util/url.ts';
+import * as perlVersioning from '../../versioning/perl/index.ts';
+import { Datasource } from '../datasource.ts';
+import type { GetReleasesConfig, ReleaseResult } from '../types.ts';
+import { MetaCpanApiFileSearchResponse } from './schema.ts';
+import type { CpanRelease } from './types.ts';
 
 export class CpanDatasource extends Datasource {
   static readonly id = 'cpan';
@@ -22,15 +23,11 @@ export class CpanDatasource extends Datasource {
   override readonly releaseTimestampNote =
     'The release timestamp is determined from the `date` field in the results.';
 
-  @cache({
-    namespace: `datasource-${CpanDatasource.id}`,
-    key: ({ packageName }: GetReleasesConfig) => `${packageName}`,
-  })
-  override async getReleases({
+  private async _getReleases({
     packageName,
     registryUrl,
   }: GetReleasesConfig): Promise<ReleaseResult | null> {
-    // istanbul ignore if
+    /* v8 ignore next -- should never happen */
     if (!registryUrl) {
       return null;
     }
@@ -38,19 +35,16 @@ export class CpanDatasource extends Datasource {
     let result: ReleaseResult | null = null;
     const searchUrl = joinUrlParts(registryUrl, 'v1/file/_search');
 
-    let hits: MetaCpanApiFile[] | null = null;
+    let releases: CpanRelease[] | null = null;
     try {
       const body = {
         query: {
-          filtered: {
-            query: { match_all: {} },
-            filter: {
-              and: [
-                { term: { 'module.name': packageName } },
-                { term: { 'module.authorized': true } },
-                { exists: { field: 'module.associated_pod' } },
-              ],
-            },
+          bool: {
+            filter: [
+              { term: { 'module.name': packageName } },
+              { term: { 'module.authorized': true } },
+              { exists: { field: 'module.associated_pod' } },
+            ],
           },
         },
         _source: [
@@ -60,55 +54,58 @@ export class CpanDatasource extends Datasource {
           'date',
           'deprecated',
           'maturity',
+          'status',
         ],
         sort: [{ date: 'desc' }],
       };
-      const res = await this.http.postJson<MetaCpanApiFileSearchResult>(
-        searchUrl,
-        { body },
-      );
-      hits = res.body?.hits?.hits?.map(({ _source }) => _source);
+
+      releases = (
+        await this.http.postJson(
+          searchUrl,
+          { body },
+          MetaCpanApiFileSearchResponse,
+        )
+      ).body;
     } catch (err) {
       this.handleGenericErrors(err);
     }
 
     let latestDistribution: string | null = null;
-    if (hits) {
-      const releases: Release[] = [];
-      for (const hit of hits) {
-        const {
-          module,
-          distribution,
-          date: releaseTimestamp,
-          deprecated: isDeprecated,
-          maturity,
-        } = hit;
-        const version = module.find(
-          ({ name }) => name === packageName,
-        )?.version;
-        if (version) {
-          // https://metacpan.org/pod/CPAN::DistnameInfo#maturity
-          const isStable = maturity === 'released';
-          releases.push({
-            isDeprecated,
-            isStable,
-            releaseTimestamp,
-            version,
-          });
-
-          if (!latestDistribution) {
-            latestDistribution = distribution;
-          }
+    let latestVersion: string | null = null;
+    if (releases) {
+      for (const release of releases) {
+        latestDistribution ??= release.distribution;
+        if (!latestVersion && release.isLatest) {
+          latestVersion = release.version;
         }
       }
-      if (releases.length > 0 && latestDistribution) {
-        result = {
-          releases,
-          changelogUrl: `https://metacpan.org/dist/${latestDistribution}/changes`,
-          homepage: `https://metacpan.org/pod/${packageName}`,
-        };
+    }
+    if (releases.length > 0 && latestDistribution) {
+      result = {
+        releases,
+        changelogUrl: `https://metacpan.org/dist/${latestDistribution}/changes`,
+        homepage: `https://metacpan.org/pod/${packageName}`,
+      };
+
+      if (latestVersion) {
+        result.tags ??= {};
+        result.tags.latest = latestVersion;
       }
     }
+
     return result;
+  }
+
+  override getReleases(
+    config: GetReleasesConfig,
+  ): Promise<ReleaseResult | null> {
+    return withCache(
+      {
+        namespace: `datasource-${CpanDatasource.id}`,
+        key: `${config.packageName}`,
+        fallback: true,
+      },
+      () => this._getReleases(config),
+    );
   }
 }

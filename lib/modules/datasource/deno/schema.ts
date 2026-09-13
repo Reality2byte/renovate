@@ -1,7 +1,8 @@
-import { z } from 'zod';
-import { getSourceUrl as getGithubSourceUrl } from '../../../util/github/url';
-import { LooseArray } from '../../../util/schema-utils';
-import type { Release } from '../types';
+import { z } from 'zod/v4';
+import { getSourceUrl as getGithubSourceUrl } from '../../../util/github/url.ts';
+import { LooseArray } from '../../../util/schema-utils/index.ts';
+import { MaybeTimestamp } from '../../../util/timestamp.ts';
+import type { Release } from '../types.ts';
 
 export const DenoApiTag = z.object({
   kind: z.string(),
@@ -31,7 +32,7 @@ export const DenoAPIUploadOptions = z.object({
 export const DenoAPIModuleVersionResponse = z
   .object({
     upload_options: DenoAPIUploadOptions,
-    uploaded_at: z.string(),
+    uploaded_at: MaybeTimestamp,
     version: z.string(),
   })
   .transform(
@@ -41,6 +42,11 @@ export const DenoAPIModuleVersionResponse = z
       if (type === 'github') {
         sourceUrl = getGithubSourceUrl(repository);
       }
-      return { version, gitRef, releaseTimestamp, sourceUrl };
+      return {
+        version,
+        gitRef,
+        releaseTimestamp,
+        sourceUrl,
+      };
     },
   );

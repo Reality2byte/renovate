@@ -1,5 +1,5 @@
-import { logger } from '../../../../../../logger';
-import { regEx } from '../../../../../../util/regex';
+import { logger } from '../../../../../../logger/index.ts';
+import { regEx } from '../../../../../../util/regex.ts';
 
 export function replaceConstraintVersion(
   lockFileContent: string,
@@ -13,11 +13,14 @@ export function replaceConstraintVersion(
     return lockFileContent;
   }
   const depNameConstraint = `${depName}@${constraint}`;
-  const escaped = depNameConstraint.replace(/(@|\^|\.|\\|\|)/g, '\\$1');
-  const matchString = `(${escaped}(("|",|,)[^\n:]*)?:\n)(.*\n)*?(\\s+dependencies|\n[@a-z])`;
+  const escaped = depNameConstraint.replace(
+    regEx(/(?<special>@|\^|\.|\\|\|)/g),
+    '\\$<special>',
+  );
+  const matchString = `((?:^|\n|, )"?${escaped}(("|",|,)[^\n:]*)?:\n)(.*\n)*?(\\s+dependencies|\n[@a-z])`;
   // yarn will fill in the details later
   const matchResult = regEx(matchString).exec(lockFileContent);
-  // istanbul ignore if
+  /* v8 ignore next -- needs test */
   if (!matchResult) {
     logger.debug(
       { depName, constraint, newVersion },

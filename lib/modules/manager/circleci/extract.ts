@@ -1,23 +1,25 @@
-import { logger } from '../../../logger';
-import { coerceArray } from '../../../util/array';
-import { parseSingleYaml } from '../../../util/yaml';
-import { OrbDatasource } from '../../datasource/orb';
-import * as npmVersioning from '../../versioning/npm';
-import { getDep } from '../dockerfile/extract';
-import type { PackageDependency, PackageFileContent } from '../types';
-import { CircleCiFile, type CircleCiJob } from './schema';
+import { isString } from '@sindresorhus/is';
+import { logger } from '../../../logger/index.ts';
+import { coerceObject } from '../../../util/object.ts';
+import { Result } from '../../../util/result.ts';
+import { parseSingleYaml } from '../../../util/yaml.ts';
+import { OrbDatasource } from '../../datasource/orb/index.ts';
+import * as npmVersioning from '../../versioning/npm/index.ts';
+import { getDep } from '../dockerfile/extract.ts';
+import type {
+  ExtractConfig,
+  PackageDependency,
+  PackageFileContent,
+} from '../types.ts';
+import { CircleCiFile, type CircleCiOrb } from './schema.ts';
 
-export function extractPackageFile(
-  content: string,
-  packageFile?: string,
-): PackageFileContent | null {
-  const deps: PackageDependency[] = [];
-  try {
-    const parsed = parseSingleYaml(content, {
-      customSchema: CircleCiFile,
-    });
-
-    for (const [key, orb] of Object.entries(parsed.orbs ?? {})) {
+function extractDefinition(
+  deps: PackageDependency[],
+  definition: CircleCiOrb | CircleCiFile,
+  registryAliases: Record<string, string>,
+): void {
+  for (const [key, orb] of Object.entries(definition.orbs)) {
+    if (isString(orb)) {
       const [packageName, currentValue] = orb.split('@');
 
       deps.push({
@@ -28,33 +30,52 @@ export function extractPackageFile(
         versioning: npmVersioning.id,
         datasource: OrbDatasource.id,
       });
+    } else {
+      extractDefinition(deps, orb, registryAliases);
     }
-
-    // extract environments
-    const environments: CircleCiJob[] = [
-      Object.values(parsed.executors ?? {}),
-      Object.values(parsed.jobs ?? {}),
-    ].flat();
-    for (const job of environments) {
-      for (const dockerElement of coerceArray(job.docker)) {
-        deps.push({
-          ...getDep(dockerElement.image),
-          depType: 'docker',
-        });
-      }
-    }
-
-    for (const alias of coerceArray(parsed.aliases)) {
-      deps.push({
-        ...getDep(alias.image),
-        depType: 'docker',
-      });
-    }
-  } catch (err) /* istanbul ignore next */ {
-    logger.debug({ err, packageFile }, 'Error extracting circleci images');
   }
+
+  // extract environments
+  const environments = [...definition.executors, ...definition.jobs];
+  for (const dockerImage of environments) {
+    deps.push({
+      ...getDep(dockerImage, true, registryAliases),
+      depType: 'docker',
+    });
+  }
+}
+
+export function extractPackageFile(
+  content: string,
+  packageFile?: string,
+  config?: ExtractConfig,
+): PackageFileContent | null {
+  const { val: parsed, err } = Result.wrap(() =>
+    // Parse as YAML 1.1 so anchor merge keys (`<<`) work, matching CircleCI's
+    // own behavior. Under YAML 1.2 a mapping with multiple `<<` keys is
+    // rejected as a duplicate key, which causes the whole file to be skipped.
+    CircleCiFile.parse(parseSingleYaml(content, { version: '1.1' })),
+  ).unwrap();
+
+  if (err) {
+    logger.debug({ err, packageFile }, 'Error extracting circleci images');
+    return null;
+  }
+
+  const registryAliases = coerceObject(config?.registryAliases);
+  const deps: PackageDependency[] = [];
+  extractDefinition(deps, parsed, registryAliases);
+
+  for (const alias of parsed.aliases) {
+    deps.push({
+      ...getDep(alias, true, registryAliases),
+      depType: 'docker',
+    });
+  }
+
   if (!deps.length) {
     return null;
   }
+
   return { deps };
 }

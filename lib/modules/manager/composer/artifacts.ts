@@ -1,42 +1,50 @@
-import is from '@sindresorhus/is';
+import { isEmptyObject, isString } from '@sindresorhus/is';
 import { quote } from 'shlex';
-import { z } from 'zod';
+import { z } from 'zod/v4';
 import {
   SYSTEM_INSUFFICIENT_DISK_SPACE,
   TEMPORARY_ERROR,
-} from '../../../constants/error-messages';
-import { logger } from '../../../logger';
+} from '../../../constants/error-messages.ts';
+import { logger } from '../../../logger/index.ts';
+import { coerceArray } from '../../../util/array.ts';
 import {
   findGithubToken,
   takePersonalAccessTokenIfPossible,
-} from '../../../util/check-token';
-import { exec } from '../../../util/exec';
-import type { ExecOptions, ToolConstraint } from '../../../util/exec/types';
+} from '../../../util/check-token.ts';
+import { exec } from '../../../util/exec/index.ts';
+import type {
+  CommandWithOptions,
+  ExecOptions,
+  ToolConstraint,
+} from '../../../util/exec/types.ts';
 import {
+  deleteLocalFile,
   ensureCacheDir,
   ensureLocalDir,
   getSiblingFileName,
   localPathExists,
   readLocalFile,
   writeLocalFile,
-} from '../../../util/fs';
-import { getRepoStatus } from '../../../util/git';
-import * as hostRules from '../../../util/host-rules';
-import { regEx } from '../../../util/regex';
-import { Json } from '../../../util/schema-utils';
-import { coerceString } from '../../../util/string';
-import { GitTagsDatasource } from '../../datasource/git-tags';
-import { PackagistDatasource } from '../../datasource/packagist';
-import type { UpdateArtifact, UpdateArtifactsResult } from '../types';
-import { Lockfile, PackageFile } from './schema';
-import type { AuthJson } from './types';
+} from '../../../util/fs/index.ts';
+import { getRepoStatus } from '../../../util/git/index.ts';
+import * as hostRules from '../../../util/host-rules.ts';
+import { coerceObject } from '../../../util/object.ts';
+import { regEx } from '../../../util/regex.ts';
+import { Json } from '../../../util/schema-utils/index.ts';
+import { coerceString } from '../../../util/string.ts';
+import { GitTagsDatasource } from '../../datasource/git-tags/index.ts';
+import { PackagistDatasource } from '../../datasource/packagist/index.ts';
+import type { UpdateArtifact, UpdateArtifactsResult } from '../types.ts';
+import { Lockfile, PackageFile } from './schema.ts';
+import type { AuthJson } from './types.ts';
 import {
   extractConstraints,
   getComposerArguments,
+  getComposerUpdateArguments,
   getPhpConstraint,
   isArtifactAuthEnabled,
   requireComposerDependencyInstallation,
-} from './utils';
+} from './utils.ts';
 
 function getAuthJson(): string | null {
   const authJson: AuthJson = {};
@@ -73,12 +81,12 @@ function getAuthJson(): string | null {
 
     if (gitlabHostRule?.token) {
       const host = coerceString(gitlabHostRule.resolvedHost, 'gitlab.com');
-      authJson['gitlab-token'] = authJson['gitlab-token'] ?? {};
+      authJson['gitlab-token'] = coerceObject(authJson['gitlab-token']);
       authJson['gitlab-token'][host] = gitlabHostRule.token;
       // https://getcomposer.org/doc/articles/authentication-for-private-packages.md#gitlab-token
       authJson['gitlab-domains'] = [
         host,
-        ...(authJson['gitlab-domains'] ?? []),
+        ...coerceArray(authJson['gitlab-domains']),
       ];
     }
   }
@@ -92,15 +100,15 @@ function getAuthJson(): string | null {
 
     const { resolvedHost, username, password, token } = packagistHostRule;
     if (resolvedHost && username && password) {
-      authJson['http-basic'] = authJson['http-basic'] ?? {};
+      authJson['http-basic'] = coerceObject(authJson['http-basic']);
       authJson['http-basic'][resolvedHost] = { username, password };
     } else if (resolvedHost && token) {
-      authJson.bearer = authJson.bearer ?? {};
+      authJson.bearer = coerceObject(authJson.bearer);
       authJson.bearer[resolvedHost] = token;
     }
   }
 
-  return is.emptyObject(authJson) ? null : JSON.stringify(authJson);
+  return isEmptyObject(authJson) ? null : JSON.stringify(authJson);
 }
 
 export async function updateArtifacts({
@@ -150,7 +158,6 @@ export async function updateArtifacts({
 
     const execOptions: ExecOptions = {
       cwdFile: packageFileName,
-      userConfiguredEnv: config.env,
       extraEnv: {
         COMPOSER_CACHE_DIR: await ensureCacheDir('composer'),
         COMPOSER_AUTH: getAuthJson(),
@@ -159,17 +166,23 @@ export async function updateArtifacts({
       docker: {},
     };
 
-    const commands: string[] = [];
+    const commands: (string | CommandWithOptions)[] = [];
 
     // Determine whether install is required before update
     if (requireComposerDependencyInstallation(lockfile)) {
       const preCmd = 'composer';
-      const preArgs =
-        'install' + getComposerArguments(config, composerToolConstraint);
+      const preArgs = `install${getComposerArguments(config, composerToolConstraint)}`;
       logger.trace({ preCmd, preArgs }, 'composer pre-update command');
       commands.push('git stash -- composer.json');
       commands.push(`${preCmd} ${preArgs}`);
-      commands.push('git stash pop || true');
+      commands.push({ command: ['git', 'stash', 'pop'], ignoreFailure: true });
+    }
+
+    if (config.isLockFileMaintenance) {
+      logger.debug(
+        `Removing ${lockFileName} first due to lock file maintenance upgrade`,
+      );
+      await deleteLocalFile(lockFileName);
     }
 
     const cmd = 'composer';
@@ -186,12 +199,15 @@ export async function updateArtifacts({
                 ? quote(`${dep.depName}:${dep.newVersion}`)
                 : quote(dep.depName!),
             )
-            .filter(is.string)
+            .filter(isString)
             .map((dep) => quote(dep))
             .join(' ')
-        ).trim() + ' --with-dependencies';
+        ).trim() +
+        (config.postUpdateOptions?.includes('composerWithAll')
+          ? ' --with-all-dependencies'
+          : ' --with-dependencies');
     }
-    args += getComposerArguments(config, composerToolConstraint);
+    args += getComposerUpdateArguments(config, composerToolConstraint);
     logger.trace({ cmd, args }, 'composer command');
     commands.push(`${cmd} ${args}`);
 
@@ -256,7 +272,7 @@ export async function updateArtifacts({
     return [
       {
         artifactError: {
-          lockFile: lockFileName,
+          fileName: lockFileName,
           stderr: err.message,
         },
       },

@@ -1,11 +1,148 @@
 import { codeBlock } from 'common-tags';
-import { regexMatches } from '../../../../test/util';
-import { extractPackageFile } from '../../../modules/manager/custom/regex';
-import { presets } from './custom-managers';
+import { extractPackageFile } from '../../../modules/manager/index.ts';
+import { matchRegexOrGlobList } from '../../../util/string-match.ts';
+import { presets } from './custom-managers.preset.ts';
 
 describe('config/presets/internal/custom-managers', () => {
+  describe('Update `_VERSION` environment variables in Azure Pipelines files', () => {
+    const customManager = presets.azurePipelinesVersions.customManagers?.[0];
+
+    it(`find dependencies in file`, async () => {
+      const fileContent = codeBlock`
+        trigger:
+          - main
+
+        pool:
+          vmImage: ubuntu-latest
+
+        jobs:
+          - job: Work
+            steps:
+              - script: echo Hello, world!
+                displayName: 'Run a one-line script'
+                env:
+                  # renovate: datasource=node depName=node versioning=node
+                  NODE_VERSION: 18.13.0
+                  # renovate: datasource=npm depName=pnpm
+                  PNPM_VERSION: "7.25.1"
+                  # renovate: datasource=npm depName=yarn
+                  YARN_VERSION: '3.3.1'
+                  # renovate: datasource=custom.hashicorp depName=consul
+                  CONSUL_VERSION: 1.3.1
+                  # renovate: datasource=github-releases depName=hashicorp/terraform versioning=hashicorp extractVersion=^v(?<version>.+)$
+                  TERRAFORM_VERSION: 1.5.7
+                  # renovate: datasource=github-releases depName=kubernetes-sigs/kustomize versioning=regex:^(?<compatibility>.+)/v(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)$
+                  KUSTOMIZE_VERSION: kustomize/v5.2.1
+                  # renovate: datasource=deb depName=docker-ce-cli versioning=deb registryUrl=https://download.docker.com/linux/ubuntu?suite=noble&components=stable&binaryArch=amd64
+                  DOCKER_CE_CLI_VERSION: '5:28.5.1-1~ubuntu.24.04~noble'
+              - script: echo Hello, world!
+                displayName: 'Run a one-line script'
+      `;
+
+      const res = await extractPackageFile(
+        'regex',
+        fileContent,
+        'azure-pipelines.yaml',
+        customManager!,
+      );
+
+      expect(res?.deps).toMatchObject([
+        {
+          currentValue: '18.13.0',
+          datasource: 'node-version',
+          depName: 'node',
+          replaceString:
+            '# renovate: datasource=node depName=node versioning=node\n          NODE_VERSION: 18.13.0\n',
+          versioning: 'node',
+        },
+        {
+          currentValue: '7.25.1',
+          datasource: 'npm',
+          depName: 'pnpm',
+          replaceString:
+            '# renovate: datasource=npm depName=pnpm\n          PNPM_VERSION: "7.25.1"\n',
+        },
+        {
+          currentValue: '3.3.1',
+          datasource: 'npm',
+          depName: 'yarn',
+          replaceString:
+            "# renovate: datasource=npm depName=yarn\n          YARN_VERSION: '3.3.1'\n",
+        },
+        {
+          currentValue: '1.3.1',
+          datasource: 'custom.hashicorp',
+          depName: 'consul',
+          replaceString:
+            '# renovate: datasource=custom.hashicorp depName=consul\n          CONSUL_VERSION: 1.3.1\n',
+        },
+        {
+          currentValue: '1.5.7',
+          datasource: 'github-releases',
+          depName: 'hashicorp/terraform',
+          replaceString:
+            '# renovate: datasource=github-releases depName=hashicorp/terraform versioning=hashicorp extractVersion=^v(?<version>.+)$\n          TERRAFORM_VERSION: 1.5.7\n',
+          versioning: 'hashicorp',
+          extractVersion: '^v(?<version>.+)$',
+        },
+        {
+          currentValue: 'kustomize/v5.2.1',
+          datasource: 'github-releases',
+          depName: 'kubernetes-sigs/kustomize',
+          replaceString:
+            '# renovate: datasource=github-releases depName=kubernetes-sigs/kustomize versioning=regex:^(?<compatibility>.+)/v(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)$\n          KUSTOMIZE_VERSION: kustomize/v5.2.1\n',
+          versioning:
+            'regex:^(?<compatibility>.+)/v(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)$',
+        },
+        {
+          currentValue: '5:28.5.1-1~ubuntu.24.04~noble',
+          datasource: 'deb',
+          depName: 'docker-ce-cli',
+          replaceString:
+            "# renovate: datasource=deb depName=docker-ce-cli versioning=deb registryUrl=https://download.docker.com/linux/ubuntu?suite=noble&components=stable&binaryArch=amd64\n          DOCKER_CE_CLI_VERSION: '5:28.5.1-1~ubuntu.24.04~noble'\n",
+          versioning: 'deb',
+          registryUrls: [
+            'https://download.docker.com/linux/ubuntu?suite=noble&components=stable&binaryArch=amd64',
+          ],
+        },
+      ]);
+    });
+
+    describe('matches regexes patterns', () => {
+      it.each`
+        path                               | expected
+        ${'.azuredevops/bar.yml'}          | ${true}
+        ${'.azuredevops/bar.yaml'}         | ${true}
+        ${'.azuredevops/foo/bar.yml'}      | ${true}
+        ${'.azuredevops/foo/bar.yaml'}     | ${true}
+        ${'foo/.azuredevops/bar.yml'}      | ${true}
+        ${'foo/.azuredevops/bar.yaml'}     | ${true}
+        ${'foo/.azuredevops/foo/bar.yml'}  | ${true}
+        ${'foo/.azuredevops/foo/bar.yaml'} | ${true}
+        ${'azurepipelines.yml'}            | ${true}
+        ${'azurepipelines.yaml'}           | ${true}
+        ${'azure-pipelines.yml'}           | ${true}
+        ${'azure-pipelines.yaml'}          | ${true}
+        ${'azure-pipelines-foo.yml'}       | ${true}
+        ${'azure-pipelines-foo.yaml'}      | ${true}
+        ${'azure-foo-pipelines.yml'}       | ${true}
+        ${'azure-foo-pipelines.yaml'}      | ${true}
+        ${'azurepipelinesfoo.yml'}         | ${true}
+        ${'azurepipelinesfoo.yaml'}        | ${true}
+        ${'azurefoopipelines.yml'}         | ${true}
+        ${'azurefoopipelines.yaml'}        | ${true}
+        ${'foo.yml'}                       | ${false}
+        ${'foo.yaml'}                      | ${false}
+      `('$path', ({ path, expected }) => {
+        expect(
+          matchRegexOrGlobList(path, customManager!.managerFilePatterns),
+        ).toBe(expected);
+      });
+    });
+  });
+
   describe('Update `$schema` version in biome.json', () => {
-    const customManager = presets['biomeVersions'].customManagers?.[0];
+    const customManager = presets.biomeVersions.customManagers?.[0];
 
     it(`find dependencies in file`, async () => {
       const fileContent = codeBlock`
@@ -15,6 +152,7 @@ describe('config/presets/internal/custom-managers', () => {
       `;
 
       const res = await extractPackageFile(
+        'jsonata',
         fileContent,
         'biome.json',
         customManager!,
@@ -25,7 +163,6 @@ describe('config/presets/internal/custom-managers', () => {
           currentValue: '1.7.3',
           datasource: 'npm',
           depName: '@biomejs/biome',
-          replaceString: '"https://biomejs.dev/schemas/1.7.3/schema.json"',
         },
       ]);
     });
@@ -39,14 +176,16 @@ describe('config/presets/internal/custom-managers', () => {
         ${'foo/biome.jsonc'} | ${true}
         ${'biome.yml'}       | ${false}
       `('$path', ({ path, expected }) => {
-        expect(regexMatches(path, customManager!.fileMatch)).toBe(expected);
+        expect(
+          matchRegexOrGlobList(path, customManager!.managerFilePatterns),
+        ).toBe(expected);
       });
     });
   });
 
   describe('Update `_VERSION` variables in Bitbucket Pipelines', () => {
     const customManager =
-      presets['bitbucketPipelinesVersions'].customManagers?.[0];
+      presets.bitbucketPipelinesVersions.customManagers?.[0];
 
     it(`find dependencies in file`, async () => {
       const fileContent = codeBlock`
@@ -79,6 +218,7 @@ describe('config/presets/internal/custom-managers', () => {
       `;
 
       const res = await extractPackageFile(
+        'regex',
         fileContent,
         'bitbucket-pipelines.yml',
         customManager!,
@@ -153,20 +293,24 @@ describe('config/presets/internal/custom-managers', () => {
       it.each`
         path                                  | expected
         ${'bitbucket-pipelines.yml'}          | ${true}
-        ${'bitbucket-pipelines.yaml'}         | ${true}
+        ${'bitbucket-pipelines.yaml'}         | ${false}
         ${'foo/bitbucket-pipelines.yml'}      | ${true}
-        ${'foo/bitbucket-pipelines.yaml'}     | ${true}
+        ${'foo/bitbucket-pipelines.yaml'}     | ${false}
         ${'foo/bar/bitbucket-pipelines.yml'}  | ${true}
-        ${'foo/bar/bitbucket-pipelines.yaml'} | ${true}
+        ${'foo/bar/bitbucket-pipelines.yaml'} | ${false}
+        ${'.bitbucket/shared-pipelines.yml'}  | ${true}
+        ${'.bitbucket/shared-pipeline.yaml'}  | ${false}
         ${'bitbucket-pipelines'}              | ${false}
       `('$path', ({ path, expected }) => {
-        expect(regexMatches(path, customManager!.fileMatch)).toBe(expected);
+        expect(
+          matchRegexOrGlobList(path, customManager!.managerFilePatterns),
+        ).toBe(expected);
       });
     });
   });
 
   describe('Update `_VERSION` variables in Dockerfiles', () => {
-    const customManager = presets['dockerfileVersions'].customManagers?.[0];
+    const customManager = presets.dockerfileVersions.customManagers?.[0];
 
     it(`find dependencies in file`, async () => {
       const fileContent = codeBlock`
@@ -194,6 +338,7 @@ describe('config/presets/internal/custom-managers', () => {
       `;
 
       const res = await extractPackageFile(
+        'regex',
         fileContent,
         'Dockerfile',
         customManager!,
@@ -251,22 +396,27 @@ describe('config/presets/internal/custom-managers', () => {
 
     describe('matches regexes patterns', () => {
       it.each`
-        path                    | expected
-        ${'Dockerfile'}         | ${true}
-        ${'foo/Dockerfile'}     | ${true}
-        ${'foo/bar/Dockerfile'} | ${true}
-        ${'Dockerfile-foo'}     | ${true}
-        ${'Dockerfilefoo'}      | ${true}
-        ${'foo/Dockerfile-foo'} | ${true}
-        ${'foo-Dockerfile'}     | ${false}
+        path                              | expected
+        ${'Dockerfile'}                   | ${true}
+        ${'foo/Dockerfile'}               | ${true}
+        ${'foo/bar/Dockerfile'}           | ${true}
+        ${'Dockerfile-foo'}               | ${true}
+        ${'Dockerfilefoo'}                | ${true}
+        ${'something.dockerfile'}         | ${true}
+        ${'something.containerfile'}      | ${true}
+        ${'foo/something.Dockerfile-foo'} | ${true}
+        ${'foo/Dockerfile-foo'}           | ${true}
+        ${'foo-Dockerfile'}               | ${false}
       `('$path', ({ path, expected }) => {
-        expect(regexMatches(path, customManager!.fileMatch)).toBe(expected);
+        expect(
+          matchRegexOrGlobList(path, customManager!.managerFilePatterns),
+        ).toBe(expected);
       });
     });
   });
 
   describe('Update `_VERSION` environment variables in GitHub Action files', () => {
-    const customManager = presets['githubActionsVersions'].customManagers?.[0];
+    const customManager = presets.githubActionsVersions.customManagers?.[0];
 
     it(`find dependencies in file`, async () => {
       const fileContent = codeBlock`
@@ -288,6 +438,8 @@ describe('config/presets/internal/custom-managers', () => {
           TERRAFORM_VERSION: 1.5.7
           # renovate: datasource=github-releases depName=kubernetes-sigs/kustomize versioning=regex:^(?<compatibility>.+)/v(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)$
           KUSTOMIZE_VERSION: kustomize/v5.2.1
+          # renovate: datasource=deb depName=docker-ce-cli versioning=deb registryUrl=https://download.docker.com/linux/ubuntu?suite=noble&components=stable&binaryArch=amd64
+          DOCKER_CE_CLI_VERSION: '5:28.5.1-1~ubuntu.24.04~noble'
 
         jobs:
           lint:
@@ -302,6 +454,7 @@ describe('config/presets/internal/custom-managers', () => {
       `;
 
       const res = await extractPackageFile(
+        'regex',
         fileContent,
         'github-workflow.yaml',
         customManager!,
@@ -355,6 +508,17 @@ describe('config/presets/internal/custom-managers', () => {
           versioning:
             'regex:^(?<compatibility>.+)/v(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)$',
         },
+        {
+          currentValue: '5:28.5.1-1~ubuntu.24.04~noble',
+          datasource: 'deb',
+          depName: 'docker-ce-cli',
+          replaceString:
+            "# renovate: datasource=deb depName=docker-ce-cli versioning=deb registryUrl=https://download.docker.com/linux/ubuntu?suite=noble&components=stable&binaryArch=amd64\n  DOCKER_CE_CLI_VERSION: '5:28.5.1-1~ubuntu.24.04~noble'\n",
+          versioning: 'deb',
+          registryUrls: [
+            'https://download.docker.com/linux/ubuntu?suite=noble&components=stable&binaryArch=amd64',
+          ],
+        },
       ]);
     });
 
@@ -374,13 +538,15 @@ describe('config/presets/internal/custom-managers', () => {
         ${'.github/workflows/foo.json'}     | ${false}
         ${'.github/workflows/foo.yamlo'}    | ${false}
       `('$path', ({ path, expected }) => {
-        expect(regexMatches(path, customManager!.fileMatch)).toBe(expected);
+        expect(
+          matchRegexOrGlobList(path, customManager!.managerFilePatterns),
+        ).toBe(expected);
       });
     });
   });
 
   describe('Update `_VERSION` environment variables in GitLab pipeline file', () => {
-    const customManager = presets['gitlabPipelineVersions'].customManagers?.[0];
+    const customManager = presets.gitlabPipelineVersions.customManagers?.[0];
 
     it(`find dependencies in file`, async () => {
       const fileContent = codeBlock`
@@ -401,6 +567,7 @@ describe('config/presets/internal/custom-managers', () => {
       `;
 
       const res = await extractPackageFile(
+        'regex',
         fileContent,
         'gitlab-ci.yml',
         customManager!,
@@ -441,22 +608,29 @@ describe('config/presets/internal/custom-managers', () => {
 
     describe('matches regexes patterns', () => {
       it.each`
-        path                        | expected
-        ${'.gitlab-ci.yaml'}        | ${true}
-        ${'.gitlab-ci.yml'}         | ${true}
-        ${'foo.yaml'}               | ${false}
-        ${'foo.yml'}                | ${false}
-        ${'.gitlab/ci.yml'}         | ${false}
-        ${'includes/gitlab-ci.yml'} | ${false}
+        path                             | expected
+        ${'.gitlab-ci.yaml'}             | ${true}
+        ${'.gitlab-ci.yml'}              | ${true}
+        ${'foo.gitlab-ci.yaml'}          | ${true}
+        ${'foo.gitlab-ci.yml'}           | ${true}
+        ${'includes/.gitlab-ci.yaml'}    | ${true}
+        ${'includes/.gitlab-ci.yml'}     | ${true}
+        ${'includes/foo.gitlab-ci.yaml'} | ${true}
+        ${'includes/foo.gitlab-ci.yml'}  | ${true}
+        ${'foo.yaml'}                    | ${false}
+        ${'foo.yml'}                     | ${false}
+        ${'.gitlab/ci.yml'}              | ${false}
+        ${'includes/gitlab-ci.yml'}      | ${false}
       `('$path', ({ path, expected }) => {
-        expect(regexMatches(path, customManager!.fileMatch)).toBe(expected);
+        expect(
+          matchRegexOrGlobList(path, customManager!.managerFilePatterns),
+        ).toBe(expected);
       });
     });
   });
 
   describe('Update `appVersion` value in Helm chart Chart.yaml', () => {
-    const customManager =
-      presets['helmChartYamlAppVersions'].customManagers?.[0];
+    const customManager = presets.helmChartYamlAppVersions.customManagers?.[0];
 
     it(`find dependencies in file`, async () => {
       const fileContent = codeBlock`
@@ -472,6 +646,7 @@ describe('config/presets/internal/custom-managers', () => {
       `;
 
       const res = await extractPackageFile(
+        'regex',
         fileContent,
         'Chart.yaml',
         customManager!,
@@ -510,13 +685,15 @@ describe('config/presets/internal/custom-managers', () => {
         ${'Chart.yamlo'}        | ${false}
         ${'Charto.yaml'}        | ${false}
       `('$path', ({ path, expected }) => {
-        expect(regexMatches(path, customManager!.fileMatch)).toBe(expected);
+        expect(
+          matchRegexOrGlobList(path, customManager!.managerFilePatterns),
+        ).toBe(expected);
       });
     });
   });
 
   describe('Update `_VERSION` variables in Makefiles', () => {
-    const customManager = presets['makefileVersions'].customManagers?.[0];
+    const customManager = presets.makefileVersions.customManagers?.[0];
 
     it(`find dependencies in file`, async () => {
       const fileContent = codeBlock`
@@ -534,6 +711,7 @@ describe('config/presets/internal/custom-managers', () => {
       `;
 
       const res = await extractPackageFile(
+        'regex',
         fileContent,
         'gitlab-ci.yml',
         customManager!,
@@ -583,13 +761,80 @@ describe('config/presets/internal/custom-managers', () => {
         ${'Dockerfile'}           | ${false}
         ${'MakefileGenerator.ts'} | ${false}
       `('$path', ({ path, expected }) => {
-        expect(regexMatches(path, customManager!.fileMatch)).toBe(expected);
+        expect(
+          matchRegexOrGlobList(path, customManager!.managerFilePatterns),
+        ).toBe(expected);
+      });
+    });
+  });
+
+  describe('Update Vale package versions in .vale.ini', () => {
+    const customManager = presets.valeVersions.customManagers?.[0];
+
+    it('finds dependencies in file', async () => {
+      const fileContent = codeBlock`
+        StylesPath = styles
+
+        MinAlertLevel = suggestion
+
+        [*.{md,txt}]
+        BasedOnStyles = Vale
+
+        Packages = https://github.com/vale-cli/Google/releases/download/v1.0.0/Google.zip
+        Packages = https://github.com/vale-cli/Microsoft/releases/download/v0.1.0/Microsoft.zip, https://github.com/vale-cli/write-good/releases/download/v0.4.0/write-good.zip
+        Packages = proselint
+      `;
+
+      const res = await extractPackageFile(
+        'regex',
+        fileContent,
+        '.vale.ini',
+        customManager!,
+      );
+
+      expect(res?.deps).toMatchObject([
+        {
+          currentValue: 'v1.0.0',
+          datasource: 'github-releases',
+          packageName: 'vale-cli/Google',
+          replaceString:
+            'https://github.com/vale-cli/Google/releases/download/v1.0.0/',
+        },
+        {
+          currentValue: 'v0.1.0',
+          datasource: 'github-releases',
+          packageName: 'vale-cli/Microsoft',
+          replaceString:
+            'https://github.com/vale-cli/Microsoft/releases/download/v0.1.0/',
+        },
+        {
+          currentValue: 'v0.4.0',
+          datasource: 'github-releases',
+          packageName: 'vale-cli/write-good',
+          replaceString:
+            'https://github.com/vale-cli/write-good/releases/download/v0.4.0/',
+        },
+      ]);
+    });
+
+    describe('matches regex patterns', () => {
+      it.each`
+        path                   | expected
+        ${'.vale.ini'}         | ${true}
+        ${'foo/.vale.ini'}     | ${true}
+        ${'foo/bar/.vale.ini'} | ${true}
+        ${'vale.ini'}          | ${false}
+        ${'.vale.ini.bak'}     | ${false}
+      `('$path', ({ path, expected }) => {
+        expect(
+          matchRegexOrGlobList(path, customManager!.managerFilePatterns),
+        ).toBe(expected);
       });
     });
   });
 
   describe('finds dependencies in pom.xml properties', () => {
-    const customManager = presets['mavenPropertyVersions'].customManagers?.[0];
+    const customManager = presets.mavenPropertyVersions.customManagers?.[0];
 
     it(`find dependencies in file`, async () => {
       const fileContent = codeBlock`
@@ -604,6 +849,7 @@ describe('config/presets/internal/custom-managers', () => {
       `;
 
       const res = await extractPackageFile(
+        'regex',
         fileContent,
         'pom.xml',
         customManager!,
@@ -633,6 +879,134 @@ describe('config/presets/internal/custom-managers', () => {
             '<!-- renovate: datasource=docker depName=mongo -->\n<mongo.container.version>4.4.6</mongo.container.version>',
         },
       ]);
+    });
+  });
+
+  describe('Update `*_version` variables in `.tfvars` files', () => {
+    const customManager = presets.tfvarsVersions.customManagers?.[0];
+
+    it(`find dependencies in file`, async () => {
+      const fileContent = codeBlock`
+        # renovate: datasource=docker depName=python registryUrl=https://index.docker.io
+        python_version = "3.14.0-alpine"
+        # renovate: datasource=npm depName=pnpm
+        pnpm_version = "10.19.0"
+      `;
+
+      const res = await extractPackageFile(
+        'regex',
+        fileContent,
+        'terraform.tfvars',
+        customManager!,
+      );
+
+      expect(res?.deps).toMatchObject([
+        {
+          currentValue: '3.14.0-alpine',
+          datasource: 'docker',
+          depName: 'python',
+          registryUrls: ['https://index.docker.io/'],
+        },
+        {
+          currentValue: '10.19.0',
+          datasource: 'npm',
+          depName: 'pnpm',
+        },
+      ]);
+    });
+  });
+
+  describe('Update `tsconfig/node` version in tsconfig.json', () => {
+    const customManager = presets.tsconfigNodeVersions.customManagers![0];
+
+    it(`find in tsconfig.json extends string`, async () => {
+      const fileContent = codeBlock`
+        {
+            "extends": "@tsconfig/node20/tsconfig.json",
+            "include": ["src/**/*"]
+        }
+      `;
+
+      const res = await extractPackageFile(
+        'regex',
+        fileContent,
+        'tsconfig.json',
+        customManager,
+      );
+
+      expect(res?.deps).toMatchObject([
+        {
+          currentValue: '20',
+          datasource: 'npm',
+          depName: '@tsconfig/node20',
+        },
+      ]);
+    });
+
+    it(`find in tsconfig.json extends string with short reference`, async () => {
+      const fileContent = codeBlock`
+        {
+            "extends": "@tsconfig/node20",
+            "include": ["src/**/*"]
+        }
+      `;
+
+      const res = await extractPackageFile(
+        'regex',
+        fileContent,
+        'tsconfig.json',
+        presets.tsconfigNodeVersions.customManagers![1],
+      );
+
+      expect(res?.deps).toMatchObject([
+        {
+          currentValue: '20',
+          datasource: 'npm',
+          depName: '@tsconfig/node20',
+        },
+      ]);
+    });
+
+    it(`find in tsconfig.json extends array`, async () => {
+      const fileContent = codeBlock`
+        {
+            "extends": [
+              "@tsconfig/strictest/tsconfig.json",
+              "@tsconfig/node20/tsconfig.json"
+            ],
+            "include": ["src/**/*"]
+        }
+      `;
+
+      const res = await extractPackageFile(
+        'regex',
+        fileContent,
+        'tsconfig.json',
+        customManager,
+      );
+
+      expect(res?.deps).toMatchObject([
+        {
+          currentValue: '20',
+          datasource: 'npm',
+          depName: '@tsconfig/node20',
+        },
+      ]);
+    });
+
+    describe('matches regexes patterns', () => {
+      it.each`
+        path                        | expected
+        ${'tsconfig.json'}          | ${true}
+        ${'tsconfig.base.json'}     | ${true}
+        ${'foo/tsconfig.json'}      | ${true}
+        ${'foo/tsconfig.base.json'} | ${true}
+        ${'tsconfig.yml'}           | ${false}
+      `('$path', ({ path, expected }) => {
+        expect(
+          matchRegexOrGlobList(path, customManager.managerFilePatterns),
+        ).toBe(expected);
+      });
     });
   });
 });

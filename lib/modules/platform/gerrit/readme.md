@@ -8,12 +8,6 @@ Support for Gerrit is currently _experimental_, meaning that it _might_ still ha
 
 Renovate stores its metadata in the _commit message footer_.
 
-Previously Renovate stored metadata in Gerrit's _hashtags_.
-To keep backwards compatibility, Renovate still reads metadata from hashtags.
-But Renovate _always_ puts its metadata in the _commit message footer_!
-When the Renovate maintainers mark Gerrit support as stable, the maintainers will remove the "read metadata from hashtags" feature.
-This means changes without metadata in the commit message footer will be "forgotten" by Renovate.
-
 ## Authentication
 
 <figure markdown>
@@ -36,9 +30,8 @@ You must set `platform=gerrit` in your Renovate config file.
 If you use the "Code-Review" label and want to get `automerge` working then you must set `autoApprove=true` in your Renovate config.
 Renovate will now add the _Code-Review_ label with the value "+2" to each of its "pull requests" (Gerrit-Change).
 
-<!-- prettier-ignore -->
 !!! note
-    The bot's user account must have permission to give +2 for the Code-Review label.
+  The Renovate user account must have permission to give +2 for the Code-Review label.
 
 The Renovate option `automergeType: "branch"` makes no sense for Gerrit, because there are no branches used to create pull requests.
 It works similar to the default option `"pr"`.
@@ -57,19 +50,29 @@ For example, if you want to use the [Merge Confidence](../../../merge-confidence
 }
 ```
 
+Also, labels in `renovate.json` will be mapped to hashtags in Gerrit. Example:
+
+```json
+{
+  "packageRules": [
+    {
+      "matchDepTypes": ["devDependencies"],
+      "labels": ["renovate:devDependencies"]
+    }
+  ]
+}
+```
+
+## Server version dependent features
+
+We use the Gerrit [Get Version REST API](https://gerrit-review.googlesource.com/Documentation/rest-api-config.html#get-version) to fetch the server version.
+You can use the experimental feature flag [`RENOVATE_X_PLATFORM_VERSION`](../../../self-hosted-experimental.md#renovate_x_platform_version) to set a specific server version.
+By setting the server version yourself, you save an API call that fetches the server version.
+
+- Use `hasfooter:Renovate-Branch` search operator instead of `message:"Renovate-Branch: "` for finding changes on Gerrit `v3.6.0` or later
+- Use `subject:` search operator instead of `message:` for PR title search on Gerrit `v3.8.0` or later.
+
 ## Unsupported platform features/concepts
 
 - Creating issues (not a Gerrit concept)
 - Dependency Dashboard (needs issues first)
-
-## Known problems
-
-### PR title is different from first commit message
-
-Sometimes the PR title passed to the Gerrit platform code is different from the first line of the commit message.
-For example:
-
-- Commit-Message=`Update keycloak.version to v21`
-- Pull-Request-Title=`Update keycloak.version to v21 (major)`
-
-In this case the Gerrit-Platform implementation tries to detect this and change the commit-message in a second patch-set.

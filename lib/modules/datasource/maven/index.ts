@@ -1,16 +1,11 @@
-import is from '@sindresorhus/is';
-import { DateTime } from 'luxon';
 import type { XmlDocument } from 'xmldoc';
-import { GlobalConfig } from '../../../config/global';
-import { logger } from '../../../logger';
-import * as packageCache from '../../../util/cache/package';
-import { cache } from '../../../util/cache/package/decorator';
-import { newlineRegex, regEx } from '../../../util/regex';
-import { ensureTrailingSlash } from '../../../util/url';
-import mavenVersion from '../../versioning/maven';
-import * as mavenVersioning from '../../versioning/maven';
-import { compare } from '../../versioning/maven/compare';
-import { Datasource } from '../datasource';
+import { logger } from '../../../logger/index.ts';
+import * as packageCache from '../../../util/cache/package/index.ts';
+import { asTimestamp } from '../../../util/timestamp.ts';
+import { ensureTrailingSlash } from '../../../util/url.ts';
+import { compare } from '../../versioning/maven/compare.ts';
+import mavenVersion, * as mavenVersioning from '../../versioning/maven/index.ts';
+import { Datasource } from '../datasource.ts';
 import type {
   GetReleasesConfig,
   PostprocessReleaseConfig,
@@ -18,21 +13,20 @@ import type {
   RegistryStrategy,
   Release,
   ReleaseResult,
-} from '../types';
-import { MAVEN_REPO } from './common';
-import type { MavenDependency, ReleaseMap } from './types';
+} from '../types.ts';
+import { MAVEN_CENTRAL_URLS, MAVEN_REPO } from './common.ts';
+import type { MavenDependency, MetadataResults } from './types.ts';
 import {
-  checkResource,
   createUrlForDependencyPom,
-  downloadHttpProtocol,
+  downloadMaven,
   downloadMavenXml,
   getDependencyInfo,
   getDependencyParts,
   getMavenUrl,
-} from './util';
+} from './util.ts';
 
 function getLatestSuitableVersion(releases: Release[]): string | null {
-  // istanbul ignore if
+  /* v8 ignore next -- TODO: add test */
   if (!releases?.length) {
     return null;
   }
@@ -46,19 +40,27 @@ function getLatestSuitableVersion(releases: Release[]): string | null {
   );
 }
 
-function extractVersions(metadata: XmlDocument): string[] {
+function extractVersions(metadata: XmlDocument): MetadataResults {
+  const res: MetadataResults = {};
   const versions = metadata.descendantWithPath('versioning.versions');
   const elements = versions?.childrenNamed('version');
   if (!elements) {
-    return [];
+    return res;
   }
-  return elements.map((el) => el.val);
-}
+  res.versions = elements.map((el) => el.val);
+  const latest = metadata.descendantWithPath('versioning.latest');
+  if (latest?.val) {
+    res.tags ??= {};
+    res.tags.latest = latest.val;
+  }
+  const release = metadata.descendantWithPath('versioning.release');
+  if (release?.val) {
+    res.tags ??= {};
+    res.tags.release = release.val;
+  }
 
-const mavenCentralHtmlVersionRegex = regEx(
-  '^<a href="(?<version>[^"]+)/" title="(?:[^"]+)/">(?:[^"]+)/</a>\\s+(?<releaseTimestamp>\\d\\d\\d\\d-\\d\\d-\\d\\d \\d\\d:\\d\\d)\\s+-$',
-  'i',
-);
+  return res;
+}
 
 export const defaultRegistryUrls = [MAVEN_REPO];
 
@@ -84,123 +86,27 @@ export class MavenDatasource extends Datasource {
     super(id);
   }
 
-  async fetchReleasesFromMetadata(
+  async fetchVersionsFromMetadata(
     dependency: MavenDependency,
     repoUrl: string,
-  ): Promise<ReleaseMap> {
+  ): Promise<MetadataResults> {
     const metadataUrl = getMavenUrl(dependency, repoUrl, 'maven-metadata.xml');
-
-    const cacheNamespace = 'datasource-maven:metadata-xml';
-    const cacheKey = metadataUrl.toString();
-    const cachedVersions = await packageCache.get<ReleaseMap>(
-      cacheNamespace,
-      cacheKey,
-    );
-    /* istanbul ignore if */
-    if (cachedVersions) {
-      return cachedVersions;
-    }
-
-    const { isCacheable, xml: mavenMetadata } = await downloadMavenXml(
-      this.http,
-      metadataUrl,
-    );
-    if (!mavenMetadata) {
-      return {};
-    }
-
-    const versions = extractVersions(mavenMetadata);
-    const releaseMap = versions.reduce(
-      (acc, version) => ({ ...acc, [version]: null }),
-      {},
-    );
-    const cachePrivatePackages = GlobalConfig.get(
-      'cachePrivatePackages',
-      false,
-    );
-    if (cachePrivatePackages || isCacheable) {
-      await packageCache.set(cacheNamespace, cacheKey, releaseMap, 30);
-    }
-    return releaseMap;
-  }
-
-  async addReleasesFromIndexPage(
-    inputReleaseMap: ReleaseMap,
-    dependency: MavenDependency,
-    repoUrl: string,
-  ): Promise<ReleaseMap> {
-    if (!repoUrl.startsWith(MAVEN_REPO)) {
-      return inputReleaseMap;
-    }
-
-    const cacheNs = 'datasource-maven:index-html-releases';
-    const cacheKey = `${repoUrl}${dependency.dependencyUrl}`;
-    let workingReleaseMap = await packageCache.get<ReleaseMap>(
-      cacheNs,
-      cacheKey,
-    );
-    if (!workingReleaseMap) {
-      workingReleaseMap = {};
-      let retryEarlier = false;
-      try {
-        const indexUrl = getMavenUrl(dependency, repoUrl, 'index.html');
-        const res = await downloadHttpProtocol(this.http, indexUrl);
-        if (res) {
-          for (const line of res.body.split(newlineRegex)) {
-            const match = line.trim().match(mavenCentralHtmlVersionRegex);
-            if (match) {
-              const { version, releaseTimestamp: timestamp } =
-                match?.groups ?? /* istanbul ignore next: hard to test */ {};
-              if (version && timestamp) {
-                const date = DateTime.fromFormat(
-                  timestamp,
-                  'yyyy-MM-dd HH:mm',
-                  {
-                    zone: 'UTC',
-                  },
-                );
-                if (date.isValid) {
-                  const releaseTimestamp = date.toISO();
-                  workingReleaseMap[version] = { version, releaseTimestamp };
-                }
-              }
-            }
-          }
-        }
-      } catch (err) /* istanbul ignore next */ {
-        retryEarlier = true;
+    const metadataXmlResult = await downloadMavenXml(this.http, metadataUrl);
+    return metadataXmlResult
+      .transform(({ data: metadata }) => extractVersions(metadata))
+      .onError((err) => {
         logger.debug(
-          { dependency, err },
-          'Failed to get releases from index.html',
+          `Maven: error fetching versions for "${dependency.display}": ${err.type}`,
         );
-      }
-      const cacheTTL = retryEarlier
-        ? /* istanbul ignore next: hard to test */ 60
-        : 24 * 60;
-      await packageCache.set(cacheNs, cacheKey, workingReleaseMap, cacheTTL);
-    }
-
-    const releaseMap = { ...inputReleaseMap };
-    for (const version of Object.keys(releaseMap)) {
-      releaseMap[version] ||= workingReleaseMap[version] ?? null;
-    }
-
-    return releaseMap;
-  }
-
-  getReleasesFromMap(releaseMap: ReleaseMap): Release[] {
-    const releases = Object.values(releaseMap).filter(is.truthy);
-    if (releases.length) {
-      return releases;
-    }
-    return Object.keys(releaseMap).map((version) => ({ version }));
+      })
+      .unwrapOr({});
   }
 
   async getReleases({
     packageName,
     registryUrl,
   }: GetReleasesConfig): Promise<ReleaseResult | null> {
-    // istanbul ignore if
+    /* v8 ignore next -- should never happen */
     if (!registryUrl) {
       return null;
     }
@@ -208,18 +114,26 @@ export class MavenDatasource extends Datasource {
     const dependency = getDependencyParts(packageName);
     const repoUrl = ensureTrailingSlash(registryUrl);
 
-    logger.debug(`Looking up ${dependency.display} in repository ${repoUrl}`);
-
-    let releaseMap = await this.fetchReleasesFromMetadata(dependency, repoUrl);
-    releaseMap = await this.addReleasesFromIndexPage(
-      releaseMap,
-      dependency,
-      repoUrl,
-    );
-    const releases = this.getReleasesFromMap(releaseMap);
-    if (!releases?.length) {
+    if (
+      // groupId
+      (packageName.includes('.gradle.plugin:') ||
+        // artifactId
+        packageName.endsWith('.gradle.plugin')) &&
+      MAVEN_CENTRAL_URLS.some((url) => repoUrl === ensureTrailingSlash(url))
+    ) {
+      logger.debug(
+        `Maven: skipping Maven Central for suspected Gradle plugin "${packageName}"`,
+      );
       return null;
     }
+
+    logger.debug(`Looking up ${dependency.display} in repository ${repoUrl}`);
+
+    const metadata = await this.fetchVersionsFromMetadata(dependency, repoUrl);
+    if (!metadata.versions?.length) {
+      return null;
+    }
+    const releases = metadata.versions.map((version) => ({ version }));
 
     logger.debug(
       `Found ${releases.length} new releases for ${dependency.display} in repository ${repoUrl}`,
@@ -240,6 +154,13 @@ export class MavenDatasource extends Datasource {
       ...dependencyInfo,
       releases,
     };
+    if (metadata.tags) {
+      result.tags = metadata.tags;
+      if (result.tags.latest) {
+        logger.debug(`Setting respectLatest=false for maven ${packageName}`);
+        result.respectLatest = false;
+      }
+    }
 
     if (!this.defaultRegistryUrls.includes(registryUrl)) {
       result.isPrivate = true;
@@ -248,18 +169,24 @@ export class MavenDatasource extends Datasource {
     return result;
   }
 
-  @cache({
-    namespace: `datasource-maven`,
-    key: (
-      { registryUrl, packageName }: PostprocessReleaseConfig,
-      { version }: Release,
-    ) => `postprocessRelease:${registryUrl}:${packageName}:${version}`,
-    ttlMinutes: 24 * 60,
-  })
   override async postprocessRelease(
     { packageName, registryUrl }: PostprocessReleaseConfig,
     release: Release,
   ): Promise<PostprocessReleaseResult> {
+    const { version, versionOrig } = release;
+    const cacheKey = versionOrig
+      ? `postprocessRelease:${registryUrl}:${packageName}:${versionOrig}:${version}`
+      : `postprocessRelease:${registryUrl}:${packageName}:${version}`;
+    const cachedResult = await packageCache.get<PostprocessReleaseResult>(
+      'datasource-maven:postprocess-reject',
+      cacheKey,
+    );
+
+    /* v8 ignore if: hard to test */
+    if (cachedResult) {
+      return cachedResult;
+    }
+
     if (!packageName || !registryUrl) {
       return release;
     }
@@ -268,21 +195,31 @@ export class MavenDatasource extends Datasource {
 
     const pomUrl = await createUrlForDependencyPom(
       this.http,
-      release.version,
+      release.versionOrig ?? release.version,
       dependency,
       registryUrl,
     );
 
     const artifactUrl = getMavenUrl(dependency, registryUrl, pomUrl);
+    const fetchResult = await downloadMaven(this.http, artifactUrl);
+    const { val, err } = fetchResult.unwrap();
 
-    const res = await checkResource(this.http, artifactUrl);
-
-    if (res === 'not-found' || res === 'error') {
-      return 'reject';
+    if (err) {
+      const result: PostprocessReleaseResult =
+        err.type === 'not-found' ? 'reject' : release;
+      if (result === 'reject') {
+        await packageCache.set(
+          'datasource-maven:postprocess-reject',
+          cacheKey,
+          result,
+          24 * 60,
+        );
+      }
+      return result;
     }
 
-    if (is.date(res)) {
-      release.releaseTimestamp = res.toISOString();
+    if (val.lastModified) {
+      release.releaseTimestamp = asTimestamp(val.lastModified);
     }
 
     return release;

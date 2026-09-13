@@ -1,5 +1,5 @@
-import * as massage from './massage';
-import type { RenovateConfig } from './types';
+import * as massage from './massage.ts';
+import type { RenovateConfig } from './types.ts';
 
 describe('config/massage', () => {
   describe('massageConfig', () => {
@@ -17,13 +17,42 @@ describe('config/massage', () => {
       expect(Array.isArray(res.schedule)).toBeTrue();
     });
 
-    it('massages npmToken', () => {
+    it('normalizes zero minimumReleaseAge to null', () => {
       const config: RenovateConfig = {
-        npmToken: 'some-token',
+        minimumReleaseAge: '0 days',
       };
-      expect(massage.massageConfig(config)).toEqual({
-        npmrc: '//registry.npmjs.org/:_authToken=some-token\n',
-      });
+
+      const res = massage.massageConfig(config);
+
+      expect(res.minimumReleaseAge).toBeNull();
+    });
+
+    it('normalizes zero minimumReleaseAge in packageRules', () => {
+      const config: RenovateConfig = {
+        packageRules: [
+          {
+            matchPackageNames: ['foo'],
+            minimumReleaseAge: '0 days',
+            patch: {
+              minimumReleaseAge: '0 days',
+            },
+          },
+        ],
+      };
+
+      const res = massage.massageConfig(config);
+
+      expect(res.packageRules).toEqual([
+        {
+          matchPackageNames: ['foo'],
+          minimumReleaseAge: null,
+        },
+        {
+          matchPackageNames: ['foo'],
+          matchUpdateTypes: ['patch'],
+          minimumReleaseAge: null,
+        },
+      ]);
     });
 
     it('massages packageRules matchUpdateTypes', () => {
@@ -42,7 +71,24 @@ describe('config/massage', () => {
         ],
       };
       const res = massage.massageConfig(config);
-      expect(res).toMatchSnapshot();
+      expect(res).toEqual({
+        packageRules: [
+          {
+            matchPackageNames: ['foo'],
+            separateMajorMinor: false,
+          },
+          {
+            matchPackageNames: ['foo'],
+            matchUpdateTypes: ['minor'],
+            semanticCommitType: 'feat',
+          },
+          {
+            matchPackageNames: ['foo'],
+            matchUpdateTypes: ['patch'],
+            semanticCommitType: 'fix',
+          },
+        ],
+      });
       expect(res.packageRules).toHaveLength(3);
     });
 
@@ -73,7 +119,18 @@ describe('config/massage', () => {
         ],
       };
       const res = massage.massageConfig(config);
-      expect(res).toMatchSnapshot();
+      expect(res).toEqual({
+        packageRules: [
+          {
+            lockFileMaintenance: {
+              enabled: true,
+            },
+            matchBaseBranches: ['release/ft10/1.9.x'],
+            matchManagers: ['helmv3'],
+            schedule: ['at any time'],
+          },
+        ],
+      });
       expect(res.packageRules).toHaveLength(1);
     });
   });

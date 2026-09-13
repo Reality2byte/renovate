@@ -1,4 +1,4 @@
-import type { GenericImageResourceDef } from '../../types';
+import type { GenericImageResourceDef } from '../../types.ts';
 
 const KubernetesSpecContainer = ['spec', 'container', 'image'];
 const KubernetesSpecInitContainer = ['spec', 'init_container', 'image'];
@@ -33,6 +33,10 @@ const KubernetesJobTemplateInit = [
   'spec',
   'init_container',
   'image',
+];
+
+export const generic_image_datasource: GenericImageResourceDef[] = [
+  { type: 'docker_registry_image', path: ['name'] },
 ];
 
 export const generic_image_resource: GenericImageResourceDef[] = [

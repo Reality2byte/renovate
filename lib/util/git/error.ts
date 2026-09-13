@@ -1,11 +1,11 @@
-import { CONFIG_VALIDATION } from '../../constants/error-messages';
-import { logger } from '../../logger';
-import { ExternalHostError } from '../../types/errors/external-host-error';
-import type { FileChange } from './types';
+import { CONFIG_VALIDATION } from '../../constants/error-messages.ts';
+import { logger } from '../../logger/index.ts';
+import { ExternalHostError } from '../../types/errors/external-host-error.ts';
+import { getEnv } from '../env.ts';
+import type { FileChange } from './types.ts';
 
-// istanbul ignore next
 export function checkForPlatformFailure(err: Error): Error | null {
-  if (process.env.NODE_ENV === 'test') {
+  if (getEnv().NODE_ENV === 'test') {
     return null;
   }
   const externalHostFailureStrings = [
@@ -29,8 +29,10 @@ export function checkForPlatformFailure(err: Error): Error | null {
       logger.debug({ err }, 'Converting git error to ExternalHostError');
       return new ExternalHostError(err, 'git');
     }
+    /* v8 ignore next -- TODO: add test */
   }
 
+  /* v8 ignore next -- TODO: add test */
   const configErrorStrings = [
     {
       error: 'GitLab: Branch name does not follow the pattern',
@@ -58,6 +60,7 @@ export function checkForPlatformFailure(err: Error): Error | null {
         "Renovate cannot push branches if there are tags with names the same as Renovate's branches. Please remove conflicting tag names or change Renovate's branchPrefix to avoid conflicts.",
     },
   ];
+  /* v8 ignore next -- TODO: add test */
   for (const { error, message } of configErrorStrings) {
     if (err.message.includes(error)) {
       logger.debug({ err }, 'Converting git error to CONFIG_VALIDATION error');
@@ -68,10 +71,11 @@ export function checkForPlatformFailure(err: Error): Error | null {
     }
   }
 
+  /* v8 ignore next -- TODO: add test */
   return null;
 }
 
-// istanbul ignore next
+/* v8 ignore next -- TODO: add tests */
 export function handleCommitError(
   err: Error,
   branchName: string,
@@ -94,6 +98,18 @@ export function handleCommitError(
       'App has not been granted permissions to update Workflows - aborting branch.',
     );
     return null;
+  }
+  if (err.message.includes('GH013')) {
+    logger.debug({ err }, 'GitHub repository ruleset blocked push');
+    const error = new Error(CONFIG_VALIDATION);
+    error.validationSource = branchName;
+    error.validationError = 'GitHub repository ruleset violation';
+    error.validationMessage =
+      `Renovate cannot push to \`${branchName}\` because a GitHub ` +
+      `repository ruleset rejected the push (GH013). Update the ` +
+      `ruleset - or grant Renovate a bypass actor - so Renovate can ` +
+      `proceed. Original error: \`${err.message.replaceAll('`', "'")}\``;
+    throw error;
   }
   if (
     (err.message.includes('remote rejected') || err.message.includes('403')) &&

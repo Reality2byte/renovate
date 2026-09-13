@@ -1,13 +1,13 @@
-import { logger } from '../../../../logger';
-import { platform } from '../../../../modules/platform';
-import { scm } from '../../../../modules/platform/scm';
-import type { RangeStrategy } from '../../../../types';
-import type { BranchConfig } from '../../../types';
+import { logger } from '../../../../logger/index.ts';
+import { platform } from '../../../../modules/platform/index.ts';
+import { scm } from '../../../../modules/platform/scm.ts';
+import type { RangeStrategy } from '../../../../types/index.ts';
+import type { BranchConfig } from '../../../types.ts';
 
 async function shouldKeepUpdated(
   config: BranchConfig,
-  baseBranch: string,
-  branchName: string,
+  _baseBranch: string,
+  _branchName: string,
 ): Promise<boolean> {
   const keepUpdatedLabel = config.keepUpdatedLabel;
   if (!keepUpdatedLabel) {
@@ -125,10 +125,15 @@ async function determineRebaseWhenValue(
   if (result.rebaseWhen === 'auto' || result.rebaseWhen === 'automerging') {
     let reason;
     let newValue = 'behind-base-branch';
-    if (result.automerge === true) {
-      reason = 'automerge=true';
-    } else if (keepUpdated) {
+    if (keepUpdated) {
       reason = 'keep-updated label is set';
+    } else if (await platform.isBranchMergeQueueEnabled?.(result.baseBranch)) {
+      // The merge queue tests each PR against the base branch head, so
+      // rebasing when behind the base branch is unnecessary
+      newValue = 'conflicted';
+      reason = 'base branch has a merge queue';
+    } else if (result.automerge === true) {
+      reason = 'automerge=true';
     } else if (result.rebaseWhen === 'automerging') {
       newValue = 'never';
       reason = 'no keep-updated label and automerging is set';

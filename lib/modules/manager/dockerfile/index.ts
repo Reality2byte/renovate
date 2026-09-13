@@ -1,16 +1,18 @@
-import type { Category } from '../../../constants';
-import { DockerDatasource } from '../../datasource/docker';
-import { extractPackageFile } from './extract';
+import type { Category } from '../../../constants/index.ts';
+import { DockerDatasource } from '../../datasource/docker/index.ts';
+import { extractPackageFile } from './extract.ts';
 
+export { knownDepTypes } from './dep-types.ts';
 export { extractPackageFile };
 
+export const url = 'https://docs.docker.com/build/concepts/dockerfile';
+export const categories: Category[] = ['docker'];
+
 export const defaultConfig = {
-  fileMatch: [
-    '(^|/|\\.)([Dd]ocker|[Cc]ontainer)file$',
-    '(^|/)([Dd]ocker|[Cc]ontainer)file[^/]*$',
+  managerFilePatterns: [
+    '/(^|/|\\.)([Dd]ocker|[Cc]ontainer)file$/',
+    '/(^|/)([Dd]ocker|[Cc]ontainer)file[^/]*$/',
   ],
 };
-
-export const categories: Category[] = ['docker'];
 
 export const supportedDatasources = [DockerDatasource.id];

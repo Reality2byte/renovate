@@ -1,12 +1,12 @@
-import { getPkgReleases } from '..';
-import { Fixtures } from '../../../../test/fixtures';
-import * as httpMock from '../../../../test/http-mock';
-import { EXTERNAL_HOST_ERROR } from '../../../constants/error-messages';
-import { range } from '../../../util/range';
-import { datasource, defaultRegistryUrl, pageSize } from './common';
+import { Fixtures } from '~test/fixtures.ts';
+import * as httpMock from '~test/http-mock.ts';
+import { EXTERNAL_HOST_ERROR } from '../../../constants/error-messages.ts';
+import { range } from '../../../util/range.ts';
+import { getPkgReleases } from '../index.ts';
+import { datasource, defaultRegistryUrl, pageSize } from './common.ts';
 
-function getPath(page: number, imageType = 'jdk'): string {
-  return `/v3/info/release_versions?page_size=${pageSize}&image_type=${imageType}&project=jdk&release_type=ga&sort_method=DATE&sort_order=DESC&page=${page}`;
+function getPath(page: number, imageType = 'jdk', args = ''): string {
+  return `/v3/info/release_versions?page_size=${pageSize}&image_type=${imageType}&project=jdk&release_type=ga&sort_method=DATE&sort_order=DESC${args}&page=${page}`;
 }
 
 const packageName = 'java';
@@ -28,22 +28,22 @@ describe('modules/datasource/java-version/index', () => {
 
     it('returns null for 404', async () => {
       httpMock.scope(defaultRegistryUrl).get(getPath(0)).reply(404);
-      expect(
-        await getPkgReleases({
+      await expect(
+        getPkgReleases({
           datasource,
           packageName,
         }),
-      ).toBeNull();
+      ).resolves.toBeNull();
     });
 
     it('returns null for empty result', async () => {
       httpMock.scope(defaultRegistryUrl).get(getPath(0)).reply(200, {});
-      expect(
-        await getPkgReleases({
+      await expect(
+        getPkgReleases({
           datasource,
           packageName,
         }),
-      ).toBeNull();
+      ).resolves.toBeNull();
     });
 
     it('returns null for empty 200 OK', async () => {
@@ -51,12 +51,12 @@ describe('modules/datasource/java-version/index', () => {
         .scope(defaultRegistryUrl)
         .get(getPath(0))
         .reply(200, { versions: [] });
-      expect(
-        await getPkgReleases({
+      await expect(
+        getPkgReleases({
           datasource,
           packageName,
         }),
-      ).toBeNull();
+      ).resolves.toBeNull();
     });
 
     it('throws for 5xx', async () => {
@@ -78,8 +78,13 @@ describe('modules/datasource/java-version/index', () => {
         datasource,
         packageName,
       });
-      expect(res).toMatchSnapshot();
-      expect(res?.releases).toHaveLength(3);
+      expect(res).toMatchObject({
+        releases: [
+          { version: '8.0.302+8' },
+          { version: '11.0.12+7' },
+          { version: '16.0.2+7' },
+        ],
+      });
     });
 
     it('processes real data (jre)', async () => {
@@ -91,7 +96,20 @@ describe('modules/datasource/java-version/index', () => {
         datasource,
         packageName: 'java-jre',
       });
-      expect(res).toMatchSnapshot();
+      expect(res).toMatchObject({
+        releases: [{ version: '8.0.302+8' }, { version: '11.0.12+7' }],
+      });
+    });
+
+    it('processes real data (jre,windows,x64)', async () => {
+      httpMock
+        .scope(defaultRegistryUrl)
+        .get(getPath(0, 'jre', '&os=windows&architecture=x64'))
+        .reply(200, Fixtures.get('jre.json'));
+      const res = await getPkgReleases({
+        datasource,
+        packageName: 'java-jre?os=windows&architecture=x64',
+      });
       expect(res?.releases).toHaveLength(2);
     });
 
@@ -109,8 +127,26 @@ describe('modules/datasource/java-version/index', () => {
         datasource,
         packageName,
       });
-      expect(res).toMatchSnapshot();
+      expect(res).toMatchObject({
+        releases: Array.from({ length: 50 }, (_, idx) => ({
+          version: `1.${idx + 1}.0`,
+        })),
+      });
       expect(res?.releases).toHaveLength(50);
+    });
+
+    it('processes real data (jre,system)', async () => {
+      vi.spyOn(process, 'arch', 'get').mockReturnValueOnce('ia32');
+      vi.spyOn(process, 'platform', 'get').mockReturnValueOnce('win32');
+      httpMock
+        .scope(defaultRegistryUrl)
+        .get(getPath(0, 'jre', '&os=windows&architecture=x86'))
+        .reply(200, Fixtures.get('jre.json'));
+      const res = await getPkgReleases({
+        datasource,
+        packageName: 'java-jre?system=true',
+      });
+      expect(res?.releases).toHaveLength(2);
     });
   });
 });

@@ -1,9 +1,14 @@
-import is from '@sindresorhus/is';
-// eslint-disable-next-line no-restricted-imports
+import {
+  isArray,
+  isNonEmptyString,
+  isString,
+  isUrlInstance,
+} from '@sindresorhus/is';
+// oxlint-disable-next-line no-restricted-imports
 import _parseLinkHeader from 'parse-link-header';
 import urlJoin from 'url-join';
-import { logger } from '../logger';
-import { regEx } from './regex';
+import { logger } from '../logger/index.ts';
+import { regEx } from './regex.ts';
 
 export function joinUrlParts(...parts: string[]): string {
   return urlJoin(...parts);
@@ -19,7 +24,7 @@ export function ensurePathPrefix(url: string, prefix: string): string {
 }
 
 export function ensureTrailingSlash(url: string): string {
-  return url.replace(/\/?$/, '/'); // TODO #12875 adds slash at the front when re2 is used
+  return url.replace(regEx(/\/?$/), '/');
 }
 
 export function trimTrailingSlash(url: string): string {
@@ -27,7 +32,7 @@ export function trimTrailingSlash(url: string): string {
 }
 
 export function trimLeadingSlash(path: string): string {
-  return path.replace(/^\/+/, '');
+  return path.replace(regEx(/^\/+/), '');
 }
 
 export function trimSlashes(path: string): string {
@@ -65,17 +70,61 @@ export function replaceUrlPath(baseUrl: string | URL, path: string): string {
     return path;
   }
 
-  const { origin } = is.string(baseUrl) ? new URL(baseUrl) : baseUrl;
+  const { origin } = isString(baseUrl) ? new URL(baseUrl) : baseUrl;
   return urlJoin(origin, path);
+}
+
+/**
+ * Resolves a server-provided pagination "next" URL against the current request
+ * URL, returning it only when it stays on the same origin.
+ *
+ * Registries paginate by returning a `Link` header (or Atom `<link rel="next">`)
+ * pointing at the next page.
+ *
+ * However, if we were to follow that URL without validating it, this could lead to us being redirected to a different host, which could lead to Server-Side Request Forgery (SSRF).
+ *
+ * This guard drops any `next` URL that resolves to a different origin.
+ *
+ * @param baseUrl - the URL of the request that produced `nextUrl`
+ * @param nextUrl - the remote-server-provided pagination target (may be relative, and may be malicious)
+ * @returns the resolved absolute URL if same-origin, otherwise `null`
+ */
+export function resolveSameOriginUrl(
+  baseUrl: string | URL,
+  nextUrl: string | URL,
+): string | null {
+  const base = parseUrl(baseUrl);
+  if (!base) {
+    return null;
+  }
+
+  let resolved: URL;
+  try {
+    resolved = new URL(nextUrl.toString(), base);
+  } catch {
+    return null;
+  }
+
+  // If the base URL is HTTPS and the resolved URL is HTTP, but has no port specified, we can assume that the server intended to use HTTPS. This is a common misconfiguration in some registries.
+  if (
+    base.protocol === 'https:' &&
+    resolved.protocol === 'http:' &&
+    resolved.port === ''
+  ) {
+    logger.debug(`Detected protocol downgrade and fixed it: ${resolved.href}`);
+    resolved.protocol = 'https:';
+  }
+
+  return resolved.origin === base.origin ? resolved.href : null;
 }
 
 export function getQueryString(params: Record<string, any>): string {
   const usp = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) {
-    if (is.array<object>(v)) {
+    if (isArray<object>(v)) {
       for (const item of v) {
         // TODO: fix me?
-        // eslint-disable-next-line @typescript-eslint/no-base-to-string
+        // oxlint-disable-next-line typescript/no-base-to-string
         usp.append(k, item.toString());
       }
     } else {
@@ -86,20 +135,20 @@ export function getQueryString(params: Record<string, any>): string {
 }
 
 export function isHttpUrl(url: unknown): boolean {
-  if (!is.nonEmptyString(url)) {
+  if (!isNonEmptyString(url) && !isUrlInstance(url)) {
     return false;
   }
-  try {
-    const { protocol } = new URL(url);
-    return protocol === 'https:' || protocol === 'http:';
-  } catch {
-    return false;
-  }
+  const protocol = parseUrl(url)?.protocol;
+  return protocol === 'https:' || protocol === 'http:';
 }
 
-export function parseUrl(url: string | undefined | null): URL | null {
+export function parseUrl(url: URL | string | undefined | null): URL | null {
   if (!url) {
     return null;
+  }
+
+  if (url instanceof URL) {
+    return url;
   }
 
   try {
@@ -123,7 +172,7 @@ export type LinkHeaderLinks = _parseLinkHeader.Links;
 export function parseLinkHeader(
   linkHeader: string | null | undefined,
 ): LinkHeaderLinks | null {
-  if (!is.nonEmptyString(linkHeader)) {
+  if (!isNonEmptyString(linkHeader)) {
     return null;
   }
   if (linkHeader.length > 2000) {
@@ -138,10 +187,10 @@ export function parseLinkHeader(
  */
 export function massageHostUrl(url: string): string {
   if (!url.includes('://') && url.includes('/')) {
-    return 'https://' + url;
-  } else if (!url.includes('://') && url.includes(':')) {
-    return 'https://' + url;
-  } else {
-    return url;
+    return `https://${url}`;
   }
+  if (!url.includes('://') && url.includes(':')) {
+    return `https://${url}`;
+  }
+  return url;
 }

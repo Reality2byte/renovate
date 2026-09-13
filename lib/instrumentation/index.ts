@@ -1,70 +1,120 @@
-import { ClientRequest } from 'node:http';
-import type {
-  Context,
-  Span,
-  SpanOptions,
-  Tracer,
-  TracerProvider,
-} from '@opentelemetry/api';
+import { ClientRequest, ServerResponse } from 'node:http';
+import type { Context, Span, Tracer, TracerProvider } from '@opentelemetry/api';
 import * as api from '@opentelemetry/api';
 import { ProxyTracerProvider, SpanStatusCode } from '@opentelemetry/api';
 import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
-import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
+import { OTLPTraceExporter as OTLPTraceExporterGrpc } from '@opentelemetry/exporter-trace-otlp-grpc';
+import { OTLPTraceExporter as OTLPTraceExporterHttp } from '@opentelemetry/exporter-trace-otlp-http';
+import { OTLPTraceExporter as OTLPTraceExporterProto } from '@opentelemetry/exporter-trace-otlp-proto';
 import type { Instrumentation } from '@opentelemetry/instrumentation';
 import { registerInstrumentations } from '@opentelemetry/instrumentation';
 import { BunyanInstrumentation } from '@opentelemetry/instrumentation-bunyan';
 import { HttpInstrumentation } from '@opentelemetry/instrumentation-http';
-import { Resource } from '@opentelemetry/resources';
+import { RedisInstrumentation } from '@opentelemetry/instrumentation-redis';
+import {
+  detectResources,
+  resourceFromAttributes,
+} from '@opentelemetry/resources';
 import {
   BatchSpanProcessor,
   ConsoleSpanExporter,
   SimpleSpanProcessor,
+  type SpanExporter,
+  type SpanProcessor,
 } from '@opentelemetry/sdk-trace-base';
 import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
 import {
   ATTR_SERVICE_NAME,
   ATTR_SERVICE_VERSION,
 } from '@opentelemetry/semantic-conventions';
-import { ATTR_SERVICE_NAMESPACE } from '@opentelemetry/semantic-conventions/incubating';
-import { pkg } from '../expose.cjs';
+import { isPromise } from '@sindresorhus/is';
+import { pkg } from '../expose.ts';
+import { GetDatasourceReleasesSpanProcessor } from '../modules/datasource/span-processor.ts';
+import { GitOperationSpanProcessor } from '../util/git/span-processor.ts';
+import { getResourceDetectors } from './detectors.ts';
+import { FileSpanExporter } from './file-exporter.ts';
+import type { RenovateSpanOptions } from './types.ts';
 import {
+  getFileExporterPath,
+  getOtlpProtocol,
+  isFileExporterEnabled,
   isTraceDebuggingEnabled,
   isTraceSendingEnabled,
   isTracingEnabled,
   massageThrowable,
-} from './utils';
+} from './utils.ts';
 
 let instrumentations: Instrumentation[] = [];
 
-init();
+function createOtlpExporter(): SpanExporter {
+  const protocol = getOtlpProtocol();
+  if (protocol === 'grpc') {
+    return new OTLPTraceExporterGrpc();
+  }
+  if (protocol === 'http/protobuf') {
+    return new OTLPTraceExporterProto();
+  }
+  return new OTLPTraceExporterHttp();
+}
 
 export function init(): void {
+  const spanProcessors: SpanProcessor[] = [
+    new GitOperationSpanProcessor(),
+    new GetDatasourceReleasesSpanProcessor(),
+  ];
+
   if (!isTracingEnabled()) {
+    const traceProvider = new NodeTracerProvider({ spanProcessors });
+    traceProvider.register({
+      contextManager: new AsyncLocalStorageContextManager(),
+    });
     return;
   }
 
-  const traceProvider = new NodeTracerProvider({
-    resource: new Resource({
-      // https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/resource/semantic_conventions/README.md#semantic-attributes-with-sdk-provided-default-value
-      [ATTR_SERVICE_NAME]: process.env.OTEL_SERVICE_NAME ?? 'renovate',
-      [ATTR_SERVICE_NAMESPACE]:
-        process.env.OTEL_SERVICE_NAMESPACE ?? 'renovatebot.com',
-      [ATTR_SERVICE_VERSION]: process.env.OTEL_SERVICE_VERSION ?? pkg.version,
-    }),
-  });
+  // v8 ignore if -- TODO add tests
+  if (process.env.OTEL_LOG_LEVEL) {
+    api.diag.setLogger(
+      new api.DiagConsoleLogger(),
+      api.DiagLogLevel[
+        process.env.OTEL_LOG_LEVEL.toUpperCase() as keyof typeof api.DiagLogLevel
+      ],
+    );
+  }
 
   // add processors
   if (isTraceDebuggingEnabled()) {
-    traceProvider.addSpanProcessor(
-      new SimpleSpanProcessor(new ConsoleSpanExporter()),
-    );
+    spanProcessors.push(new SimpleSpanProcessor(new ConsoleSpanExporter()));
   }
 
   // OTEL specification environment variable
   if (isTraceSendingEnabled()) {
-    const exporter = new OTLPTraceExporter();
-    traceProvider.addSpanProcessor(new BatchSpanProcessor(exporter));
+    spanProcessors.push(new BatchSpanProcessor(createOtlpExporter()));
   }
+
+  if (isFileExporterEnabled()) {
+    spanProcessors.push(
+      new BatchSpanProcessor(new FileSpanExporter(getFileExporterPath())),
+    );
+  }
+
+  const env = process.env; // don't use getEnv() here to avoid circular dependency with env variables used in the resource detectors
+  const baseResource = resourceFromAttributes({
+    // https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/resource/semantic_conventions/README.md#semantic-attributes-with-sdk-provided-default-value
+    [ATTR_SERVICE_NAME]: env.OTEL_SERVICE_NAME ?? 'renovate',
+    // https://github.com/open-telemetry/opentelemetry-js/tree/main/semantic-conventions#unstable-semconv
+    // https://github.com/open-telemetry/opentelemetry-js/blob/e9d3c71918635d490b6a9ac9f8259265b38394d0/semantic-conventions/src/experimental_attributes.ts#L7688
+    ['service.namespace']: env.OTEL_SERVICE_NAMESPACE ?? 'renovatebot.com',
+    [ATTR_SERVICE_VERSION]: env.OTEL_SERVICE_VERSION ?? pkg.version,
+  });
+
+  const detectedResource = detectResources({
+    detectors: getResourceDetectors(env),
+  });
+
+  const traceProvider = new NodeTracerProvider({
+    resource: baseResource.merge(detectedResource),
+    spanProcessors,
+  });
 
   const contextManager = new AsyncLocalStorageContextManager();
   traceProvider.register({
@@ -73,11 +123,8 @@ export function init(): void {
 
   instrumentations = [
     new HttpInstrumentation({
-      applyCustomAttributesOnSpan: /* istanbul ignore next */ (
-        span,
-        request,
-        response,
-      ) => {
+      /* v8 ignore start -- not easily testable */
+      applyCustomAttributesOnSpan: (span, request, response) => {
         // ignore 404 errors when the branch protection of Github could not be found. This is expected if no rules are configured
         if (
           request instanceof ClientRequest &&
@@ -86,19 +133,32 @@ export function init(): void {
           response.statusCode === 404
         ) {
           span.setStatus({ code: SpanStatusCode.OK });
+        } else if (
+          request instanceof ClientRequest &&
+          request.path === '/v2/' &&
+          request.method === 'GET' &&
+          !request.getHeader('authorization') &&
+          response instanceof ServerResponse &&
+          response.getHeader('www-authenticate') &&
+          response.getHeader('docker-distribution-api-version') &&
+          response.statusCode === 401
+        ) {
+          // Docker API test expects 401 with `www-authenticate` header when registry requires authentication, so ignore this error
+          span.setStatus({ code: SpanStatusCode.OK });
         }
       },
+      /* v8 ignore stop -- not easily testable */
     }),
     new BunyanInstrumentation(),
+    new RedisInstrumentation(),
   ];
   registerInstrumentations({
     instrumentations,
   });
 }
 
-/* istanbul ignore next */
-
 // https://github.com/open-telemetry/opentelemetry-js-api/issues/34
+/* v8 ignore next -- not easily testable */
 export async function shutdown(): Promise<void> {
   const traceProvider = getTracerProvider();
   if (traceProvider instanceof NodeTracerProvider) {
@@ -111,7 +171,6 @@ export async function shutdown(): Promise<void> {
   }
 }
 
-/* istanbul ignore next */
 export function disableInstrumentations(): void {
   for (const instrumentation of instrumentations) {
     instrumentation.disable();
@@ -133,18 +192,24 @@ export function instrument<F extends () => ReturnType<F>>(
 export function instrument<F extends () => ReturnType<F>>(
   name: string,
   fn: F,
-  options: SpanOptions,
+  options: RenovateSpanOptions,
 ): ReturnType<F>;
 export function instrument<F extends () => ReturnType<F>>(
   name: string,
   fn: F,
-  options: SpanOptions = {},
+  options: RenovateSpanOptions,
+  context: Context,
+): ReturnType<F>;
+export function instrument<F extends () => ReturnType<F>>(
+  name: string,
+  fn: F,
+  options: RenovateSpanOptions = {},
   context: Context = api.context.active(),
 ): ReturnType<F> {
   return getTracer().startActiveSpan(name, options, context, (span: Span) => {
     try {
       const ret = fn();
-      if (ret instanceof Promise) {
+      if (isPromise(ret)) {
         return ret
           .catch((e) => {
             span.recordException(e);

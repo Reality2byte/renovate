@@ -1,17 +1,21 @@
-import is from '@sindresorhus/is';
-import { logger } from '../../../logger';
-import { queryReleases, queryTags } from '../../../util/github/graphql';
-import type { GithubReleaseItem } from '../../../util/github/graphql/types';
-import { findCommitOfTag } from '../../../util/github/tags';
-import { getApiBaseUrl, getSourceUrl } from '../../../util/github/url';
-import { GithubHttp } from '../../../util/http/github';
-import { Datasource } from '../datasource';
+import { isBoolean, isNullOrUndefined } from '@sindresorhus/is';
+import { logger } from '../../../logger/index.ts';
+import {
+  queryReleases,
+  queryTags,
+} from '../../../util/github/graphql/index.ts';
+import type { GithubReleaseItem } from '../../../util/github/graphql/types.ts';
+import { findCommitOfTag } from '../../../util/github/tags.ts';
+import { getApiBaseUrl, getSourceUrl } from '../../../util/github/url.ts';
+import { memCacheProvider } from '../../../util/http/cache/memory-http-cache-provider.ts';
+import { GithubHttp } from '../../../util/http/github.ts';
+import { Datasource } from '../datasource.ts';
 import type {
   DigestConfig,
   GetReleasesConfig,
   Release,
   ReleaseResult,
-} from '../types';
+} from '../types.ts';
 
 export class GithubTagsDatasource extends Datasource {
   static readonly id = 'github-tags';
@@ -43,7 +47,9 @@ export class GithubTagsDatasource extends Datasource {
     let digest: string | null = null;
     try {
       const url = `${apiBaseUrl}repos/${githubRepo}/commits?per_page=1`;
-      const res = await this.http.getJson<{ sha: string }[]>(url);
+      const res = await this.http.getJsonUnchecked<{ sha: string }[]>(url, {
+        cacheProvider: memCacheProvider,
+      });
       digest = res.body[0].sha;
     } catch (err) {
       logger.debug(
@@ -95,8 +101,19 @@ export class GithubTagsDatasource extends Datasource {
 
       for (const release of releases) {
         const isReleaseStable = releasesMap.get(release.version)?.isStable;
-        if (is.boolean(isReleaseStable)) {
+        if (isBoolean(isReleaseStable)) {
           release.isStable = isReleaseStable;
+        }
+
+        const releaseTimestamp = releasesMap.get(
+          release.version,
+        )?.releaseTimestamp;
+        if (
+          releaseTimestamp &&
+          (isNullOrUndefined(release.releaseTimestamp) ||
+            releaseTimestamp > release.releaseTimestamp)
+        ) {
+          release.releaseTimestamp = releaseTimestamp;
         }
       }
     } catch (err) /* istanbul ignore next */ {

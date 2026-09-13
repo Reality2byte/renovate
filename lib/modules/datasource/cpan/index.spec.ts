@@ -1,8 +1,8 @@
-import { getPkgReleases } from '..';
-import { Fixtures } from '../../../../test/fixtures';
-import * as httpMock from '../../../../test/http-mock';
-import { EXTERNAL_HOST_ERROR } from '../../../constants/error-messages';
-import { CpanDatasource } from '.';
+import { Fixtures } from '~test/fixtures.ts';
+import * as httpMock from '~test/http-mock.ts';
+import { EXTERNAL_HOST_ERROR } from '../../../constants/error-messages.ts';
+import { getPkgReleases } from '../index.ts';
+import { CpanDatasource } from './index.ts';
 
 const baseUrl = 'https://fastapi.metacpan.org/';
 
@@ -13,26 +13,25 @@ describe('modules/datasource/cpan/index', () => {
         .scope(baseUrl)
         .post(
           '/v1/file/_search',
-          (body) =>
-            body.query.filtered.filter.and[0].term['module.name'] === 'FooBar',
+          (body) => body.query.bool.filter[0].term['module.name'] === 'FooBar',
         )
         .reply(200, Fixtures.get('empty.json'));
-      expect(
-        await getPkgReleases({
+      await expect(
+        getPkgReleases({
           datasource: CpanDatasource.id,
           packageName: 'FooBar',
         }),
-      ).toBeNull();
+      ).resolves.toBeNull();
     });
 
     it('returns null for 404', async () => {
       httpMock.scope(baseUrl).post('/v1/file/_search').reply(404);
-      expect(
-        await getPkgReleases({
+      await expect(
+        getPkgReleases({
           datasource: CpanDatasource.id,
           packageName: 'Plack',
         }),
-      ).toBeNull();
+      ).resolves.toBeNull();
     });
 
     it('throws for 5xx', async () => {
@@ -47,12 +46,12 @@ describe('modules/datasource/cpan/index', () => {
 
     it('returns null for unknown error', async () => {
       httpMock.scope(baseUrl).post('/v1/file/_search').replyWithError('');
-      expect(
-        await getPkgReleases({
+      await expect(
+        getPkgReleases({
           datasource: CpanDatasource.id,
           packageName: 'Plack',
         }),
-      ).toBeNull();
+      ).resolves.toBeNull();
     });
 
     it('processes real data', async () => {
@@ -60,8 +59,7 @@ describe('modules/datasource/cpan/index', () => {
         .scope(baseUrl)
         .post(
           '/v1/file/_search',
-          (body) =>
-            body.query.filtered.filter.and[0].term['module.name'] === 'Plack',
+          (body) => body.query.bool.filter[0].term['module.name'] === 'Plack',
         )
         .reply(200, Fixtures.get('Plack.json'));
       const res = await getPkgReleases({
@@ -86,6 +84,7 @@ describe('modules/datasource/cpan/index', () => {
         releaseTimestamp: '2020-11-30T00:21:36.000Z',
         version: '1.0048',
       });
+      expect(res?.tags?.latest).toBe('1.0048');
     });
   });
 });

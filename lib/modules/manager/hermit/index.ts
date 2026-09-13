@@ -1,12 +1,15 @@
-import { HermitDatasource } from '../../datasource/hermit';
-import { id as versionId } from '../../versioning/hermit';
-import { defaultConfig as partialDefaultConfig } from './default-config';
-export { updateArtifacts } from './artifacts';
-export { extractPackageFile } from './extract';
-export { updateDependency } from './update';
+import { HermitDatasource } from '../../datasource/hermit/index.ts';
+import { id as versionId } from '../../versioning/hermit/index.ts';
+import { defaultConfig as partialDefaultConfig } from './default-config.ts';
+
+export { updateArtifacts } from './artifacts.ts';
+export { extractPackageFile } from './extract.ts';
+export { updateDependency } from './update.ts';
+
+export const url = 'https://cashapp.github.io/hermit';
 
 export const defaultConfig = {
-  fileMatch: partialDefaultConfig.fileMatch,
+  managerFilePatterns: partialDefaultConfig.managerFilePatterns,
   excludeCommitPaths: partialDefaultConfig.excludeCommitPaths,
   versioning: versionId,
 };

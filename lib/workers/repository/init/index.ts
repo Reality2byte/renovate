@@ -1,20 +1,21 @@
-import { GlobalConfig } from '../../../config/global';
-import { applySecretsToConfig } from '../../../config/secrets';
-import type { RenovateConfig } from '../../../config/types';
-import { logger } from '../../../logger';
-import { setRepositoryLogLevelRemaps } from '../../../logger/remap';
-import { platform } from '../../../modules/platform';
-import * as memCache from '../../../util/cache/memory';
-import { clone } from '../../../util/clone';
-import { cloneSubmodules, setUserRepoConfig } from '../../../util/git';
-import { getAll } from '../../../util/host-rules';
-import { checkIfConfigured } from '../configured';
-import { PackageFiles } from '../package-files';
-import type { WorkerPlatformConfig } from './apis';
-import { initApis } from './apis';
-import { initializeCaches, resetCaches } from './cache';
-import { getRepoConfig } from './config';
-import { detectVulnerabilityAlerts } from './vulnerability';
+import { GlobalConfig } from '../../../config/global.ts';
+import { applySecretsAndVariablesToConfig } from '../../../config/secrets.ts';
+import type { RenovateConfig } from '../../../config/types.ts';
+import { logger } from '../../../logger/index.ts';
+import { setRepositoryLogLevelRemaps } from '../../../logger/remap.ts';
+import { platform } from '../../../modules/platform/index.ts';
+import * as memCache from '../../../util/cache/memory/index.ts';
+import { clone } from '../../../util/clone.ts';
+import { cloneSubmodules, setUserRepoConfig } from '../../../util/git/index.ts';
+import { getAll } from '../../../util/host-rules.ts';
+import { initMutexes } from '../../../util/mutex.ts';
+import { checkIfConfigured } from '../configured.ts';
+import { PackageFiles } from '../package-files.ts';
+import type { WorkerPlatformConfig } from './apis.ts';
+import { initApis } from './apis.ts';
+import { initializeCaches, resetCaches } from './cache.ts';
+import { getRepoConfig } from './config.ts';
+import { detectVulnerabilityAlerts } from './vulnerability.ts';
 
 function initializeConfig(config: RenovateConfig): RenovateConfig {
   return {
@@ -27,18 +28,18 @@ function initializeConfig(config: RenovateConfig): RenovateConfig {
 
 function warnOnUnsupportedOptions(config: RenovateConfig): void {
   if (config.filterUnavailableUsers && !platform.filterUnavailableUsers) {
-    // TODO: types (#22198)
-    const platform = GlobalConfig.get('platform')!;
+    const platform = GlobalConfig.get('platform');
     logger.warn(
-      `Configuration option 'filterUnavailableUsers' is not supported on the current platform '${platform}'.`,
+      { platform },
+      `Configuration option 'filterUnavailableUsers' is not supported on the current platform.`,
     );
   }
 
   if (config.expandCodeOwnersGroups && !platform.expandGroupMembers) {
-    // TODO: types (#22198)
-    const platform = GlobalConfig.get('platform')!;
+    const platform = GlobalConfig.get('platform');
     logger.warn(
-      `Configuration option 'expandCodeOwnersGroups' is not supported on the current platform '${platform}'.`,
+      { platform },
+      `Configuration option 'expandCodeOwnersGroups' is not supported on the current platform.`,
     );
   }
 }
@@ -51,6 +52,7 @@ export async function initRepo(
   await resetCaches();
   logger.once.reset();
   memCache.init();
+  initMutexes();
   config = await initApis(config);
   await initializeCaches(config as WorkerPlatformConfig);
   config = await getRepoConfig(config);
@@ -62,7 +64,9 @@ export async function initRepo(
   }
   checkIfConfigured(config);
   warnOnUnsupportedOptions(config);
-  config = applySecretsToConfig(config);
+  config = applySecretsAndVariablesToConfig({
+    config,
+  });
   setUserRepoConfig(config);
   config = await detectVulnerabilityAlerts(config);
   // istanbul ignore if
@@ -72,6 +76,6 @@ export async function initRepo(
       'Full resolved config and hostRules including presets',
     );
   }
-  await cloneSubmodules(!!config.cloneSubmodules);
+  await cloneSubmodules(!!config.cloneSubmodules, config.cloneSubmodulesFilter);
   return config;
 }

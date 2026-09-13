@@ -4,7 +4,7 @@ import {
   resetRepositoryLogLevelRemaps,
   setGlobalLogLevelRemaps,
   setRepositoryLogLevelRemaps,
-} from './remap';
+} from './remap.ts';
 
 describe('logger/remap', () => {
   afterEach(() => {
@@ -23,7 +23,7 @@ describe('logger/remap', () => {
 
   it('performs global remaps', () => {
     setGlobalLogLevelRemaps([{ matchMessage: '*foo*', newLogLevel: 'error' }]);
-    setRepositoryLogLevelRemaps(undefined);
+    setRepositoryLogLevelRemaps([]);
 
     const res = getRemappedLevel('foo');
 

@@ -1,16 +1,16 @@
-import { GlobalConfig } from '../../../config/global';
-import { logger } from '../../../logger';
-import { coerceArray } from '../../../util/array';
-import { regEx } from '../../../util/regex';
-import { joinUrlParts } from '../../../util/url';
-import { AzurePipelinesTasksDatasource } from '../../datasource/azure-pipelines-tasks';
-import { GitTagsDatasource } from '../../datasource/git-tags';
-import { getDep } from '../dockerfile/extract';
+import { GlobalConfig } from '../../../config/global.ts';
+import { logger } from '../../../logger/index.ts';
+import { coerceArray } from '../../../util/array.ts';
+import { regEx } from '../../../util/regex.ts';
+import { joinUrlParts } from '../../../util/url.ts';
+import { AzurePipelinesTasksDatasource } from '../../datasource/azure-pipelines-tasks/index.ts';
+import { GitTagsDatasource } from '../../datasource/git-tags/index.ts';
+import { getDep } from '../dockerfile/extract.ts';
 import type {
   ExtractConfig,
   PackageDependency,
   PackageFileContent,
-} from '../types';
+} from '../types.ts';
 import type {
   AzurePipelines,
   Container,
@@ -20,8 +20,8 @@ import type {
   Jobs,
   Repository,
   Step,
-} from './schema';
-import { AzurePipelinesYaml } from './schema';
+} from './schema.ts';
+import { AzurePipelinesYaml } from './schema.ts';
 
 const AzurePipelinesTaskRegex = regEx(/^(?<name>[^@]+)@(?<version>.*)$/);
 
@@ -125,18 +125,16 @@ export function parseAzurePipelines(
   const res = AzurePipelinesYaml.safeParse(content);
   if (res.success) {
     return res.data;
-  } else {
-    logger.debug(
-      { err: res.error, packageFile },
-      'Error parsing pubspec lockfile.',
-    );
   }
+  logger.debug(
+    { err: res.error, packageFile },
+    'Error parsing pubspec lockfile.',
+  );
+
   return null;
 }
 
-function extractSteps(
-  steps: Step[] | undefined,
-): PackageDependency<Record<string, any>>[] {
+function extractSteps(steps: Step[] | undefined): PackageDependency[] {
   const deps = [];
   for (const step of coerceArray(steps)) {
     const task = extractAzurePipelinesTasks(step.task);

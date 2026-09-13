@@ -1,12 +1,16 @@
-import { logger } from '../../../logger';
-import { isValidDependency } from '../custom/regex/utils';
-import { getDep as getDockerDep } from '../dockerfile/extract';
+import { logger } from '../../../logger/index.ts';
+import { GolangVersionDatasource } from '../../datasource/golang-version/index.ts';
+import { NodeVersionDatasource } from '../../datasource/node-version/index.ts';
+import { PythonVersionDatasource } from '../../datasource/python-version/index.ts';
+import { RubyVersionDatasource } from '../../datasource/ruby-version/index.ts';
+import { isValidDependency } from '../custom/utils.ts';
+import { getDep as getDockerDep } from '../dockerfile/extract.ts';
 import type {
   ExtractConfig,
   PackageDependency,
   PackageFileContent,
-} from '../types';
-import { DevContainerFile } from './schema';
+} from '../types.ts';
+import { DevContainerFile } from './schema.ts';
 
 export function extractPackageFile(
   content: string,
@@ -33,7 +37,7 @@ export function extractPackageFile(
     const features = file.features;
 
     if (features) {
-      for (const feature of Object.keys(features)) {
+      for (const [feature, value] of Object.entries(features)) {
         const featureDep = getDep(
           feature,
           packageFile,
@@ -43,6 +47,45 @@ export function extractPackageFile(
           featureDep.depType = 'feature';
           featureDep.pinDigests = false;
           deps.push(featureDep);
+
+          let dep: PackageDependency;
+          switch (featureDep.depName) {
+            case 'ghcr.io/devcontainers/features/node':
+              dep = {
+                depName: 'node',
+                datasource: NodeVersionDatasource.id,
+                currentValue: value.version,
+              };
+              break;
+            case 'ghcr.io/devcontainers/features/go':
+              dep = {
+                depName: 'go',
+                datasource: GolangVersionDatasource.id,
+                currentValue: value.version,
+              };
+              break;
+            case 'ghcr.io/devcontainers/features/python':
+              dep = {
+                depName: 'python',
+                datasource: PythonVersionDatasource.id,
+                currentValue: value.version,
+              };
+              break;
+            case 'ghcr.io/devcontainers/features/ruby':
+              dep = {
+                depName: 'ruby',
+                datasource: RubyVersionDatasource.id,
+                currentValue: value.version,
+              };
+              break;
+            default:
+              // skip additional checks if not a known feature
+              continue;
+          }
+          if (!value.version) {
+            dep.skipReason = 'unspecified-version';
+          }
+          deps.push(dep);
           continue;
         }
         logger.trace(

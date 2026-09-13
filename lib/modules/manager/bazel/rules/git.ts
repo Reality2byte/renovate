@@ -1,9 +1,11 @@
 import parseGithubUrl from 'github-url-from-git';
-import { z } from 'zod';
-import { logger } from '../../../../logger';
-import { regEx } from '../../../../util/regex';
-import { GithubReleasesDatasource } from '../../../datasource/github-releases';
-import type { PackageDependency } from '../../types';
+import { z } from 'zod/v4';
+import { logger } from '../../../../logger/index.ts';
+import { regEx } from '../../../../util/regex.ts';
+import { isHttpUrl } from '../../../../util/url.ts';
+import { GithubReleasesDatasource } from '../../../datasource/github-releases/index.ts';
+import { GithubTagsDatasource } from '../../../datasource/github-tags/index.ts';
+import type { PackageDependency } from '../../types.ts';
 
 const githubUrlRegex = regEx(
   /^https:\/\/github\.com\/(?<packageName>[^/]+\/[^/]+)/,
@@ -11,13 +13,18 @@ const githubUrlRegex = regEx(
 
 function githubPackageName(input: string): string | undefined {
   // istanbul ignore if
-  if (!input.startsWith('https://')) {
+  if (!isHttpUrl(input)) {
     logger.once.info({ url: input }, `Bazel: non-https git_repository URL`);
   }
   return parseGithubUrl(input)?.match(githubUrlRegex)?.groups?.packageName;
 }
 
-export const gitRules = ['git_repository', '_git_repository'] as const;
+export const gitRules = [
+  'git_repository',
+  '_git_repository',
+  'new_git_repository',
+  '_new_git_repository',
+] as const;
 
 export const GitTarget = z
   .object({
@@ -44,8 +51,12 @@ export const GitTarget = z
 
     const githubPackage = githubPackageName(remote);
     if (githubPackage) {
-      dep.datasource = GithubReleasesDatasource.id;
       dep.packageName = githubPackage;
+      if (dep.currentValue) {
+        dep.datasource = GithubReleasesDatasource.id;
+      } else {
+        dep.datasource = GithubTagsDatasource.id;
+      }
     }
 
     if (!dep.datasource) {

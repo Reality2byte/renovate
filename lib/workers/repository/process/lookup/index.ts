@@ -1,66 +1,194 @@
-import is from '@sindresorhus/is';
-import { mergeChildConfig } from '../../../../config';
-import type { ValidationMessage } from '../../../../config/types';
-import { CONFIG_VALIDATION } from '../../../../constants/error-messages';
-import { logger } from '../../../../logger';
+import { isNonEmptyString, isString, isUndefined } from '@sindresorhus/is';
+import { mergeChildConfig } from '../../../../config/index.ts';
+import type { ValidationMessage } from '../../../../config/types.ts';
+import { CONFIG_VALIDATION } from '../../../../constants/error-messages.ts';
+import { logger } from '../../../../logger/index.ts';
+import {
+  getDatasourceFor,
+  getDefaultVersioning,
+} from '../../../../modules/datasource/common.ts';
 import type {
   GetDigestInputConfig,
   Release,
   ReleaseResult,
-} from '../../../../modules/datasource';
+} from '../../../../modules/datasource/index.ts';
 import {
   applyDatasourceFilters,
   getDigest,
   getRawPkgReleases,
   isGetPkgReleasesConfig,
   supportsDigests,
-} from '../../../../modules/datasource';
-import {
-  getDatasourceFor,
-  getDefaultVersioning,
-} from '../../../../modules/datasource/common';
-import { getRangeStrategy } from '../../../../modules/manager';
-import * as allVersioning from '../../../../modules/versioning';
-import { id as dockerVersioningId } from '../../../../modules/versioning/docker';
-import { ExternalHostError } from '../../../../types/errors/external-host-error';
-import { assignKeys } from '../../../../util/assign-keys';
-import { getElapsedDays } from '../../../../util/date';
-import { applyPackageRules } from '../../../../util/package-rules';
-import { regEx } from '../../../../util/regex';
-import { Result } from '../../../../util/result';
-import { getBucket } from './bucket';
-import { getCurrentVersion } from './current';
-import { filterVersions } from './filter';
-import { filterInternalChecks } from './filter-checks';
-import { generateUpdate } from './generate';
-import { getRollbackUpdate } from './rollback';
-import type { LookupUpdateConfig, UpdateResult } from './types';
+} from '../../../../modules/datasource/index.ts';
+import { postprocessRelease } from '../../../../modules/datasource/postprocess-release.ts';
+import { getRangeStrategy } from '../../../../modules/manager/index.ts';
+import type { LookupUpdate } from '../../../../modules/manager/types.ts';
+import { id as dockerVersioningId } from '../../../../modules/versioning/docker/index.ts';
+import * as allVersioning from '../../../../modules/versioning/index.ts';
+import { ExternalHostError } from '../../../../types/errors/external-host-error.ts';
+import { assignKeys } from '../../../../util/assign-keys.ts';
+import { getElapsedDays } from '../../../../util/date.ts';
+import { checkMinimumReleaseAge } from '../../../../util/minimum-release-age.ts';
+import { applyPackageRules } from '../../../../util/package-rules/index.ts';
+import { regEx } from '../../../../util/regex.ts';
+import { Result } from '../../../../util/result.ts';
+import type { Timestamp } from '../../../../util/timestamp.ts';
+import { calculateAbandonment } from './abandonment.ts';
+import { getBucket } from './bucket.ts';
+import { getCurrentVersion } from './current.ts';
+import { filterVersions } from './filter.ts';
+import { filterInternalChecks } from './filter-checks.ts';
+import { generateUpdate } from './generate.ts';
+import { getRollbackUpdate } from './rollback.ts';
+import { calculateMostRecentTimestamp } from './timestamps.ts';
+import type { LookupUpdateConfig, UpdateResult } from './types.ts';
 import {
   addReplacementUpdateIfValid,
   isReplacementRulesConfigured,
-} from './utils';
+} from './utils.ts';
 
-function getTimestamp(
+async function getTimestamp(
+  config: LookupUpdateConfig,
   versions: Release[],
   version: string,
   versioningApi: allVersioning.VersioningApi,
-): string | null | undefined {
-  return versions.find(
+): Promise<Timestamp | null | undefined> {
+  const currentRelease = versions.find(
     (v) =>
       versioningApi.isValid(v.version) &&
       versioningApi.equals(v.version, version),
-  )?.releaseTimestamp;
+  );
+
+  if (!currentRelease) {
+    return null;
+  }
+
+  if (currentRelease.releaseTimestamp) {
+    return currentRelease.releaseTimestamp;
+  }
+
+  const remoteRelease = await postprocessRelease(config, currentRelease);
+  return remoteRelease?.releaseTimestamp;
+}
+
+/** The only two `updateType`s that `applyMinimumReleaseAgeToDigestUpdate()` can be called with */
+type DigestLikeUpdate = LookupUpdate & { updateType: 'digest' | 'pinDigest' };
+
+/**
+ * A helper function to allow a short-circuit for `minimumReleaseAge` functionality if a package may have config that applies it.
+ *
+ * Allows avoiding unnecessary calls to more expensive checks like merge + `applyPackageRules()` and `getTimestamp()`.
+ */
+function couldApplyMinimumReleaseAgeToDigest(
+  config: LookupUpdateConfig,
+  updateType: DigestLikeUpdate['updateType'],
+): boolean {
+  // Match filterInternalChecks(): under `none` the user opted out of internal
+  // checks entirely, so do no merging, no package rules, no age check and no
+  // logging claiming an age check ran.
+  if (config.internalChecksFilter === 'none') {
+    return false;
+  }
+
+  return (
+    isNonEmptyString(config.minimumReleaseAge) ||
+    isNonEmptyString(config[updateType]?.minimumReleaseAge) ||
+    !!config.packageRules?.some((rule) =>
+      isNonEmptyString(rule.minimumReleaseAge),
+    )
+  );
+}
+
+/**
+ * Ensure `minimumReleaseAge`/`internalChecksFilter` applies to digest/pinDigest updates, as they don't currently get run through `filterInternalChecks()`.
+ *
+ * NOTE that this should be kept in sync with `filterInternalChecks`()
+ */
+async function applyMinimumReleaseAgeToDigestUpdate(
+  update: DigestLikeUpdate,
+  config: LookupUpdateConfig,
+  res: UpdateResult,
+  currentVersionWasResolved: boolean,
+  newestMatchingVersionTimestamp: Timestamp | null | undefined,
+): Promise<void> {
+  if (!couldApplyMinimumReleaseAgeToDigest(config, update.updateType)) {
+    return;
+  }
+
+  if (update.updateType === 'pinDigest' && !currentVersionWasResolved) {
+    // Not `!res.currentVersion` - that's force-set to lockedVersion further down regardless of timestamp resolution.
+    // `pinDigest` doesn't repoint anywhere, unlike `digest` - it just freezes whatever the ref already resolves to.
+    // An unversioned tag (e.g. `latest`) has no versioned release to age against, and holding the pin would only
+    // prolong the less-pinned (less safe) state, so skip the check entirely rather than treating the missing
+    // timestamp as pending.
+    logger.once.debug(
+      { depName: config.depName, updateType: update.updateType },
+      `Skipping minimumReleaseAge check for ${update.updateType} update of ${config.depName}, as its current value does not resolve to a versioned release`,
+    );
+    return;
+  }
+
+  let releaseConfig: LookupUpdateConfig = {
+    ...mergeChildConfig(config, res),
+    updateType: update.updateType,
+  };
+  releaseConfig = mergeChildConfig(
+    releaseConfig,
+    releaseConfig[update.updateType]!,
+  );
+  releaseConfig = await applyPackageRules(releaseConfig, 'update-type');
+
+  // Not update.releaseTimestamp - that field means "age of the new release" elsewhere (generate.ts, libyear.ts).
+  // Not res.currentVersionTimestamp either - that tracks whatever rangeStrategy resolves currentVersion to (e.g.
+  // the oldest matching release under `bump`), whereas both `digest` and `pinDigest` reflect whatever the current
+  // value's ref actually resolves to *right now*, which is always the newest matching version.
+  const ageCheck = checkMinimumReleaseAge(
+    releaseConfig,
+    newestMatchingVersionTimestamp,
+  );
+
+  // Mirror filterInternalChecks()'s logging so a held/passed digest update is diagnosable.
+  if (ageCheck.minimumReleaseAgeMs && !ageCheck.hasTimestamp) {
+    if (releaseConfig.minimumReleaseAgeBehaviour === 'timestamp-optional') {
+      logger.once.warn(
+        "Some release(s) did not have a releaseTimestamp, but as we're running with minimumReleaseAgeBehaviour=timestamp-optional, proceeding. See debug logs for more information",
+      );
+    }
+
+    logger.once.debug(
+      {
+        depName: config.depName,
+        updateType: update.updateType,
+        minimumReleaseAgeBehaviour: releaseConfig.minimumReleaseAgeBehaviour,
+        check: 'minimumReleaseAge',
+      },
+      `${update.updateType} update of ${config.depName} has no releaseTimestamp to age against`,
+    );
+  }
+  if (ageCheck.isPending) {
+    logger.trace(
+      {
+        depName: config.depName,
+        updateType: update.updateType,
+        releaseTimestamp: newestMatchingVersionTimestamp,
+        check: 'minimumReleaseAge',
+      },
+      `${update.updateType} update is pending minimumReleaseAge status checks`,
+    );
+
+    // internalChecksFilter is read from the unmerged top-level config, like filterInternalChecks().
+    if (config.internalChecksFilter === 'strict') {
+      update.pendingChecks = true;
+    }
+  }
 }
 
 export async function lookupUpdates(
   inconfig: LookupUpdateConfig,
-): Promise<Result<UpdateResult, Error>> {
+): Promise<Result<UpdateResult>> {
   let config: LookupUpdateConfig = { ...inconfig };
   config.versioning ??= getDefaultVersioning(config.datasource);
 
   const versioningApi = allVersioning.get(config.versioning);
-  const unconstrainedValue =
-    !!config.lockedVersion && is.undefined(config.currentValue);
 
   let dependency: ReleaseResult | null = null;
   const res: UpdateResult = {
@@ -68,6 +196,10 @@ export async function lookupUpdates(
     updates: [],
     warnings: [],
   };
+  // Timestamp of the release a `digest`/`pinDigest` update's current value currently resolves to (the newest version matching it, regardless of `rangeStrategy`), as opposed to `res.currentVersionTimestamp` which tracks whatever the configured rangeStrategy resolves `currentVersion` to (e.g. the oldest for `bump`)
+  let newestMatchingVersionTimestamp: Timestamp | null | undefined;
+  // The `digest` update for `config.currentDigest` (if one is added), so its age check can run after `newDigest` is fetched and no-op updates are stripped.
+  let digestUpdate: DigestLikeUpdate | undefined;
 
   try {
     logger.trace(
@@ -77,8 +209,9 @@ export async function lookupUpdates(
       },
       'lookupUpdates',
     );
-    if (config.currentValue && !is.string(config.currentValue)) {
+    if (config.currentValue && !isString(config.currentValue)) {
       // If currentValue is not a string, then it's invalid
+      // v8 ignore else -- TODO: add test #40625
       if (config.currentValue) {
         logger.debug(
           `Invalid currentValue for ${config.packageName}: ${JSON.stringify(config.currentValue)} (${typeof config.currentValue})`,
@@ -96,8 +229,8 @@ export async function lookupUpdates(
     }
     let compareValue = config.currentValue;
     if (
-      is.string(config.currentValue) &&
-      is.string(config.versionCompatibility)
+      isString(config.currentValue) &&
+      isString(config.versionCompatibility)
     ) {
       const versionCompatbilityRegEx = regEx(config.versionCompatibility);
       const regexMatch = versionCompatbilityRegEx.exec(config.currentValue);
@@ -112,6 +245,7 @@ export async function lookupUpdates(
           'version compatibility regex match',
         );
         config.currentCompatibility = regexMatch.groups.compatibility;
+        res.currentCompatibility = regexMatch.groups.compatibility;
         compareValue = regexMatch.groups.version;
       } else {
         logger.debug(
@@ -124,10 +258,14 @@ export async function lookupUpdates(
         );
       }
     }
-    const isValid =
-      is.string(compareValue) && versioningApi.isValid(compareValue);
 
-    if (unconstrainedValue || isValid) {
+    const isValid =
+      isString(compareValue) && versioningApi.isValid(compareValue);
+
+    const unconstrainedValue =
+      !!config.lockedVersion && isUndefined(config.currentValue);
+
+    if (isValid || unconstrainedValue) {
       if (
         !config.updatePinnedDependencies &&
         // TODO #22198
@@ -140,6 +278,8 @@ export async function lookupUpdates(
       const { val: releaseResult, err: lookupError } = await getRawPkgReleases(
         config,
       )
+        .transform((res) => calculateMostRecentTimestamp(versioningApi, res))
+        .transform((res) => calculateAbandonment(res, config))
         .transform((res) => applyDatasourceFilters(res, config))
         .unwrap();
 
@@ -151,7 +291,7 @@ export async function lookupUpdates(
         // If dependency lookup fails then warn and return
         const warning: ValidationMessage = {
           topic: config.packageName,
-          message: `Failed to look up ${config.datasource} package ${config.packageName}`,
+          message: `Failed to look up ${config.datasource} package ${config.packageName}: ${lookupError}`,
         };
         logger.debug(
           {
@@ -183,6 +323,9 @@ export async function lookupUpdates(
         'dependencyUrl',
         'lookupName',
         'packageScope',
+        'mostRecentTimestamp',
+        'isAbandoned',
+        'respectLatest',
       ]);
 
       const latestVersion = dependency.tags?.latest;
@@ -190,6 +333,7 @@ export async function lookupUpdates(
       let allVersions = dependency.releases.filter((release) =>
         versioningApi.isVersion(release.version),
       );
+      const allReleaseVersions = new Set(allVersions.map((r) => r.version));
       // istanbul ignore if
       if (allVersions.length === 0) {
         const message = `Found no results from datasource that look like a version`;
@@ -225,12 +369,16 @@ export async function lookupUpdates(
               versioningApi.isGreaterThan(taggedVersion, compareValue)),
         );
       }
+
+      const inRangeOnlyStrategy = config.rangeStrategy === 'in-range-only';
       // Check that existing constraint can be satisfied
-      const allSatisfyingVersions = allVersions.filter(
-        (v) =>
-          // TODO #22198
-          unconstrainedValue || versioningApi.matches(v.version, compareValue!),
-      );
+      const allSatisfyingVersions =
+        (inRangeOnlyStrategy || config.rollbackPrs) && !unconstrainedValue
+          ? allVersions.filter((v) =>
+              // TODO #22198
+              versioningApi.matches(v.version, compareValue!),
+            )
+          : allVersions;
       if (!allSatisfyingVersions.length) {
         logger.debug(
           `Found no satisfying versions with '${config.versioning}' versioning`,
@@ -276,6 +424,12 @@ export async function lookupUpdates(
       let currentVersion: string;
       if (rangeStrategy === 'update-lockfile') {
         currentVersion = config.lockedVersion!;
+      } else if (
+        compareValue &&
+        versioningApi.isSingleVersion(compareValue) &&
+        allVersions.find((v) => v.version === compareValue)
+      ) {
+        currentVersion = compareValue;
       }
       // TODO #22198
       currentVersion ??=
@@ -297,6 +451,7 @@ export async function lookupUpdates(
         )!;
 
       if (!currentVersion) {
+        // v8 ignore else -- TODO: add test #40625
         if (!config.lockedVersion) {
           logger.debug(
             `No currentVersion or lockedVersion found for ${config.packageName}`,
@@ -306,20 +461,28 @@ export async function lookupUpdates(
         return Result.ok(res);
       }
 
-      res.currentVersion = currentVersion!;
-      const currentVersionTimestamp = getTimestamp(
+      res.currentVersion = currentVersion;
+
+      // Use lockedVersion for the timestamp lookup when available, because
+      // res.currentVersion is later overwritten to lockedVersion (see below).
+      // Without this, strategies like "replace" would compute the timestamp
+      // for the highest satisfying version (e.g. 1.4.1) while the reported
+      // currentVersion ends up being the locked one (e.g. 1.0.0).
+      const versionForTimestamp = config.lockedVersion ?? currentVersion;
+      const currentVersionTimestamp = await getTimestamp(
+        config,
         allVersions,
-        currentVersion,
+        versionForTimestamp,
         versioningApi,
       );
 
-      if (is.nonEmptyString(currentVersionTimestamp)) {
+      if (isNonEmptyString(currentVersionTimestamp)) {
         res.currentVersionTimestamp = currentVersionTimestamp;
         res.currentVersionAgeInDays = getElapsedDays(currentVersionTimestamp);
 
         if (
           config.packageRules?.some((rule) =>
-            is.nonEmptyString(rule.matchCurrentAge),
+            isNonEmptyString(rule.matchCurrentAge),
           )
         ) {
           // Reapply package rules to check matches for matchCurrentAge
@@ -331,21 +494,51 @@ export async function lookupUpdates(
       }
 
       if (
+        config.currentDigest
+          ? couldApplyMinimumReleaseAgeToDigest(config, 'digest')
+          : config.pinDigests &&
+            couldApplyMinimumReleaseAgeToDigest(config, 'pinDigest')
+      ) {
+        // Resolve from `allVersions` (not `dependency.releases`) so that filters like followTag apply, preferring non-deprecated versions with a fallback - both like the `currentVersion` resolution above.
+        const newestMatchingVersion =
+          getCurrentVersion(
+            compareValue!,
+            '',
+            versioningApi,
+            'replace',
+            latestVersion!,
+            allVersions.filter((v) => !v.isDeprecated).map((v) => v.version),
+          ) ??
+          getCurrentVersion(
+            compareValue!,
+            '',
+            versioningApi,
+            'replace',
+            latestVersion!,
+            allVersions.map((v) => v.version),
+          );
+        if (newestMatchingVersion) {
+          newestMatchingVersionTimestamp = await getTimestamp(
+            config,
+            allVersions,
+            newestMatchingVersion,
+            versioningApi,
+          );
+        }
+      }
+
+      if (
         compareValue &&
         currentVersion &&
         rangeStrategy === 'pin' &&
         !versioningApi.isSingleVersion(compareValue)
       ) {
+        const newValue =
+          versioningApi.getPinnedValue?.(currentVersion) ?? currentVersion;
         res.updates.push({
           updateType: 'pin',
           isPin: true,
-          // TODO: newValue can be null! (#22198)
-          newValue: versioningApi.getNewValue({
-            currentValue: compareValue,
-            rangeStrategy,
-            currentVersion,
-            newVersion: currentVersion,
-          })!,
+          newValue,
           newVersion: currentVersion,
           newMajor: versioningApi.getMajor(currentVersion)!,
         });
@@ -365,9 +558,7 @@ export async function lookupUpdates(
         config,
         currentVersion!,
         latestVersion!,
-        config.rangeStrategy === 'in-range-only'
-          ? allSatisfyingVersions
-          : allVersions,
+        inRangeOnlyStrategy ? allSatisfyingVersions : allVersions,
         versioningApi,
       ).filter(
         (v) =>
@@ -446,7 +637,8 @@ export async function lookupUpdates(
           release.version,
           versioningApi,
         );
-        if (is.string(bucket)) {
+        // v8 ignore else -- TODO: add test #40625
+        if (isString(bucket)) {
           if (buckets[bucket]) {
             buckets[bucket].push(release);
           } else {
@@ -481,6 +673,7 @@ export async function lookupUpdates(
           config.lockedVersion ?? currentVersion!,
           bucket,
           release,
+          allReleaseVersions,
         );
 
         // #29034
@@ -491,15 +684,24 @@ export async function lookupUpdates(
           config.currentDigest !== update.newDigest
         ) {
           update.updateType = 'digest';
+
+          // As this has already been processed by `filterInternalChecks()`, but we're changing the `updateType`, we need to apply the digest-scoped minimumReleaseAge rules.
+          // `currentVersionWasResolved` only matters for `pinDigest`, which `update.updateType` never is here - true is a safe constant.
+          await applyMinimumReleaseAgeToDigestUpdate(
+            update as DigestLikeUpdate,
+            config,
+            res,
+            true,
+            release.releaseTimestamp,
+          );
         }
 
         if (pendingChecks) {
           update.pendingChecks = pendingChecks;
         }
 
-        // TODO #22198
-        if (pendingReleases!.length) {
-          update.pendingVersions = pendingReleases!.map((r) => r.version);
+        if (pendingReleases.length) {
+          update.pendingVersions = pendingReleases.map((r) => r.version);
         }
         if (!update.newValue || update.newValue === compareValue) {
           if (!config.lockedVersion) {
@@ -521,7 +723,7 @@ export async function lookupUpdates(
           res.isSingleVersion = true;
         }
         res.isSingleVersion ??=
-          is.string(update.newValue) &&
+          isString(update.newValue) &&
           versioningApi.isSingleVersion(update.newValue);
         // istanbul ignore if
         if (
@@ -569,6 +771,12 @@ export async function lookupUpdates(
 
     if (isReplacementRulesConfigured(config)) {
       addReplacementUpdateIfValid(res.updates, config);
+    } else if (dependency?.replacementName && dependency.replacementVersion) {
+      res.updates.push({
+        updateType: 'replacement',
+        newName: dependency.replacementName,
+        newValue: dependency.replacementVersion,
+      });
     }
 
     // Record if the dep is fixed to a version
@@ -581,13 +789,14 @@ export async function lookupUpdates(
 
     // massage versionCompatibility
     if (
-      is.string(config.currentValue) &&
-      is.string(compareValue) &&
-      is.string(config.versionCompatibility)
+      isString(config.currentValue) &&
+      isString(compareValue) &&
+      isString(config.versionCompatibility)
     ) {
       for (const update of res.updates) {
         logger.debug({ update });
-        if (is.string(config.currentValue) && is.string(update.newValue)) {
+        // v8 ignore else -- TODO: add test #40625
+        if (isString(config.currentValue) && isString(update.newValue)) {
           update.newValue = config.currentValue.replace(
             compareValue,
             update.newValue,
@@ -600,27 +809,40 @@ export async function lookupUpdates(
     if (supportsDigests(config.datasource)) {
       if (config.currentDigest) {
         if (!config.digestOneAndOnly || !res.updates.length) {
-          // digest update
-          res.updates.push({
+          // digest update - age-checked after the strip below, once newDigest is known
+          digestUpdate = {
             updateType: 'digest',
             newValue: config.currentValue,
-          });
+          };
+          res.updates.push(digestUpdate);
         }
-      } else if (config.pinDigests) {
+      } else if (
+        config.pinDigests &&
+        // only update the digest in the package file if it's managed by us
+        !config.digestManagedExternally &&
         // Create a pin only if one doesn't already exists
-        if (!res.updates.some((update) => update.updateType === 'pin')) {
-          // pin digest
-          res.updates.push({
-            isPinDigest: true,
-            updateType: 'pinDigest',
-            newValue: config.currentValue,
-          });
-        }
+        // v8 ignore else -- TODO: add test #40625
+        !res.updates.some((update) => update.updateType === 'pin')
+      ) {
+        // pin digest
+        const pinDigestUpdate: DigestLikeUpdate = {
+          isPinDigest: true,
+          updateType: 'pinDigest',
+          newValue: config.currentValue,
+        };
+        await applyMinimumReleaseAgeToDigestUpdate(
+          pinDigestUpdate,
+          config,
+          res,
+          isValid || unconstrainedValue,
+          newestMatchingVersionTimestamp,
+        );
+        res.updates.push(pinDigestUpdate);
       }
       if (versioningApi.valueToVersion) {
         // TODO #22198
         res.currentVersion = versioningApi.valueToVersion(res.currentVersion!);
-        for (const update of res.updates || /* istanbul ignore next*/ []) {
+        for (const update of res.updates) {
           // TODO #22198
           update.newVersion = versioningApi.valueToVersion(update.newVersion!);
         }
@@ -631,7 +853,11 @@ export async function lookupUpdates(
 
       // update digest for all
       for (const update of res.updates) {
-        if (config.pinDigests === true || config.currentDigest) {
+        // only update the digest in the package file if it's managed by us
+        if (
+          (config.pinDigests === true && !config.digestManagedExternally) ||
+          config.currentDigest
+        ) {
           const getDigestConfig: GetDigestInputConfig = {
             ...config,
             registryUrl: update.registryUrl ?? res.registryUrl,
@@ -650,13 +876,25 @@ export async function lookupUpdates(
           ) {
             delete getDigestConfig.lookupName;
             delete getDigestConfig.currentDigest;
+            getDigestConfig.replacementName = update.newName;
           }
 
-          // TODO #22198
-          update.newDigest ??=
-            dependency?.releases.find((r) => r.version === update.newValue)
-              ?.newDigest ??
-            (await getDigest(getDigestConfig, update.newValue))!;
+          // Don't use current releases if replacement changes name, otherwise we use the wrong new digest.
+          // This happens on datasources which return the digest in release info like `github-tags`.
+          // We can still use it when only version is changing.
+          if (
+            update.updateType !== 'replacement' ||
+            update.newName === config.packageName
+          ) {
+            update.newDigest ??= dependency?.releases.find(
+              (r) => r.version === update.newValue,
+            )?.newDigest;
+          }
+
+          update.newDigest ??= await getDigest(
+            getDigestConfig,
+            update.newValue,
+          );
 
           // If the digest could not be determined, report this as otherwise the
           // update will be omitted later on without notice.
@@ -706,8 +944,7 @@ export async function lookupUpdates(
       .filter((update) => update.newDigest !== null)
       .filter(
         (update) =>
-          (is.string(update.newName) &&
-            update.newName !== config.packageName) ||
+          (isString(update.newName) && update.newName !== config.packageName) ||
           update.isReplacement === true ||
           update.newValue !== config.currentValue ||
           update.isLockfileUpdate === true ||
@@ -725,9 +962,35 @@ export async function lookupUpdates(
     if (config.rollbackPrs && config.followTag) {
       res.updates = res.updates.filter(
         (update) =>
-          res.updates.length === 1 ||
-          /* istanbul ignore next */ update.updateType !== 'rollback',
+          update.updateType !== 'rollback' || res.updates.length === 1,
       );
+    }
+
+    // If there is a digest update proposed which is in the pending updates for this dependency, ensure that `minimumReleaseAge` is applied.
+    // `currentVersionWasResolved` only matters for `pinDigest`, which `digestUpdate` never is - true is a safe constant.
+    if (digestUpdate && res.updates.includes(digestUpdate)) {
+      await applyMinimumReleaseAgeToDigestUpdate(
+        digestUpdate,
+        config,
+        res,
+        true,
+        newestMatchingVersionTimestamp,
+      );
+    }
+
+    const release =
+      res.updates.length > 0
+        ? (dependency?.releases.find(
+            (r) => r.version === res.updates[0].newValue,
+          ) ??
+          dependency?.releases.find(
+            (r) => r.version === res.updates[0].newVersion,
+          ))
+        : null;
+
+    if (release?.changelogContent) {
+      res.changelogContent = release.changelogContent;
+      res.changelogUrl = release.changelogUrl;
     }
   } catch (err) /* istanbul ignore next */ {
     if (err instanceof ExternalHostError) {
@@ -752,7 +1015,6 @@ export async function lookupUpdates(
         rollbackPrs: config.rollbackPrs,
         isVulnerabilityAlert: config.isVulnerabilityAlert,
         updatePinnedDependencies: config.updatePinnedDependencies,
-        unconstrainedValue,
         err,
       },
       'lookupUpdates error',

@@ -1,15 +1,16 @@
-import is from '@sindresorhus/is';
-import { regEx } from '../../../util/regex';
+import { isString } from '@sindresorhus/is';
+import { coerceArray } from '../../../util/array.ts';
+import { regEx } from '../../../util/regex.ts';
 
 export const TokenType = {
   Number: 1,
   String: 2,
 };
 
-type Token = {
+interface Token {
   type: number;
   val: string | number;
-};
+}
 
 function iterateChars(
   str: string,
@@ -49,10 +50,6 @@ export function tokenize(versionStr: string): Token[] | null {
   let currentVal = '';
 
   function yieldToken(): void {
-    if (currentVal === '') {
-      // We tried to yield an empty token, which means we're in a bad state.
-      result = null;
-    }
     if (result) {
       const val = currentVal;
       if (regEx(/^\d+$/).test(val)) {
@@ -73,8 +70,12 @@ export function tokenize(versionStr: string): Token[] | null {
     if (nextChar === null) {
       yieldToken();
     } else if (isSeparator(nextChar)) {
-      yieldToken();
-      currentVal = '';
+      if (prevChar && !isSeparator(prevChar)) {
+        yieldToken();
+        currentVal = '';
+      } else {
+        result = null;
+      }
     } else if (prevChar !== null && isTransition(prevChar, nextChar)) {
       yieldToken();
       currentVal = nextChar;
@@ -167,7 +168,7 @@ function tokenCmp(left: Token | null, right: Token | null): number {
     if (left.val > right.val) {
       return 1;
     }
-  } else if (typeof left.val === 'string' && typeof right.val === 'string') {
+  } else if (isString(left.val) && isString(right.val)) {
     return stringTokenCmp(left.val, right.val);
   } else if (right.type === TokenType.Number) {
     return -1;
@@ -179,8 +180,8 @@ function tokenCmp(left: Token | null, right: Token | null): number {
 }
 
 export function compare(left: string, right: string): number {
-  const leftTokens = tokenize(left) ?? [];
-  const rightTokens = tokenize(right) ?? [];
+  const leftTokens = coerceArray(tokenize(left));
+  const rightTokens = coerceArray(tokenize(right));
   const length = Math.max(leftTokens.length, rightTokens.length);
   for (let idx = 0; idx < length; idx += 1) {
     const leftToken = leftTokens[idx] || null;
@@ -222,7 +223,7 @@ interface PrefixRange {
   tokens: Token[];
 }
 
-export type RangeBound = 'inclusive' | 'exclusive';
+type RangeBound = 'inclusive' | 'exclusive';
 
 interface MavenBasedRange {
   leftBound: RangeBound;
@@ -232,6 +233,9 @@ interface MavenBasedRange {
   rightBound: RangeBound;
   rightBoundStr: string;
   rightVal: string | null;
+  // The existence of preferredVal implies the "strictly" keyword "!!"
+  // leading up to preferredVal: "!![preferred version]"
+  preferredVal: string | null;
 }
 
 export function parsePrefixRange(input: string): PrefixRange | null {
@@ -243,18 +247,20 @@ export function parsePrefixRange(input: string): PrefixRange | null {
     return { tokens: [] };
   }
 
-  const postfixRegex = regEx(/[-._]\+$/);
+  const postfixRegex = regEx(/[^-._+][-._]\+$/);
   if (postfixRegex.test(input)) {
     const prefixValue = input.replace(regEx(/[-._]\+$/), '');
     const tokens = tokenize(prefixValue);
-    return tokens ? { tokens } : null;
+    if (tokens) {
+      return { tokens };
+    }
   }
 
   return null;
 }
 
 const mavenBasedRangeRegex = regEx(
-  /^(?<leftBoundStr>[[\](]\s*)(?<leftVal>[-._+a-zA-Z0-9]*?)(?<separator>\s*,\s*)(?<rightVal>[-._+a-zA-Z0-9]*?)(?<rightBoundStr>\s*[[\])])$/,
+  /^(?<leftBoundStr>[[\](]\s*)(?<leftVal>[-._+a-zA-Z0-9]*?)(?<separator>\s*,\s*)(?<rightVal>[-._+a-zA-Z0-9]*?)(?<rightBoundStr>\s*[[\])])(?:!!(?<preferredVal>[-._+a-zA-Z0-9]+))?$/,
 );
 
 export function parseMavenBasedRange(input: string): MavenBasedRange | null {
@@ -263,47 +269,68 @@ export function parseMavenBasedRange(input: string): MavenBasedRange | null {
   }
 
   const matchGroups = mavenBasedRangeRegex.exec(input)?.groups;
-  if (matchGroups) {
-    const { leftBoundStr, separator, rightBoundStr } = matchGroups;
-    let leftVal: string | null = matchGroups.leftVal;
-    let rightVal: string | null = matchGroups.rightVal;
-    if (!leftVal) {
-      leftVal = null;
-    }
-    if (!rightVal) {
-      rightVal = null;
-    }
-    const isVersionLeft = is.string(leftVal) && isVersion(leftVal);
-    const isVersionRight = is.string(rightVal) && isVersion(rightVal);
-    if (
-      (leftVal === null || isVersionLeft) &&
-      (rightVal === null || isVersionRight)
-    ) {
-      if (
-        isVersionLeft &&
-        isVersionRight &&
-        leftVal &&
-        rightVal &&
-        compare(leftVal, rightVal) === 1
-      ) {
-        return null;
-      }
-      const leftBound = leftBoundStr.trim() === '[' ? 'inclusive' : 'exclusive';
-      const rightBound =
-        rightBoundStr.trim() === ']' ? 'inclusive' : 'exclusive';
-      return {
-        leftBound,
-        leftBoundStr,
-        leftVal,
-        separator,
-        rightBound,
-        rightBoundStr,
-        rightVal,
-      };
-    }
+  if (!matchGroups) {
+    return null;
   }
 
-  return null;
+  const { leftBoundStr, separator, rightBoundStr } = matchGroups;
+  const leftVal = matchGroups.leftVal || null;
+  const rightVal = matchGroups.rightVal || null;
+  const preferredVal = matchGroups.preferredVal || null;
+  const isVersionLeft = isString(leftVal) && isVersion(leftVal);
+  const isVersionRight = isString(rightVal) && isVersion(rightVal);
+  if (
+    (leftVal !== null && !isVersionLeft) ||
+    (rightVal !== null && !isVersionRight)
+  ) {
+    return null;
+  }
+
+  if (
+    isVersionLeft &&
+    isVersionRight &&
+    leftVal &&
+    rightVal &&
+    compare(leftVal, rightVal) === 1
+  ) {
+    return null;
+  }
+
+  const leftBound = leftBoundStr.trim() === '[' ? 'inclusive' : 'exclusive';
+  const rightBound = rightBoundStr.trim() === ']' ? 'inclusive' : 'exclusive';
+
+  return {
+    leftBound,
+    leftBoundStr,
+    leftVal,
+    separator,
+    rightBound,
+    rightBoundStr,
+    rightVal,
+    preferredVal,
+  };
+}
+
+interface SingleVersionRange {
+  val: string;
+}
+
+const singleVersionRangeRegex = regEx(/^\[\s*(?<val>[-._+a-zA-Z0-9]*?)\s*\]$/);
+
+export function parseSingleVersionRange(
+  input: string,
+): SingleVersionRange | null {
+  const matchGroups = singleVersionRangeRegex.exec(input)?.groups;
+  if (!matchGroups) {
+    return null;
+  }
+
+  const { val } = matchGroups;
+  if (!isVersion(val)) {
+    return null;
+  }
+
+  return { val };
 }
 
 export function isValid(str: string): boolean {
@@ -312,6 +339,9 @@ export function isValid(str: string): boolean {
   }
 
   return (
-    isVersion(str) || !!parsePrefixRange(str) || !!parseMavenBasedRange(str)
+    isVersion(str) ||
+    !!parsePrefixRange(str) ||
+    !!parseMavenBasedRange(str) ||
+    !!parseSingleVersionRange(str)
   );
 }

@@ -1,10 +1,10 @@
-import { logger } from '../../../logger';
-import { getRepoContents } from '../../../modules/platform/gitea/gitea-helper';
-import type { RepoContents } from '../../../modules/platform/gitea/types';
-import { ExternalHostError } from '../../../types/errors/external-host-error';
-import { fromBase64 } from '../../../util/string';
-import type { Preset, PresetConfig } from '../types';
-import { PRESET_DEP_NOT_FOUND, fetchPreset, parsePreset } from '../util';
+import { logger } from '../../../logger/index.ts';
+import { getRepoContents } from '../../../modules/platform/gitea/gitea-helper.ts';
+import type { RepoContents } from '../../../modules/platform/gitea/types.ts';
+import { ExternalHostError } from '../../../types/errors/external-host-error.ts';
+import type { Nullish } from '../../../types/index.ts';
+import type { Preset, PresetConfig } from '../types.ts';
+import { PRESET_DEP_NOT_FOUND, fetchPreset, parsePreset } from '../util.ts';
 
 export const Endpoint = 'https://gitea.com/';
 
@@ -13,23 +13,23 @@ export async function fetchJSONFile(
   fileName: string,
   endpoint: string,
   tag?: string | null,
-): Promise<Preset> {
+): Promise<Nullish<Preset>> {
   let res: RepoContents;
   try {
     res = await getRepoContents(repo, fileName, tag, {
       baseUrl: endpoint,
     });
   } catch (err) {
-    // istanbul ignore if: not testable with nock
     if (err instanceof ExternalHostError) {
       throw err;
     }
-    logger.debug(`Preset file ${fileName} not found in ${repo}`);
+    logger.debug(
+      `Preset file ${fileName} not found in ${repo}: ${err.message}`,
+    );
     throw new Error(PRESET_DEP_NOT_FOUND);
   }
 
-  // TODO: null check #22198
-  return parsePreset(fromBase64(res.content!), fileName);
+  return parsePreset(res.contentString, fileName);
 }
 
 export function getPresetFromEndpoint(
@@ -38,7 +38,7 @@ export function getPresetFromEndpoint(
   presetPath?: string,
   endpoint = Endpoint,
   tag?: string,
-): Promise<Preset | undefined> {
+): Promise<Nullish<Preset>> {
   return fetchPreset({
     repo,
     filePreset,
@@ -53,7 +53,7 @@ export function getPreset({
   repo,
   presetName = 'default',
   presetPath,
-  tag = undefined,
-}: PresetConfig): Promise<Preset | undefined> {
+  tag,
+}: PresetConfig): Promise<Nullish<Preset>> {
   return getPresetFromEndpoint(repo, presetName, presetPath, Endpoint, tag);
 }

@@ -1,15 +1,15 @@
 import changelogFilenameRegex from 'changelog-filename-regex';
-import { logger } from '../../../../../../logger';
-import type { GitlabRelease } from '../../../../../../modules/datasource/gitlab-releases/types';
-import type { GitlabTreeNode } from '../../../../../../types/platform/gitlab';
-import { GitlabHttp } from '../../../../../../util/http/gitlab';
-import { compareChangelogFilePath } from '../common';
+import { logger } from '../../../../../../logger/index.ts';
+import type { GitlabRelease } from '../../../../../../modules/datasource/gitlab-releases/types.ts';
+import type { GitlabTreeNode } from '../../../../../../types/platform/gitlab/index.ts';
+import { GitlabHttp } from '../../../../../../util/http/gitlab.ts';
+import { compareChangelogFilePath } from '../common.ts';
 import type {
   ChangeLogFile,
   ChangeLogNotes,
   ChangeLogProject,
   ChangeLogRelease,
-} from '../types';
+} from '../types.ts';
 
 export const id = 'gitlab-changelog';
 const http = new GitlabHttp(id);
@@ -25,7 +25,7 @@ export async function getReleaseNotesMd(
 
   // https://docs.gitlab.com/13.2/ee/api/repositories.html#list-repository-tree
   const tree = (
-    await http.getJson<GitlabTreeNode[]>(
+    await http.getJsonUnchecked<GitlabTreeNode[]>(
       `${apiPrefix}tree?per_page=100${
         sourceDirectory ? `&path=${sourceDirectory}` : ''
       }`,
@@ -54,8 +54,8 @@ export async function getReleaseNotesMd(
   }
 
   // https://docs.gitlab.com/13.2/ee/api/repositories.html#raw-blob-content
-  const fileRes = await http.get(`${apiPrefix}blobs/${id}/raw`);
-  const changelogMd = fileRes.body + '\n#\n##';
+  const fileRes = await http.getText(`${apiPrefix}blobs/${id}/raw`);
+  const changelogMd = `${fileRes.body}\n#\n##`;
   return { changelogFile, changelogMd };
 }
 
@@ -69,9 +69,12 @@ export async function getReleaseList(
   const urlEncodedRepo = encodeURIComponent(repository);
   const apiUrl = `${apiBaseUrl}projects/${urlEncodedRepo}/releases`;
 
-  const res = await http.getJson<GitlabRelease[]>(`${apiUrl}?per_page=100`, {
-    paginate: true,
-  });
+  const res = await http.getJsonUnchecked<GitlabRelease[]>(
+    `${apiUrl}?per_page=100`,
+    {
+      paginate: true,
+    },
+  );
   return res.body.map((release) => ({
     url: `${project.baseUrl}${repository}/-/releases/${release.tag_name}`,
     notesSourceUrl: apiUrl,

@@ -1,12 +1,13 @@
-import { logger } from '../../../logger';
-import { cache } from '../../../util/cache/package/decorator';
-import { parse } from '../../../util/html';
-import { HttpError } from '../../../util/http';
-import { regEx } from '../../../util/regex';
-import { joinUrlParts } from '../../../util/url';
-import { Datasource } from '../datasource';
-import type { GetReleasesConfig, Release, ReleaseResult } from '../types';
-import { datasource } from './common';
+import { logger } from '../../../logger/index.ts';
+import { withCache } from '../../../util/cache/package/with-cache.ts';
+import { parse } from '../../../util/html.ts';
+import { HttpError } from '../../../util/http/index.ts';
+import { regEx } from '../../../util/regex.ts';
+import { asTimestamp } from '../../../util/timestamp.ts';
+import { joinUrlParts } from '../../../util/url.ts';
+import { Datasource } from '../datasource.ts';
+import type { GetReleasesConfig, Release, ReleaseResult } from '../types.ts';
+import { datasource } from './common.ts';
 
 export class ArtifactoryDatasource extends Datasource {
   static readonly id = datasource;
@@ -25,13 +26,7 @@ export class ArtifactoryDatasource extends Datasource {
   override readonly releaseTimestampNote =
     'The release timestamp is determined from the date-like text, next to the version hyperlink tag in the results.';
 
-  @cache({
-    namespace: `datasource-${datasource}`,
-    key: ({ registryUrl, packageName }: GetReleasesConfig) =>
-      // TODO: types (#22198)
-      `${registryUrl}:${packageName}`,
-  })
-  async getReleases({
+  private async _getReleases({
     packageName,
     registryUrl,
   }: GetReleasesConfig): Promise<ReleaseResult | null> {
@@ -49,7 +44,7 @@ export class ArtifactoryDatasource extends Datasource {
       releases: [],
     };
     try {
-      const response = await this.http.get(url);
+      const response = await this.http.getText(url);
       const body = parse(response.body, {
         blockTextElements: {
           script: true,
@@ -67,18 +62,17 @@ export class ArtifactoryDatasource extends Datasource {
         .forEach(
           // extract version and published time for each node
           (node) => {
-            const version: string =
-              node.innerHTML.slice(-1) === '/'
-                ? node.innerHTML.slice(0, -1)
-                : node.innerHTML;
+            const version: string = node.innerHTML.endsWith('/')
+              ? node.innerHTML.slice(0, -1)
+              : node.innerHTML;
 
-            const published = ArtifactoryDatasource.parseReleaseTimestamp(
-              node.nextSibling!.text, // TODO: can be null (#22198)
+            const releaseTimestamp = asTimestamp(
+              node.nextSibling?.text?.trimStart()?.split(regEx(/\s{2,}/))?.[0],
             );
 
             const thisRelease: Release = {
               version,
-              releaseTimestamp: published,
+              releaseTimestamp,
             };
 
             result.releases.push(thisRelease);
@@ -97,15 +91,12 @@ export class ArtifactoryDatasource extends Datasource {
         );
       }
     } catch (err) {
-      // istanbul ignore else: not testable with nock
-      if (err instanceof HttpError) {
-        if (err.response?.statusCode === 404) {
-          logger.warn(
-            { registryUrl, packageName },
-            'artifactory: `Not Found` error',
-          );
-          return null;
-        }
+      if (err instanceof HttpError && err.response?.statusCode === 404) {
+        logger.warn(
+          { registryUrl, packageName },
+          'artifactory: `Not Found` error',
+        );
+        return null;
       }
       this.handleGenericErrors(err);
     }
@@ -113,7 +104,14 @@ export class ArtifactoryDatasource extends Datasource {
     return result.releases.length ? result : null;
   }
 
-  private static parseReleaseTimestamp(rawText: string): string {
-    return rawText.trim().replace(regEx(/ ?-$/), '') + 'Z';
+  getReleases(config: GetReleasesConfig): Promise<ReleaseResult | null> {
+    return withCache(
+      {
+        namespace: `datasource-${datasource}`,
+        key: `${config.registryUrl}:${config.packageName}`,
+        fallback: true,
+      },
+      () => this._getReleases(config),
+    );
   }
 }

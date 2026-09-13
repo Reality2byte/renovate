@@ -1,14 +1,15 @@
-import type { Category } from '../../../constants';
-import { RubyVersionDatasource } from '../../datasource/ruby-version';
-import * as rubyVersioning from '../../versioning/ruby';
+import type { Category } from '../../../constants/index.ts';
+import { RubyVersionDatasource } from '../../datasource/ruby-version/index.ts';
+import * as rubyVersioning from '../../versioning/ruby/index.ts';
 
-export { extractPackageFile } from './extract';
+export { extractPackageFile } from './extract.ts';
 
-export const supportedDatasources = [RubyVersionDatasource.id];
+export const displayName = '.ruby-version';
+export const categories: Category[] = ['ruby'];
 
 export const defaultConfig = {
-  fileMatch: ['(^|/)\\.ruby-version$'],
+  managerFilePatterns: ['/(^|/)\\.ruby-version$/'],
   versioning: rubyVersioning.id,
 };
 
-export const categories: Category[] = ['ruby'];
+export const supportedDatasources = [RubyVersionDatasource.id];

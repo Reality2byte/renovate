@@ -1,14 +1,17 @@
-import { logger } from '../../logger';
-import { parseJson } from '../../util/common';
-import { regEx } from '../../util/regex';
-import { ensureTrailingSlash } from '../../util/url';
-import type { FetchPresetConfig, Preset } from './types';
+import { logger } from '../../logger/index.ts';
+import type { Nullish } from '../../types/index.ts';
+import { parseJson } from '../../util/common.ts';
+import { regEx } from '../../util/regex.ts';
+import { ensureTrailingSlash } from '../../util/url.ts';
+import type { FetchPresetConfig, Preset } from './types.ts';
 
 export const PRESET_DEP_NOT_FOUND = 'dep not found';
 export const PRESET_INVALID = 'invalid preset';
 export const PRESET_INVALID_JSON = 'invalid preset JSON';
 export const PRESET_NOT_FOUND = 'preset not found';
 export const PRESET_PROHIBITED_SUBPRESET = 'prohibited sub-preset';
+export const PRESET_RELATIVE_NO_PARENT = 'relative preset has no parent';
+export const PRESET_RELATIVE_OUTSIDE_REPO = 'relative preset outside repo';
 export const PRESET_RENOVATE_CONFIG_NOT_FOUND =
   'preset renovate-config not found';
 
@@ -19,13 +22,15 @@ export async function fetchPreset({
   endpoint: _endpoint,
   tag,
   fetch,
-}: FetchPresetConfig): Promise<Preset | undefined> {
+}: FetchPresetConfig): Promise<Nullish<Preset>> {
   // TODO: fix me, can be undefiend #22198
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
+  // oxlint-disable-next-line typescript/no-unnecessary-type-assertion
   const endpoint = ensureTrailingSlash(_endpoint!);
   const [fileName, presetName, subPresetName] = filePreset.split('/');
   const pathPrefix = presetPath ? `${presetPath}/` : '';
-  const buildFilePath = (name: string): string => `${pathPrefix}${name}`;
+  function buildFilePath(name: string): string {
+    return `${pathPrefix}${name}`;
+  }
   let jsonContent: any;
   if (fileName === 'default') {
     try {
@@ -60,7 +65,7 @@ export async function fetchPreset({
     jsonContent = await fetch(
       repo,
       buildFilePath(
-        regEx(/\.json5?$/).test(fileName) ? fileName : `${fileName}.json`,
+        regEx(/\.json[5c]?$/).test(fileName) ? fileName : `${fileName}.json`,
       ),
       endpoint,
       tag,
@@ -87,9 +92,12 @@ export async function fetchPreset({
   return jsonContent;
 }
 
-export function parsePreset(content: string, fileName: string): Preset {
+export function parsePreset(
+  content: Nullish<string>,
+  fileName: string,
+): Nullish<Preset> {
   try {
-    return parseJson(content, fileName) as Preset;
+    return parseJson(content, fileName) as Nullish<Preset>;
   } catch {
     throw new Error(PRESET_INVALID_JSON);
   }

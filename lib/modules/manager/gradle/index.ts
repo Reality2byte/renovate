@@ -1,28 +1,33 @@
-import type { Category } from '../../../constants';
-import { MavenDatasource } from '../../datasource/maven';
-import * as gradleVersioning from '../../versioning/gradle';
+import type { Category } from '../../../constants/index.ts';
+import { MavenDatasource } from '../../datasource/maven/index.ts';
+import * as gradleVersioning from '../../versioning/gradle/index.ts';
 
-export { extractAllPackageFiles } from './extract';
-export { updateDependency } from './update';
-export { updateArtifacts } from './artifacts';
+export { updateArtifacts } from './artifacts.ts';
+export { knownDepTypes } from './dep-types.ts';
+export { extractAllPackageFiles } from './extract.ts';
+export { updateDependency } from './update.ts';
 
 export const supportsLockFileMaintenance = true;
+export const lockFileNames = ['gradle.lockfile'];
+export const lockFileMaintenanceIsDelegatedToPackageManager = true;
+
+export const url =
+  'https://docs.gradle.org/current/userguide/getting_started_dep_man.html';
+export const categories: Category[] = ['java'];
 
 export const defaultConfig = {
-  fileMatch: [
-    '\\.gradle(\\.kts)?$',
-    '(^|/)gradle\\.properties$',
-    '(^|/)gradle/.+\\.toml$',
-    '(^|/)buildSrc/.+\\.kt$',
-    '\\.versions\\.toml$',
+  managerFilePatterns: [
+    '/\\.gradle(\\.kts)?$/',
+    '/(^|/)gradle\\.properties$/',
+    '/(^|/)gradle/.+\\.toml$/',
+    '/(^|/)buildSrc/.+\\.kt$/',
+    '/\\.versions\\.toml$/',
     // The two below is for gradle-consistent-versions plugin
-    `(^|/)versions.props$`,
-    `(^|/)versions.lock$`,
+    `/(^|/)versions.props$/`,
+    `/(^|/)versions.lock$/`,
   ],
   timeout: 600,
   versioning: gradleVersioning.id,
 };
-
-export const categories: Category[] = ['java'];
 
 export const supportedDatasources = [MavenDatasource.id];

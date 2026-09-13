@@ -1,26 +1,24 @@
-import * as httpMock from '../../../../test/http-mock';
-import { mocked } from '../../../../test/util';
-import * as _packageCache from '../../../util/cache/package';
-import { Http } from '../../../util/http';
-import { MetadataCache } from './metadata-cache';
+import * as httpMock from '~test/http-mock.ts';
+import * as _packageCache from '../../../util/cache/package/index.ts';
+import { Http } from '../../../util/http/index.ts';
+import { MetadataCache } from './metadata-cache.ts';
 
-jest.mock('../../../util/cache/package');
-const packageCache = mocked(_packageCache);
+vi.mock('../../../util/cache/package/index.ts');
+const packageCache = vi.mocked(_packageCache);
 
 describe('modules/datasource/rubygems/metadata-cache', () => {
-  const packageCacheMock: Map<string, unknown> = new Map();
+  const packageCacheMock = new Map<string, unknown>();
 
   beforeEach(() => {
     packageCacheMock.clear();
 
-    packageCache.get.mockImplementation(
-      (ns, key) =>
-        Promise.resolve(packageCacheMock.get(`${ns}::${key}`)) as never,
+    packageCache.get.mockImplementation((ns, key) =>
+      Promise.resolve(packageCacheMock.get(`${ns}::${key}`)),
     );
 
     packageCache.set.mockImplementation((ns, key, value) => {
       packageCacheMock.set(`${ns}::${key}`, value);
-      return Promise.resolve() as never;
+      return Promise.resolve();
     });
   });
 
@@ -78,19 +76,19 @@ describe('modules/datasource/rubygems/metadata-cache', () => {
       releases: [
         {
           version: '1.0.0',
-          releaseTimestamp: '2021-01-01',
+          releaseTimestamp: '2021-01-01T00:00:00.000Z',
           changelogUrl: 'https://v1.example.com/changelog',
           sourceUrl: 'https://v1.example.com/source',
         },
         {
           version: '2.0.0',
-          releaseTimestamp: '2022-01-01',
+          releaseTimestamp: '2022-01-01T00:00:00.000Z',
           changelogUrl: 'https://v2.example.com/changelog',
           sourceUrl: 'https://v2.example.com/source',
         },
         {
           version: '3.0.0',
-          releaseTimestamp: '2023-01-01',
+          releaseTimestamp: '2023-01-01T00:00:00.000Z',
           changelogUrl: 'https://v3.example.com/changelog',
           sourceUrl: 'https://v3.example.com/source',
         },
@@ -183,7 +181,7 @@ describe('modules/datasource/rubygems/metadata-cache', () => {
         { version: '3.0.0' },
       ],
     });
-    expect(packageCache.set).toHaveBeenCalledWith(
+    expect(packageCache.set).toHaveBeenCalledExactlyOnceWith(
       'datasource-rubygems',
       'metadata-cache:https://rubygems.org:foobar',
       {
@@ -230,7 +228,12 @@ describe('modules/datasource/rubygems/metadata-cache', () => {
     );
 
     expect(res1).toEqual(res2);
-    expect(packageCache.set).toHaveBeenCalledOnce();
+    expect(packageCache.set).toHaveBeenCalledExactlyOnceWith(
+      'datasource-rubygems',
+      expect.any(String),
+      expect.any(Object),
+      expect.any(Number),
+    );
   });
 
   it('fetches for stale key', async () => {

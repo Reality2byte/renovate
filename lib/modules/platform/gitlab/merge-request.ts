@@ -1,6 +1,7 @@
-import { logger } from '../../../logger';
-import { gitlabApi } from './http';
-import type { GitLabMergeRequest, UpdateMergeRequest } from './types';
+import { logger } from '../../../logger/index.ts';
+import { gitlabApi } from './http.ts';
+import type { GitLabMergeRequest } from './schema.ts';
+import type { UpdateMergeRequest } from './types.ts';
 
 export async function getMR(
   repository: string,
@@ -9,7 +10,7 @@ export async function getMR(
   logger.debug(`getMR(${iid})`);
 
   const url = `projects/${repository}/merge_requests/${iid}?include_diverged_commits_count=1`;
-  return (await gitlabApi.getJson<GitLabMergeRequest>(url)).body;
+  return (await gitlabApi.getJsonUnchecked<GitLabMergeRequest>(url)).body;
 }
 
 export async function updateMR(

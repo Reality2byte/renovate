@@ -1,34 +1,94 @@
-import is from '@sindresorhus/is';
+import { isString } from '@sindresorhus/is';
 import type { ReleaseType } from 'semver';
 import semver from 'semver';
 import { XmlDocument } from 'xmldoc';
-import { logger } from '../../../logger';
-import { replaceAt } from '../../../util/string';
+import { logger } from '../../../logger/index.ts';
+import { replaceAt } from '../../../util/string.ts';
 import type {
   BumpPackageVersionResult,
   UpdateDependencyConfig,
   Upgrade,
-} from '../types';
+} from '../types.ts';
 
 export function updateAtPosition(
   fileContent: string,
   upgrade: Upgrade,
   endingAnchor: string,
 ): string | null {
-  const { depName, currentValue, newValue, fileReplacePosition } = upgrade;
-  const leftPart = fileContent.slice(0, fileReplacePosition);
+  const { depName, newName, currentValue, newValue, fileReplacePosition } =
+    upgrade;
+  let leftPart = fileContent.slice(0, fileReplacePosition);
   const rightPart = fileContent.slice(fileReplacePosition);
   const versionClosePosition = rightPart.indexOf(endingAnchor);
-  const restPart = rightPart.slice(versionClosePosition);
+  let restPart = rightPart.slice(versionClosePosition);
   const versionPart = rightPart.slice(0, versionClosePosition);
   const version = versionPart.trim();
-  if (version === newValue) {
+  if (newName) {
+    const blockStart = Math.max(
+      leftPart.lastIndexOf('<parent'),
+      leftPart.lastIndexOf('<dependency'),
+      leftPart.lastIndexOf('<plugin'),
+      leftPart.lastIndexOf('<extension'),
+    );
+    let leftBlock = leftPart.slice(blockStart);
+    const blockEnd = Math.min(
+      restPart.indexOf('</parent'),
+      restPart.indexOf('</dependency'),
+      restPart.indexOf('</plugin'),
+      restPart.indexOf('</extension'),
+    );
+    let rightBlock = restPart.slice(0, blockEnd);
+    const [groupId, artifactId] = depName!.split(':', 2);
+    const [newGroupId, newArtifactId] = newName.split(':', 2);
+    if (leftBlock.indexOf('<groupId') > 0) {
+      leftBlock = updateValue(leftBlock, 'groupId', groupId, newGroupId);
+    } else {
+      rightBlock = updateValue(rightBlock, 'groupId', groupId, newGroupId);
+    }
+    if (leftBlock.indexOf('<artifactId') > 0) {
+      leftBlock = updateValue(
+        leftBlock,
+        'artifactId',
+        artifactId,
+        newArtifactId,
+      );
+    } else {
+      rightBlock = updateValue(
+        rightBlock,
+        'artifactId',
+        artifactId,
+        newArtifactId,
+      );
+    }
+    leftPart = leftPart.slice(0, blockStart) + leftBlock;
+    restPart = rightBlock + restPart.slice(blockEnd);
+  } else if (version === newValue) {
     return fileContent;
   }
-  if (version === currentValue || upgrade.groupName) {
+  if (version === currentValue || upgrade.sharedVariableName) {
     // TODO: validate newValue (#22198)
     const replacedPart = versionPart.replace(version, newValue!);
     return leftPart + replacedPart + restPart;
+  }
+  if (
+    upgrade.datasource === 'docker' ||
+    upgrade.datasource === 'buildpacks-registry'
+  ) {
+    // In contrast to maven dependencies, cloud native buildpacks are not contained in specific version tags.
+    // Instead they are contained in the value of the buildpack tag and we have to update it differently.
+    let replacedPart = version;
+    if (currentValue) {
+      replacedPart = version.replace(currentValue, newValue!);
+    }
+    if (upgrade.currentDigest && upgrade.newDigest) {
+      replacedPart = replacedPart.replace(
+        upgrade.currentDigest,
+        upgrade.newDigest,
+      );
+    }
+    if (replacedPart !== version) {
+      return leftPart + replacedPart + restPart;
+    }
   }
   logger.debug({ depName, version, currentValue, newValue }, 'Unknown value');
   return null;
@@ -38,10 +98,6 @@ export function updateDependency({
   fileContent,
   upgrade,
 }: UpdateDependencyConfig): string | null {
-  if (upgrade.updateType === 'replacement') {
-    logger.warn('maven manager does not support replacement updates yet');
-    return null;
-  }
   const offset = fileContent.indexOf('<');
   const spaces = fileContent.slice(0, offset);
   const restContent = fileContent.slice(offset);
@@ -77,7 +133,7 @@ export function bumpPackageVersion(
   try {
     const project = new XmlDocument(content);
     const versionNode = project.childNamed('version')!;
-    const startTagPosition = versionNode.startTagPosition;
+    const startTagPosition = versionNode.startTagPosition!; // TODO: should not be null
     const versionPosition = content.indexOf(versionNode.val, startTagPosition);
 
     let newPomVersion: string | null = null;
@@ -135,9 +191,28 @@ export function bumpPackageVersion(
   return { bumpedContent };
 }
 
-function isSnapshot(
-  prerelease: ReadonlyArray<string | number> | null,
-): boolean {
+function isSnapshot(prerelease: readonly (string | number)[] | null): boolean {
   const lastPart = prerelease?.at(-1);
-  return is.string(lastPart) && lastPart.endsWith('SNAPSHOT');
+  return isString(lastPart) && lastPart.endsWith('SNAPSHOT');
+}
+
+function updateValue(
+  content: string,
+  nodeName: string,
+  oldValue: string,
+  newValue: string,
+): string {
+  const elementStart = content.indexOf(`<${nodeName}`);
+  const start = content.indexOf('>', elementStart) + 1;
+  const end = content.indexOf(`</${nodeName}`, start);
+  const elementContent = content.slice(start, end);
+  if (elementContent.trim() === oldValue) {
+    return (
+      content.slice(0, start) +
+      elementContent.replace(oldValue, newValue) +
+      content.slice(end)
+    );
+  }
+  logger.debug({ content, nodeName, oldValue, newValue }, 'Unknown value');
+  return content;
 }

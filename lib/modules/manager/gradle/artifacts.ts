@@ -1,27 +1,50 @@
-import is from '@sindresorhus/is';
+import { isNonEmptyStringAndNotWhitespace } from '@sindresorhus/is';
 import { quote } from 'shlex';
-import { dirname, join } from 'upath';
-import { TEMPORARY_ERROR } from '../../../constants/error-messages';
-import { logger } from '../../../logger';
-import { exec } from '../../../util/exec';
-import type { ExecOptions } from '../../../util/exec/types';
-import { findUpLocal, readLocalFile, writeLocalFile } from '../../../util/fs';
-import { getFiles, getRepoStatus } from '../../../util/git';
-import { regEx } from '../../../util/regex';
-import { scm } from '../../platform/scm';
+import upath from 'upath';
+import { GlobalConfig } from '../../../config/global.ts';
+import { TEMPORARY_ERROR } from '../../../constants/error-messages.ts';
+import { logger } from '../../../logger/index.ts';
+import {
+  exec,
+  getToolSettingsOptions,
+  gradleJvmArg,
+} from '../../../util/exec/index.ts';
+import type { ExecOptions } from '../../../util/exec/types.ts';
+import {
+  findUpLocal,
+  readLocalFile,
+  writeLocalFile,
+} from '../../../util/fs/index.ts';
+import { getFiles, getRepoStatus } from '../../../util/git/index.ts';
+import { regEx } from '../../../util/regex.ts';
+import { scm } from '../../platform/scm.ts';
 import {
   extraEnv,
   extractGradleVersion,
   getJavaConstraint,
   gradleWrapperFileName,
   prepareGradleCommand,
-} from '../gradle-wrapper/utils';
-import type { UpdateArtifact, UpdateArtifactsResult } from '../types';
+} from '../gradle-wrapper/utils.ts';
+import type { UpdateArtifact, UpdateArtifactsResult } from '../types.ts';
 import {
   isGcvLockFile,
   isGcvPropsFile,
-} from './extract/consistent-versions-plugin';
-import { isGradleBuildFile } from './utils';
+} from './extract/consistent-versions-plugin.ts';
+import { isGradleBuildFile } from './utils.ts';
+
+export function isGradleExecutionAllowed(command: string): boolean {
+  const allowlist = GlobalConfig.get('allowedUnsafeExecutions');
+
+  if (!allowlist.includes('gradleWrapper')) {
+    logger.once.warn(
+      { command },
+      'Gradle wrapper command was requested to run, but `gradleWrapper` is not permitted in the allowedUnsafeExecutions',
+    );
+    return false;
+  }
+
+  return true;
+}
 
 // .lockfile is gradle default lockfile, /versions.lock is gradle-consistent-versions plugin lockfile
 function isLockFile(fileName: string): boolean {
@@ -79,8 +102,8 @@ async function getSubProjectList(
 }
 
 async function getGradleVersion(gradlewFile: string): Promise<string | null> {
-  const propertiesFile = join(
-    dirname(gradlewFile),
+  const propertiesFile = upath.join(
+    upath.dirname(gradlewFile),
     'gradle/wrapper/gradle-wrapper.properties',
   );
   const properties = await readLocalFile(propertiesFile, 'utf8');
@@ -96,38 +119,41 @@ async function buildUpdateVerificationMetadataCmd(
   if (!verificationMetadataFile) {
     return null;
   }
-  const hashTypes: string[] = [];
+
   const verificationMetadata = await readLocalFile(verificationMetadataFile);
-  if (
-    verificationMetadata?.includes('<verify-metadata>true</verify-metadata>')
-  ) {
-    logger.debug('Dependency verification enabled - generating checksums');
-    for (const hashType of ['sha256', 'sha512']) {
-      if (verificationMetadata?.includes(`<${hashType}`)) {
-        hashTypes.push(hashType);
-      }
-    }
-    if (!hashTypes.length) {
-      hashTypes.push('sha256');
-    }
+  const verifiesChecksums = verificationMetadata?.includes(
+    '<verify-metadata>true</verify-metadata>',
+  );
+  const verifiesSignatures = verificationMetadata?.includes(
+    '<verify-signatures>true</verify-signatures>',
+  );
+
+  const hashTypes = ['sha256', 'sha512'].filter((type) =>
+    verificationMetadata?.includes(`<${type} `),
+  );
+
+  if (verifiesChecksums || hashTypes.length) {
+    logger.debug(
+      'Dependency metadata verification enabled or checksums present - generating checksums',
+    );
   }
-  if (
-    verificationMetadata?.includes(
-      '<verify-signatures>true</verify-signatures>',
-    )
-  ) {
+
+  if ((verifiesChecksums || verifiesSignatures) && !hashTypes.length) {
+    // fallback algorithm for pgp and in case a weak algorithm (md5, sha1) is used for checksums
+    hashTypes.push('sha256');
+  }
+
+  if (verifiesSignatures) {
     logger.debug(
       'Dependency signature verification enabled - generating PGP signatures',
     );
-    // signature verification requires at least one checksum type as fallback.
-    if (!hashTypes.length) {
-      hashTypes.push('sha256');
-    }
     hashTypes.push('pgp');
   }
+
   if (!hashTypes.length) {
     return null;
   }
+
   return `${baseCmd} --write-verification-metadata ${hashTypes.join(',')} dependencies`;
 }
 
@@ -152,7 +178,10 @@ export async function updateArtifacts({
   }
 
   const gradlewName = gradleWrapperFileName();
-  const gradlewFile = await findUpLocal(gradlewName, dirname(packageFileName));
+  const gradlewFile = await findUpLocal(
+    gradlewName,
+    upath.dirname(packageFileName),
+  );
   if (!gradlewFile) {
     logger.debug(
       'Found Gradle dependency lockfiles but no gradlew - aborting update',
@@ -163,10 +192,17 @@ export async function updateArtifacts({
   if (
     config.isLockFileMaintenance &&
     (!isGradleBuildFile(packageFileName) ||
-      dirname(packageFileName) !== dirname(gradlewFile))
+      upath.dirname(packageFileName) !== upath.dirname(gradlewFile))
   ) {
     logger.trace(
       'No build.gradle(.kts) file or not in root project - skipping lock file maintenance',
+    );
+    return null;
+  }
+
+  if (!isGradleExecutionAllowed(gradlewFile)) {
+    logger.trace(
+      'Not allowed to execute gradle due to allowedUnsafeExecutions - aborting update',
     );
     return null;
   }
@@ -177,11 +213,10 @@ export async function updateArtifacts({
     const oldLockFileContentMap = await getFiles(lockFiles);
     await prepareGradleCommand(gradlewFile);
 
-    const baseCmd = `${gradlewName} --console=plain --dependency-verification lenient -q`;
+    const baseCmd = `${gradlewName}${gradleJvmArg(getToolSettingsOptions(config.toolSettings))} --console=plain --dependency-verification lenient -q`;
     const execOptions: ExecOptions = {
       cwdFile: gradlewFile,
       docker: {},
-      userConfiguredEnv: config.env,
       extraEnv,
       toolConstraints: [
         {
@@ -213,7 +248,7 @@ export async function updateArtifacts({
       } else {
         const updatedDepNames = updatedDeps
           .map(({ depName, packageName }) => packageName ?? depName)
-          .filter(is.nonEmptyStringAndNotWhitespace);
+          .filter(isNonEmptyStringAndNotWhitespace);
 
         lockfileCmd += ` --update-locks ${updatedDepNames
           .map(quote)
@@ -252,7 +287,7 @@ export async function updateArtifacts({
     return [
       {
         artifactError: {
-          lockFile: packageFileName,
+          fileName: packageFileName,
           stderr: err.message,
         },
       },

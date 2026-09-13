@@ -1,12 +1,13 @@
-import is from '@sindresorhus/is';
-import { logger } from '../../../logger';
-import { parseSingleYaml } from '../../../util/yaml';
-import { HelmDatasource } from '../../datasource/helm';
+import { isArray } from '@sindresorhus/is';
+import { logger } from '../../../logger/index.ts';
+import { parseUrl } from '../../../util/url.ts';
+import { parseSingleYaml } from '../../../util/yaml.ts';
+import { HelmDatasource } from '../../datasource/helm/index.ts';
 import type {
   ExtractConfig,
   PackageDependency,
   PackageFileContent,
-} from '../types';
+} from '../types.ts';
 
 export function extractPackageFile(
   content: string,
@@ -22,7 +23,7 @@ export function extractPackageFile(
     logger.debug({ packageFile }, `Failed to parse helm requirements.yaml`);
     return null;
   }
-  if (!(doc && is.array(doc.dependencies))) {
+  if (!(doc && isArray(doc.dependencies))) {
     logger.debug({ packageFile }, `requirements.yaml has no dependencies`);
     return null;
   }
@@ -69,17 +70,12 @@ export function extractPackageFile(
 
       res.skipReason = 'placeholder-url';
     } else {
-      try {
-        const url = new URL(dep.repository);
-        if (url.protocol === 'file:') {
-          res.skipReason = 'local-dependency';
-        }
-      } catch (err) {
-        logger.debug(
-          { err, packageFile, url: dep.repository },
-          'Error parsing url',
-        );
+      const url = parseUrl(dep.repository);
+      if (!url) {
+        logger.debug({ packageFile, url: dep.repository }, 'Error parsing url');
         res.skipReason = 'invalid-url';
+      } else if (url.protocol === 'file:') {
+        res.skipReason = 'local-dependency';
       }
     }
     return res;

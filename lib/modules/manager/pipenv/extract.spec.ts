@@ -1,13 +1,30 @@
+import type { Stats } from 'node:fs';
 import { codeBlock } from 'common-tags';
 import * as _fsExtra from 'fs-extra';
-import { join } from 'upath';
-import { Fixtures } from '../../../../test/fixtures';
-import { mocked } from '../../../../test/util';
-import { GlobalConfig } from '../../../config/global';
-import { extractPackageFile } from '.';
+import upath from 'upath';
+import type { MockInstance } from 'vitest';
+import { Fixtures } from '~test/fixtures.ts';
+import { partial } from '~test/util.ts';
+import { GlobalConfig } from '../../../config/global.ts';
+import { extractPackageFile } from './index.ts';
 
-jest.mock('fs-extra');
-const fsExtra = mocked(_fsExtra);
+// mock for cjs require for `@renovatebot/detect-tools`
+// https://github.com/vitest-dev/vitest/discussions/3134
+vi.hoisted(() => {
+  const fsExtraModule: Partial<NodeJS.Module> = {
+    exports: fixtures.fsExtra(),
+  };
+  require.cache[require.resolve('fs-extra')] = fsExtraModule as NodeJS.Module;
+});
+
+vi.mock('fs-extra', () => fixtures.fsExtra());
+
+const fsExtra = vi.mocked(_fsExtra);
+// vi.mocked() resolves stat() to its callback overload, so
+// mockResolvedValueOnce() would expect void; retype via the promise overload
+const statMock = fsExtra.stat as unknown as MockInstance<
+  (path: string) => Promise<Stats>
+>;
 
 const pipfile1 = Fixtures.get('Pipfile1');
 const pipfile2 = Fixtures.get('Pipfile2');
@@ -15,29 +32,32 @@ const pipfile3 = Fixtures.get('Pipfile3');
 const pipfile4 = Fixtures.get('Pipfile4');
 const pipfile5 = Fixtures.get('Pipfile5');
 
+const localDir = '/tmp/github/some/repo/';
+
 describe('modules/manager/pipenv/extract', () => {
   beforeEach(() => {
+    Fixtures.reset();
     GlobalConfig.set({
-      localDir: join('/tmp/github/some/repo'),
+      localDir: upath.join(localDir),
     });
-  });
-
-  afterEach(() => {
-    GlobalConfig.reset();
   });
 
   describe('extractPackageFile()', () => {
     it('returns null for empty', async () => {
-      expect(await extractPackageFile('[packages]\r\n', 'Pipfile')).toBeNull();
+      await expect(
+        extractPackageFile('[packages]\r\n', 'Pipfile'),
+      ).resolves.toBeNull();
     });
 
     it('returns null for invalid toml file', async () => {
-      expect(await extractPackageFile('nothing here', 'Pipfile')).toBeNull();
+      await expect(
+        extractPackageFile('nothing here', 'Pipfile'),
+      ).resolves.toBeNull();
     });
 
     it('extracts dependencies', async () => {
-      fsExtra.stat.mockResolvedValueOnce({} as never);
-      fsExtra.readFile.mockResolvedValueOnce(pipfile1 as never);
+      statMock.mockResolvedValueOnce(partial<Stats>());
+      Fixtures.mock({ Pipfile: pipfile1 }, localDir);
       const res = await extractPackageFile(pipfile1, 'Pipfile');
       expect(res).toMatchObject({
         deps: [
@@ -133,8 +153,8 @@ describe('modules/manager/pipenv/extract', () => {
     });
 
     it('extracts multiple dependencies', async () => {
-      fsExtra.stat.mockResolvedValueOnce({} as never);
-      fsExtra.readFile.mockResolvedValueOnce(pipfile2 as never);
+      statMock.mockResolvedValueOnce(partial<Stats>());
+      Fixtures.mock({ Pipfile: pipfile2 }, localDir);
       const res = await extractPackageFile(pipfile2, 'Pipfile');
       expect(res).toMatchObject({
         deps: [
@@ -238,7 +258,7 @@ describe('modules/manager/pipenv/extract', () => {
     });
 
     it('extracts example pipfile', async () => {
-      fsExtra.stat.mockResolvedValueOnce({} as never);
+      statMock.mockResolvedValueOnce(partial<Stats>());
       fsExtra.readFile.mockResolvedValueOnce(pipfile4 as never);
       const res = await extractPackageFile(pipfile4, 'Pipfile');
       expect(res).toMatchObject({
@@ -304,7 +324,7 @@ describe('modules/manager/pipenv/extract', () => {
     });
 
     it('supports custom index', async () => {
-      fsExtra.stat.mockResolvedValueOnce({} as never);
+      statMock.mockResolvedValueOnce(partial<Stats>());
       const res = await extractPackageFile(pipfile5, 'Pipfile');
       expect(res).toMatchObject({
         deps: [

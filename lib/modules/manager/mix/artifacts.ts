@@ -1,18 +1,23 @@
-import is from '@sindresorhus/is';
+import { isEmptyArray, isString } from '@sindresorhus/is';
 import { quote } from 'shlex';
-import { TEMPORARY_ERROR } from '../../../constants/error-messages';
-import { logger } from '../../../logger';
-import { exec } from '../../../util/exec';
-import type { ExecOptions } from '../../../util/exec/types';
+import { GlobalConfig } from '../../../config/global.ts';
+import { TEMPORARY_ERROR } from '../../../constants/error-messages.ts';
+import { logger } from '../../../logger/index.ts';
+import { exec } from '../../../util/exec/index.ts';
+import type { ExecOptions } from '../../../util/exec/types.ts';
 import {
+  deleteLocalFile,
+  ensureCacheDir,
   findLocalSiblingOrParent,
+  getSiblingFileName,
+  localPathExists,
   readLocalFile,
   writeLocalFile,
-} from '../../../util/fs';
-import * as hostRules from '../../../util/host-rules';
-import { regEx } from '../../../util/regex';
+} from '../../../util/fs/index.ts';
+import * as hostRules from '../../../util/host-rules.ts';
+import { regEx } from '../../../util/regex.ts';
 
-import type { UpdateArtifact, UpdateArtifactsResult } from '../types';
+import type { UpdateArtifact, UpdateArtifactsResult } from '../types.ts';
 
 const hexRepoUrl = 'https://hex.pm/';
 const hexRepoOrgUrlRegex = regEx(
@@ -26,28 +31,72 @@ export async function updateArtifacts({
   config,
 }: UpdateArtifact): Promise<UpdateArtifactsResult[] | null> {
   logger.debug(`mix.getArtifacts(${packageFileName})`);
-  if (updatedDeps.length < 1) {
-    logger.debug('No updated mix deps - returning null');
+  const { isLockFileMaintenance } = config;
+
+  if (isEmptyArray(updatedDeps) && !isLockFileMaintenance) {
+    logger.debug('No updated mix deps');
     return null;
   }
 
-  const lockFileName =
-    (await findLocalSiblingOrParent(packageFileName, 'mix.lock')) ?? 'mix.lock';
+  let lockFileName = getSiblingFileName(packageFileName, 'mix.lock');
+  let isUmbrella = false;
+
+  let existingLockFileContent = await readLocalFile(lockFileName, 'utf8');
+  if (!existingLockFileContent) {
+    const lockFileError = await checkLockFileReadError(lockFileName);
+    if (lockFileError) {
+      return lockFileError;
+    }
+
+    const parentLockFileName = await findLocalSiblingOrParent(
+      packageFileName,
+      'mix.lock',
+    );
+    existingLockFileContent =
+      parentLockFileName && (await readLocalFile(parentLockFileName, 'utf8'));
+
+    if (parentLockFileName && existingLockFileContent) {
+      lockFileName = parentLockFileName;
+      isUmbrella = true;
+    } else if (parentLockFileName) {
+      const lockFileError = await checkLockFileReadError(parentLockFileName);
+      if (lockFileError) {
+        return lockFileError;
+      }
+    }
+  }
+
+  if (isLockFileMaintenance && isUmbrella) {
+    logger.debug(
+      `Cannot use lockFileMaintenance in an umbrella project, see ${GlobalConfig.get('productLinks').documentation}modules/manager/mix/#lockFileMaintenance`,
+    );
+    return null;
+  }
+
+  if (isLockFileMaintenance && !existingLockFileContent) {
+    logger.debug(
+      'Cannot use lockFileMaintenance when no mix.lock file is present',
+    );
+    return null;
+  }
+
   try {
     await writeLocalFile(packageFileName, newPackageFileContent);
+    if (isLockFileMaintenance) {
+      await deleteLocalFile(lockFileName);
+    }
   } catch (err) {
     logger.warn({ err }, 'mix.exs could not be written');
     return [
       {
         artifactError: {
-          lockFile: lockFileName,
+          fileName: lockFileName,
           stderr: err.message,
         },
       },
     ];
   }
 
-  const existingLockFileContent = await readLocalFile(lockFileName, 'utf8');
   if (!existingLockFileContent) {
     logger.debug('No mix.lock found');
     return null;
@@ -89,22 +138,29 @@ export async function updateArtifacts({
 
     if (token) {
       logger.debug(`Authenticating to hex organization ${organization}`);
-      const authCommand = `mix hex.organization auth ${organization} --key ${token}`;
+      const authCommand = `mix hex.organization auth ${quote(organization)} --key ${quote(token)}`;
       return [...acc, authCommand];
     }
 
     return acc;
   }, [] as string[]);
 
+  // renovate: will update this
+  const erlangVersion = '26';
+
   const execOptions: ExecOptions = {
-    cwdFile: packageFileName,
+    extraEnv: {
+      // https://hexdocs.pm/mix/1.15.0/Mix.Tasks.Archive.html
+      // TODO: should include a version constraint
+      MIX_ARCHIVES: await ensureCacheDir('mix_archives'),
+    },
+    cwdFile: lockFileName,
     docker: {},
-    userConfiguredEnv: config.env,
     toolConstraints: [
       {
         toolName: 'erlang',
         // https://hexdocs.pm/elixir/1.14.5/compatibility-and-deprecations.html#compatibility-between-elixir-and-erlang-otp
-        constraint: config.constraints?.erlang ?? '^26',
+        constraint: config.constraints?.erlang ?? `^${erlangVersion}`,
       },
       {
         toolName: 'elixir',
@@ -113,19 +169,25 @@ export async function updateArtifacts({
     ],
     preCommands,
   };
-  const command = [
-    'mix',
-    'deps.update',
-    ...updatedDeps
-      .map((dep) => dep.depName)
-      .filter(is.string)
-      .map((dep) => quote(dep)),
-  ].join(' ');
+
+  let command: string;
+  if (isLockFileMaintenance) {
+    command = 'mix deps.get';
+  } else {
+    command = [
+      'mix',
+      'deps.update',
+      ...updatedDeps
+        .map((dep) => dep.depName)
+        .filter(isString)
+        .map((dep) => quote(dep)),
+    ].join(' ');
+  }
 
   try {
     await exec(command, execOptions);
   } catch (err) {
-    // istanbul ignore if
+    /* v8 ignore if -- defensive rethrow of TEMPORARY_ERROR from exec, not reproduced in mix specs */
     if (err.message === TEMPORARY_ERROR) {
       throw err;
     }
@@ -138,7 +200,7 @@ export async function updateArtifacts({
     return [
       {
         artifactError: {
-          lockFile: lockFileName,
+          fileName: lockFileName,
           stderr: err.message,
         },
       },
@@ -160,4 +222,20 @@ export async function updateArtifacts({
       },
     },
   ];
+}
+
+async function checkLockFileReadError(
+  lockFileName: string,
+): Promise<UpdateArtifactsResult[] | null> {
+  if (await localPathExists(lockFileName)) {
+    return [
+      {
+        artifactError: {
+          fileName: lockFileName,
+          stderr: `Error reading ${lockFileName}`,
+        },
+      },
+    ];
+  }
+  return null;
 }

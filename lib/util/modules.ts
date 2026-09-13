@@ -1,34 +1,15 @@
+// oxlint-disable-next-line renovate/prefer-fs-util -- synchronously enumerates Renovate's own installed module directories at import time; not repository or cache file access
 import fs from 'node:fs';
+import { pathToFileURL } from 'node:url';
 import upath from 'upath';
 
-function relatePath(here: string, there: string): string {
-  const thereParts = upath.normalizeTrim(there).split('/');
-  const hereParts = upath.normalizeTrim(here).split('/');
+// TODO: move to `test/util.ts` or `test/modules.ts`
 
-  let idx = 0;
-  while (
-    typeof thereParts[idx] === 'string' &&
-    typeof hereParts[idx] === 'string' &&
-    thereParts[idx] === hereParts[idx]
-  ) {
-    idx += 1;
-  }
-
-  const result: string[] = [];
-  for (let x = 0; x < hereParts.length - idx; x += 1) {
-    result.push('..');
-  }
-  for (let y = idx; y < thereParts.length; y += 1) {
-    result.push(thereParts[y]);
-  }
-  return result.join('/');
-}
-
-export function loadModules<T>(
+export async function loadModules<T>(
   dirname: string,
   validate?: (module: T, moduleName: string) => boolean,
   filter: (moduleName: string) => boolean = () => true,
-): Record<string, T> {
+): Promise<Record<string, T>> {
   const result: Record<string, T> = {};
 
   const moduleNames: string[] = fs
@@ -40,8 +21,9 @@ export function loadModules<T>(
     .sort();
 
   for (const moduleName of moduleNames) {
-    const modulePath = upath.join(relatePath(__dirname, dirname), moduleName);
-    const module = require(modulePath); // eslint-disable-line
+    const modulePath = upath.join(dirname, moduleName);
+    const moduleUrl = pathToFileURL(modulePath).href;
+    const module = await import(moduleUrl);
     // istanbul ignore if
     if (!module || (validate && !validate(module, moduleName))) {
       throw new Error(`Invalid module: ${modulePath}`);

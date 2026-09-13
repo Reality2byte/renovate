@@ -1,37 +1,43 @@
-import { mockDeep } from 'jest-mock-extended';
-import { join } from 'upath';
-import { envMock, mockExecAll } from '../../../../test/exec-util';
-import { env, fs, hostRules, mockedFunction } from '../../../../test/util';
-import { GlobalConfig } from '../../../config/global';
-import type { RepoGlobalConfig } from '../../../config/types';
-import * as docker from '../../../util/exec/docker';
-import { getPkgReleases as _getPkgReleases } from '../../datasource';
-import type { UpdateArtifactsConfig } from '../types';
-import { updateArtifacts } from '.';
+import upath from 'upath';
+import { mockDeep } from 'vitest-mock-extended';
+import { envMock, mockExecAll } from '~test/exec-util.ts';
+import { hostRules } from '~test/host-rules.ts';
+import { env, fs, logger } from '~test/util.ts';
+import { GlobalConfig } from '../../../config/global.ts';
+import type {
+  InternalGlobalConfigOptions,
+  RepoGlobalConfig,
+} from '../../../config/types.ts';
+import type { ConstraintName } from '../../../util/exec/types.ts';
+import { getPkgReleases as _getPkgReleases } from '../../datasource/index.ts';
+import type { UpdateArtifactsConfig } from '../types.ts';
+import { updateArtifacts } from './index.ts';
 
-jest.mock('../../../util/exec/env');
-jest.mock('../../../util/fs');
-jest.mock('../../../util/host-rules', () => mockDeep());
-jest.mock('../../datasource', () => mockDeep());
+vi.mock('../../../util/exec/env.ts');
+vi.mock('../../../util/fs/index.ts');
+vi.mock('../../datasource/index.ts', () => mockDeep());
 
-const getPkgReleases = mockedFunction(_getPkgReleases);
+const getPkgReleases = vi.mocked(_getPkgReleases);
 
-const adminConfig: RepoGlobalConfig = {
+const adminConfig: RepoGlobalConfig & InternalGlobalConfigOptions = {
   // `join` fixes Windows CI
-  localDir: join('/tmp/github/some/repo'),
-  cacheDir: join('/tmp/cache'),
-  containerbaseDir: join('/tmp/cache/containerbase'),
+  localDir: upath.join('/tmp/github/some/repo'),
+  cacheDir: upath.join('/tmp/cache'),
+  containerbaseDir: upath.join('/tmp/cache/containerbase'),
+  binarySource: 'global',
 };
 
 // support install mode
 process.env.CONTAINERBASE = 'true';
 
 const config: UpdateArtifactsConfig = {};
+const constraints: Partial<Record<ConstraintName, string>> = {
+  erlang: '25.0.0.0',
+  elixir: 'v1.13.4',
+};
 
 describe('modules/manager/mix/artifacts', () => {
   beforeEach(() => {
-    hostRules.getAll.mockReturnValue([]);
-
     env.getChildProcessEnv.mockReturnValue(envMock.basic);
     GlobalConfig.set(adminConfig);
   });
@@ -41,62 +47,140 @@ describe('modules/manager/mix/artifacts', () => {
   });
 
   it('returns null if no mix.lock found', async () => {
-    expect(
-      await updateArtifacts({
+    await expect(
+      updateArtifacts({
         packageFileName: 'mix.exs',
         updatedDeps: [{ depName: 'plug' }],
         newPackageFileContent: '',
         config,
       }),
-    ).toBeNull();
+    ).resolves.toBeNull();
   });
 
   it('returns null if no updatedDeps were provided', async () => {
-    expect(
-      await updateArtifacts({
+    await expect(
+      updateArtifacts({
         packageFileName: 'mix.exs',
         updatedDeps: [],
         newPackageFileContent: '',
         config,
       }),
-    ).toBeNull();
+    ).resolves.toBeNull();
   });
 
   it('returns null if updatedDeps is empty', async () => {
-    expect(
-      await updateArtifacts({
+    await expect(
+      updateArtifacts({
         packageFileName: 'mix.exs',
         updatedDeps: [{ depName: 'plug' }],
         newPackageFileContent: '',
         config,
       }),
-    ).toBeNull();
+    ).resolves.toBeNull();
   });
 
   it('returns null if unchanged', async () => {
+    fs.getSiblingFileName.mockReturnValueOnce('mix.lock');
+    fs.readLocalFile.mockResolvedValueOnce('Current mix.lock');
     fs.readLocalFile.mockResolvedValueOnce('Current mix.lock');
     const execSnapshots = mockExecAll();
-    fs.readLocalFile.mockResolvedValueOnce('Current mix.lock');
-    expect(
-      await updateArtifacts({
+    await expect(
+      updateArtifacts({
         packageFileName: 'mix.exs',
         updatedDeps: [{ depName: 'plug' }],
         newPackageFileContent: '',
         config,
       }),
-    ).toBeNull();
-    expect(execSnapshots).toMatchSnapshot();
+    ).resolves.toBeNull();
+    expect(execSnapshots).toMatchObject([
+      {
+        cmd: 'mix deps.update plug',
+        options: { cwd: '/tmp/github/some/repo' },
+      },
+    ]);
+  });
+
+  it('returns null when trying to use lockFileMaintenance with no mix.lock file', async () => {
+    fs.getSiblingFileName.mockReturnValueOnce('mix.lock');
+    fs.readLocalFile.mockResolvedValueOnce(null);
+    fs.localPathExists.mockResolvedValueOnce(false);
+    fs.findLocalSiblingOrParent.mockResolvedValueOnce(null);
+
+    fs.writeLocalFile.mockClear(); // Clear the mock to ensure we can check if it's called
+
+    await expect(
+      updateArtifacts({
+        packageFileName: 'mix.exs',
+        updatedDeps: [],
+        newPackageFileContent: '{}',
+        config: { ...config, isLockFileMaintenance: true },
+      }),
+    ).resolves.toBeNull();
+
+    expect(fs.writeLocalFile).not.toHaveBeenCalled();
+  });
+
+  it('returns null if no updatedDeps and no lockFileMaintenance', async () => {
+    await expect(
+      updateArtifacts({
+        packageFileName: 'mix.exs',
+        updatedDeps: [],
+        newPackageFileContent: '{}',
+        config,
+      }),
+    ).resolves.toBeNull();
+  });
+
+  it('returns null if using lockFileMaintenance in umbrella project', async () => {
+    fs.getSiblingFileName.mockReturnValueOnce('apps/foo/mix.lock');
+    fs.findLocalSiblingOrParent.mockResolvedValueOnce('mix.lock');
+    fs.readLocalFile.mockResolvedValueOnce(null);
+    fs.readLocalFile.mockResolvedValueOnce('Old mix.lock');
+    fs.readLocalFile.mockResolvedValueOnce('New mix.lock');
+    await expect(
+      updateArtifacts({
+        packageFileName: 'apps/foo/mix.exs',
+        updatedDeps: [],
+        newPackageFileContent: '{}',
+        config: { ...config, isLockFileMaintenance: true },
+      }),
+    ).resolves.toBeNull();
+    expect(logger.logger.debug).toHaveBeenCalledWith(
+      'Cannot use lockFileMaintenance in an umbrella project, see https://docs.renovatebot.com/modules/manager/mix/#lockFileMaintenance',
+    );
+  });
+
+  it('uses productLinks.documentation in lockFileMaintenance umbrella log URL', async () => {
+    GlobalConfig.set({
+      ...adminConfig,
+      productLinks: { documentation: 'https://custom.example.com/' },
+    });
+    fs.getSiblingFileName.mockReturnValueOnce('apps/foo/mix.lock');
+    fs.findLocalSiblingOrParent.mockResolvedValueOnce('mix.lock');
+    fs.readLocalFile.mockResolvedValueOnce(null);
+    fs.readLocalFile.mockResolvedValueOnce('Old mix.lock');
+    fs.readLocalFile.mockResolvedValueOnce('New mix.lock');
+    await expect(
+      updateArtifacts({
+        packageFileName: 'apps/foo/mix.exs',
+        updatedDeps: [],
+        newPackageFileContent: '{}',
+        config: { ...config, isLockFileMaintenance: true },
+      }),
+    ).resolves.toBeNull();
+    expect(logger.logger.debug).toHaveBeenCalledWith(
+      'Cannot use lockFileMaintenance in an umbrella project, see https://custom.example.com/modules/manager/mix/#lockFileMaintenance',
+    );
   });
 
   it('returns updated mix.lock', async () => {
-    jest.spyOn(docker, 'removeDanglingContainers').mockResolvedValueOnce();
     GlobalConfig.set({
       ...adminConfig,
       binarySource: 'docker',
-      dockerSidecarImage: 'ghcr.io/containerbase/sidecar',
+      dockerSidecarImage: 'ghcr.io/renovatebot/base-image',
     });
     fs.readLocalFile.mockResolvedValueOnce('Old mix.lock');
-    fs.findLocalSiblingOrParent.mockResolvedValueOnce('mix.lock');
+    fs.getSiblingFileName.mockReturnValueOnce('mix.lock');
     const execSnapshots = mockExecAll();
     fs.readLocalFile.mockResolvedValueOnce('New mix.lock');
 
@@ -113,36 +197,50 @@ describe('modules/manager/mix/artifacts', () => {
     // elixir
     getPkgReleases.mockResolvedValueOnce({
       releases: [
-        { version: '1.8.2' },
-        { version: '1.13.3' },
-        { version: '1.13.4' },
+        { version: 'v1.8.2' },
+        { version: 'v1.13.3' },
+        { version: 'v1.13.4' },
       ],
     });
 
-    expect(
-      await updateArtifacts({
+    await expect(
+      updateArtifacts({
         packageFileName: 'mix.exs',
         updatedDeps: [{ depName: 'plug' }],
         newPackageFileContent: '{}',
         config,
       }),
-    ).toEqual([
+    ).resolves.toEqual([
       {
         file: { type: 'addition', path: 'mix.lock', contents: 'New mix.lock' },
       },
     ]);
-    expect(execSnapshots).toMatchSnapshot();
+    expect(execSnapshots).toMatchObject([
+      { cmd: 'docker pull ghcr.io/renovatebot/base-image' },
+      { cmd: 'docker ps --filter name=renovate_sidecar -aq' },
+      {
+        cmd:
+          'docker run --rm --name=renovate_sidecar --label=renovate_child ' +
+          '-v "/tmp/github/some/repo":"/tmp/github/some/repo" ' +
+          '-v "/tmp/cache":"/tmp/cache" ' +
+          '-e CI -e CONTAINERBASE_CACHE_DIR ' +
+          '-w "/tmp/github/some/repo" ' +
+          'ghcr.io/renovatebot/base-image ' +
+          "bash -l -c 'install-tool erlang 25.0.0.0 && install-tool elixir v1.13.4 && mix deps.update plug'",
+        options: { cwd: '/tmp/github/some/repo' },
+      },
+    ]);
   });
 
   it('uses constraints on install mode', async () => {
     GlobalConfig.set({ ...adminConfig, binarySource: 'install' });
     fs.readLocalFile.mockResolvedValueOnce('Old mix.lock');
-    fs.findLocalSiblingOrParent.mockResolvedValueOnce('mix.lock');
+    fs.getSiblingFileName.mockReturnValueOnce('mix.lock');
     const execSnapshots = mockExecAll();
     fs.readLocalFile.mockResolvedValueOnce('New mix.lock');
 
-    expect(
-      await updateArtifacts({
+    await expect(
+      updateArtifacts({
         packageFileName: 'mix.exs',
         updatedDeps: [{ depName: 'plug' }],
         newPackageFileContent: '{}',
@@ -151,7 +249,7 @@ describe('modules/manager/mix/artifacts', () => {
           constraints: { erlang: '26.0.0', elixir: '1.14.5' },
         },
       }),
-    ).toEqual([
+    ).resolves.toEqual([
       {
         file: { type: 'addition', path: 'mix.lock', contents: 'New mix.lock' },
       },
@@ -163,19 +261,20 @@ describe('modules/manager/mix/artifacts', () => {
     ]);
   });
 
-  it('authenticates to private repositories in updated dependecies', async () => {
-    jest.spyOn(docker, 'removeDanglingContainers').mockResolvedValueOnce();
+  it('authenticates to private repositories in updated dependencies', async () => {
     GlobalConfig.set({
       ...adminConfig,
       binarySource: 'docker',
-      dockerSidecarImage: 'ghcr.io/containerbase/sidecar',
+      dockerSidecarImage: 'ghcr.io/renovatebot/base-image',
     });
     fs.readLocalFile.mockResolvedValueOnce('Old mix.lock');
-    fs.findLocalSiblingOrParent.mockResolvedValueOnce('mix.lock');
+    fs.getSiblingFileName.mockReturnValueOnce('mix.lock');
     const execSnapshots = mockExecAll();
     fs.readLocalFile.mockResolvedValueOnce('New mix.lock');
-    hostRules.find.mockReturnValueOnce({ token: 'valid_test_token' });
-    hostRules.find.mockReturnValueOnce({});
+    hostRules.add({
+      matchHost: 'https://hex.pm/api/repos/renovate_test/',
+      token: 'valid_test_token',
+    });
 
     // erlang
     getPkgReleases.mockResolvedValueOnce({
@@ -212,40 +311,55 @@ describe('modules/manager/mix/artifacts', () => {
       config,
     });
 
-    expect(result).toMatchSnapshot();
-    expect(execSnapshots).toMatchSnapshot();
-
-    // TODO #22198
-    const [updateResult] = result!;
-    expect(updateResult).toEqual({
-      file: { type: 'addition', path: 'mix.lock', contents: 'New mix.lock' },
-    });
-
-    const [, packageUpdateCommand] = execSnapshots;
-    expect(packageUpdateCommand.cmd).toInclude(
-      'mix hex.organization auth renovate_test --key valid_test_token && ' +
-        'mix deps.update private_package other_package',
-    );
+    expect(result).toEqual([
+      {
+        file: { type: 'addition', path: 'mix.lock', contents: 'New mix.lock' },
+      },
+    ]);
+    expect(execSnapshots).toMatchObject([
+      { cmd: 'docker ps --filter name=renovate_sidecar -aq' },
+      {
+        cmd:
+          'docker run --rm --name=renovate_sidecar --label=renovate_child ' +
+          '-v "/tmp/github/some/repo":"/tmp/github/some/repo" ' +
+          '-v "/tmp/cache":"/tmp/cache" ' +
+          '-e CI -e CONTAINERBASE_CACHE_DIR ' +
+          '-w "/tmp/github/some/repo" ' +
+          'ghcr.io/renovatebot/base-image ' +
+          "bash -l -c 'install-tool erlang 25.0.0.0 && install-tool elixir v1.13.4 && " +
+          'mix hex.organization auth renovate_test --key valid_test_token && ' +
+          "mix deps.update private_package other_package'",
+        options: { cwd: '/tmp/github/some/repo' },
+      },
+    ]);
   });
 
   it('authenticates to private repositories configured in hostRules', async () => {
     GlobalConfig.set({ ...adminConfig, binarySource: 'install' });
     fs.readLocalFile.mockResolvedValueOnce('Old mix.lock');
-    fs.findLocalSiblingOrParent.mockResolvedValueOnce('mix.lock');
+    fs.getSiblingFileName.mockReturnValueOnce('mix.lock');
     const execSnapshots = mockExecAll();
     fs.readLocalFile.mockResolvedValueOnce('New mix.lock');
-    hostRules.getAll.mockReturnValueOnce([
-      { matchHost: 'https://hex.pm/api/repos/an_organization/' },
-      { matchHost: 'https://hex.pm/api/repos/unauthorized_organization/' },
-      { matchHost: 'https://hex.pm/api/repos/other_organization/' },
-      { matchHost: 'https://hex.pm/api/repos/does_not_match_org/packages/' },
-      { matchHost: 'https://example.com/api/repos/also_does_not_match_org/' },
-      { matchHost: 'hex.pm' },
-    ]);
-    hostRules.find.mockReturnValueOnce({ token: 'an_organization_token' });
-    hostRules.find.mockReturnValueOnce({}); // unauthorized_organization token missing
-    hostRules.find.mockReturnValueOnce({ token: 'other_org_token' });
-    hostRules.find.mockReturnValueOnce({ token: 'does_not_match_org_token' });
+    hostRules.add({
+      matchHost: 'https://hex.pm/api/repos/an_organization/',
+      token: 'an_organization_token',
+    });
+    // unauthorized_organization token missing
+    hostRules.add({
+      matchHost: 'https://hex.pm/api/repos/unauthorized_organization/',
+    });
+    hostRules.add({
+      matchHost: 'https://hex.pm/api/repos/other_organization/',
+      token: 'other_org_token',
+    });
+    hostRules.add({
+      matchHost: 'https://hex.pm/api/repos/does_not_match_org/packages/',
+      token: 'does_not_match_org_token',
+    });
+    hostRules.add({
+      matchHost: 'https://example.com/api/repos/also_does_not_match_org/',
+    });
+    hostRules.add({ matchHost: 'hex.pm' });
 
     // erlang
     getPkgReleases.mockResolvedValueOnce({
@@ -291,56 +405,273 @@ describe('modules/manager/mix/artifacts', () => {
     ]);
   });
 
-  it('returns updated mix.lock in subdir', async () => {
-    GlobalConfig.set({
-      ...adminConfig,
-      binarySource: 'docker',
-      dockerSidecarImage: 'ghcr.io/containerbase/sidecar',
+  it('quotes an organization value containing shell metacharacters', async () => {
+    GlobalConfig.set({ ...adminConfig, binarySource: 'install' });
+    fs.readLocalFile.mockResolvedValueOnce('Old mix.lock');
+    fs.getSiblingFileName.mockReturnValueOnce('mix.lock');
+    const execSnapshots = mockExecAll();
+    fs.readLocalFile.mockResolvedValueOnce('New mix.lock');
+    // a broad host rule matching all of hex.pm, as opposed to one scoped to
+    // a specific organization's repo URL
+    hostRules.add({ matchHost: 'hex.pm', token: 'secret_token' });
+
+    // erlang
+    getPkgReleases.mockResolvedValueOnce({
+      releases: [{ version: '25.0.0.0' }],
     });
-    fs.findLocalSiblingOrParent.mockResolvedValueOnce('subdir/mix.lock');
-    mockExecAll();
-    expect(
-      await updateArtifacts({
+    // elixir
+    getPkgReleases.mockResolvedValueOnce({
+      releases: [{ version: 'v1.13.4' }],
+    });
+
+    await updateArtifacts({
+      packageFileName: 'mix.exs',
+      updatedDeps: [
+        {
+          depName: 'private_package',
+          // organization value as it would be parsed from an attacker-controlled
+          // `organization: "..."` field in mix.exs
+          packageName: 'private_package:evil --key leaked_or_arbitrary',
+        },
+      ],
+      newPackageFileContent: '{}',
+      config,
+    });
+
+    expect(execSnapshots).toMatchObject([
+      { cmd: 'install-tool erlang 25.0.0.0' },
+      { cmd: 'install-tool elixir v1.13.4' },
+      {
+        cmd: "mix hex.organization auth 'evil --key leaked_or_arbitrary' --key secret_token",
+      },
+      { cmd: 'mix deps.update private_package' },
+    ]);
+  });
+
+  it('returns updated mix.lock in subdir', async () => {
+    GlobalConfig.set({ ...adminConfig, binarySource: 'install' });
+    fs.getSiblingFileName.mockReturnValueOnce('subdir/mix.lock');
+    fs.readLocalFile.mockResolvedValueOnce('Old mix.lock');
+    fs.readLocalFile.mockResolvedValueOnce('New mix.lock');
+
+    const execSnapshots = mockExecAll();
+    await expect(
+      updateArtifacts({
         packageFileName: 'subdir/mix.exs',
         updatedDeps: [{ depName: 'plug' }],
         newPackageFileContent: '{}',
-        config,
+        config: { ...config, constraints },
       }),
-    ).toBeNull();
-    expect(fs.readLocalFile).toHaveBeenCalledWith('subdir/mix.lock', 'utf8');
+    ).resolves.toEqual([
+      {
+        file: {
+          path: 'subdir/mix.lock',
+          type: 'addition',
+          contents: 'New mix.lock',
+        },
+      },
+    ]);
+
+    expect(execSnapshots).toMatchObject([
+      { cmd: 'install-tool erlang 25.0.0.0' },
+      { cmd: 'install-tool elixir v1.13.4' },
+      {
+        cmd: 'mix deps.update plug',
+        options: { cwd: '/tmp/github/some/repo/subdir' },
+      },
+    ]);
+  });
+
+  it('returns updated mix.lock in umbrella project', async () => {
+    GlobalConfig.set({ ...adminConfig, binarySource: 'install' });
+    fs.getSiblingFileName.mockReturnValueOnce('apps/foo/mix.lock');
+    fs.findLocalSiblingOrParent.mockResolvedValueOnce('mix.lock');
+    fs.readLocalFile.mockResolvedValueOnce(null);
+    fs.readLocalFile.mockResolvedValueOnce('Old mix.lock');
+    fs.readLocalFile.mockResolvedValueOnce('New mix.lock');
+
+    const execSnapshots = mockExecAll();
+    await expect(
+      updateArtifacts({
+        packageFileName: 'apps/foo/mix.exs',
+        updatedDeps: [{ depName: 'plug' }],
+        newPackageFileContent: '{}',
+        config: { ...config, constraints },
+      }),
+    ).resolves.toEqual([
+      {
+        file: {
+          path: 'mix.lock',
+          type: 'addition',
+          contents: 'New mix.lock',
+        },
+      },
+    ]);
+
+    expect(execSnapshots).toMatchObject([
+      { cmd: 'install-tool erlang 25.0.0.0' },
+      { cmd: 'install-tool elixir v1.13.4' },
+      {
+        cmd: 'mix deps.update plug',
+        options: { cwd: '/tmp/github/some/repo' },
+      },
+    ]);
+  });
+
+  it('supports lockFileMaintenance', async () => {
+    GlobalConfig.set({ ...adminConfig, binarySource: 'install' });
+    fs.getSiblingFileName.mockReturnValueOnce('mix.lock');
+    fs.readLocalFile.mockResolvedValueOnce('Old mix.lock');
+    fs.readLocalFile.mockResolvedValueOnce('New mix.lock');
+
+    const execSnapshots = mockExecAll();
+    await expect(
+      updateArtifacts({
+        packageFileName: 'mix.exs',
+        updatedDeps: [],
+        newPackageFileContent: '{}',
+        config: {
+          ...config,
+          constraints,
+          isLockFileMaintenance: true,
+        },
+      }),
+    ).resolves.toEqual([
+      {
+        file: {
+          path: 'mix.lock',
+          type: 'addition',
+          contents: 'New mix.lock',
+        },
+      },
+    ]);
+
+    expect(execSnapshots).toMatchObject([
+      { cmd: 'install-tool erlang 25.0.0.0' },
+      { cmd: 'install-tool elixir v1.13.4' },
+      {
+        cmd: 'mix deps.get',
+        options: { cwd: '/tmp/github/some/repo' },
+      },
+    ]);
+  });
+
+  it('lockFileMaintenance returns null if unchanged', async () => {
+    fs.getSiblingFileName.mockReturnValueOnce('mix.lock');
+    fs.readLocalFile.mockResolvedValueOnce('Old mix.lock');
+    fs.readLocalFile.mockResolvedValueOnce('Old mix.lock');
+
+    mockExecAll();
+    await expect(
+      updateArtifacts({
+        packageFileName: 'mix.exs',
+        updatedDeps: [],
+        newPackageFileContent: '{}',
+        config: { ...config, isLockFileMaintenance: true },
+      }),
+    ).resolves.toBeNull();
   });
 
   it('catches write errors', async () => {
     fs.readLocalFile.mockResolvedValueOnce('Current mix.lock');
-    fs.findLocalSiblingOrParent.mockResolvedValueOnce('mix.lock');
+    fs.getSiblingFileName.mockReturnValueOnce('mix.lock');
     fs.writeLocalFile.mockImplementationOnce(() => {
       throw new Error('not found');
     });
-    expect(
-      await updateArtifacts({
+    await expect(
+      updateArtifacts({
         packageFileName: 'mix.exs',
         updatedDeps: [{ depName: 'plug' }],
         newPackageFileContent: '{}',
         config,
       }),
-    ).toEqual([
-      { artifactError: { lockFile: 'mix.lock', stderr: 'not found' } },
+    ).resolves.toEqual([
+      { artifactError: { fileName: 'mix.lock', stderr: 'not found' } },
     ]);
   });
 
   it('catches exec errors', async () => {
     fs.readLocalFile.mockResolvedValueOnce('Current mix.lock');
-    fs.findLocalSiblingOrParent.mockResolvedValueOnce('mix.lock');
+    fs.getSiblingFileName.mockReturnValueOnce('mix.lock');
     mockExecAll(new Error('exec-error'));
-    expect(
-      await updateArtifacts({
+    await expect(
+      updateArtifacts({
         packageFileName: 'mix.exs',
         updatedDeps: [{ depName: 'plug' }],
         newPackageFileContent: '{}',
         config,
       }),
-    ).toEqual([
-      { artifactError: { lockFile: 'mix.lock', stderr: 'exec-error' } },
+    ).resolves.toEqual([
+      { artifactError: { fileName: 'mix.lock', stderr: 'exec-error' } },
     ]);
+  });
+
+  it('detects read errors', async () => {
+    fs.getSiblingFileName.mockReturnValueOnce('mix.lock');
+    fs.readLocalFile.mockResolvedValueOnce(null);
+    fs.localPathExists.mockResolvedValueOnce(true);
+    await expect(
+      updateArtifacts({
+        packageFileName: 'mix.exs',
+        updatedDeps: [{ depName: 'plug' }],
+        newPackageFileContent: '{}',
+        config,
+      }),
+    ).resolves.toEqual([
+      {
+        artifactError: {
+          fileName: 'mix.lock',
+          stderr: 'Error reading mix.lock',
+        },
+      },
+    ]);
+  });
+
+  it('detects read errors (umbrella)', async () => {
+    fs.getSiblingFileName.mockReturnValueOnce('apps/foo/mix.lock');
+    fs.readLocalFile.mockResolvedValueOnce(null);
+    fs.localPathExists.mockResolvedValueOnce(false);
+    fs.findLocalSiblingOrParent.mockResolvedValueOnce('mix.lock');
+    fs.readLocalFile.mockResolvedValueOnce(null);
+    fs.localPathExists.mockResolvedValueOnce(true);
+    await expect(
+      updateArtifacts({
+        packageFileName: 'apps/foo/mix.exs',
+        updatedDeps: [{ depName: 'plug' }],
+        newPackageFileContent: '{}',
+        config,
+      }),
+    ).resolves.toEqual([
+      {
+        artifactError: {
+          fileName: 'mix.lock',
+          stderr: 'Error reading mix.lock',
+        },
+      },
+    ]);
+  });
+
+  it("handles updates and doesn't try to create mix.lock file if it doesn't exist", async () => {
+    fs.getSiblingFileName.mockReturnValueOnce('mix.lock');
+    fs.readLocalFile.mockResolvedValueOnce(null);
+    fs.localPathExists.mockResolvedValueOnce(false);
+    fs.findLocalSiblingOrParent.mockResolvedValueOnce(null);
+
+    const execSnapshots = mockExecAll();
+
+    await expect(
+      updateArtifacts({
+        packageFileName: 'mix.exs',
+        updatedDeps: [{ depName: 'plug' }],
+        newPackageFileContent: 'New mix.exs',
+        config,
+      }),
+    ).resolves.toBeNull();
+
+    expect(execSnapshots).toHaveLength(0);
+    expect(fs.writeLocalFile).toHaveBeenCalledExactlyOnceWith(
+      'mix.exs',
+      'New mix.exs',
+    );
   });
 });

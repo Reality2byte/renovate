@@ -1,15 +1,16 @@
 // TODO #22198
-import { Fixtures } from '../../../../test/fixtures';
-import { fs } from '../../../../test/util';
-import type { PackageDependency, PackageFileContent } from '../types';
+
+import { Fixtures } from '~test/fixtures.ts';
+import { fs } from '~test/util.ts';
+import type { PackageDependency, PackageFileContent } from '../types.ts';
 import {
   extractAllPackageFiles,
   extractPackage,
   resolveParents,
-} from './extract';
-import { updateDependency } from './update';
+} from './extract.ts';
+import { updateDependency } from './update.ts';
 
-jest.mock('../../../util/fs');
+vi.mock('../../../util/fs/index.ts');
 
 const simpleContent = Fixtures.get('simple.pom.xml');
 const parentPomContent = Fixtures.get('parent.pom.xml');
@@ -25,15 +26,16 @@ describe('modules/manager/maven/index', () => {
     it('should update an existing dependency', () => {
       const newValue = '9.9.9.9-final';
 
-      const { deps } = extractPackage(simpleContent, 'some-file')!;
+      const { deps } = extractPackage(simpleContent, 'some-file', {})!;
       const dep = selectDep(deps);
       const updatedContent = updateDependency({
         fileContent: simpleContent,
+        packageFile: 'pom.xml',
         upgrade: { ...dep, newValue },
       })!;
 
       const updatedDep = selectDep(
-        extractPackage(updatedContent, 'some-file')!.deps,
+        extractPackage(updatedContent, 'some-file', {})!.deps,
       );
       expect(updatedDep?.currentValue).toEqual(newValue);
     });
@@ -42,19 +44,20 @@ describe('modules/manager/maven/index', () => {
       const newValue = '9.9.9.9-final';
 
       const packages = resolveParents([
-        extractPackage(parentPomContent, 'parent.pom.xml')!,
-        extractPackage(childPomContent, 'child.pom.xml')!,
+        extractPackage(parentPomContent, 'parent.pom.xml', {})!,
+        extractPackage(childPomContent, 'child.pom.xml', {})!,
       ]);
       const [{ deps }] = packages;
       const dep = selectDep(deps, 'org.example:quux');
       const updatedContent = updateDependency({
         fileContent: parentPomContent,
+        packageFile: 'pom.xml',
         upgrade: { ...dep, newValue },
       })!;
 
       const [updatedPkg] = resolveParents([
-        extractPackage(updatedContent, 'parent.pom.xml')!,
-        extractPackage(childPomContent, 'child.pom.xml')!,
+        extractPackage(updatedContent, 'parent.pom.xml', {})!,
+        extractPackage(childPomContent, 'child.pom.xml', {})!,
       ]);
       const updatedDep = selectDep(updatedPkg.deps, 'org.example:quux');
       expect(updatedDep?.registryUrls).toContain('http://example.com/');
@@ -62,10 +65,11 @@ describe('modules/manager/maven/index', () => {
     });
 
     it('should not touch content if new and old versions are equal', () => {
-      const { deps } = extractPackage(simpleContent, 'some-file')!;
+      const { deps } = extractPackage(simpleContent, 'some-file', {})!;
       const dep = selectDep(deps);
       const updatedContent = updateDependency({
         fileContent: simpleContent,
+        packageFile: 'pom.xml',
         upgrade: { ...dep, newValue: '1.2.3' },
       });
 
@@ -83,35 +87,48 @@ describe('modules/manager/maven/index', () => {
       const updatedOutside = groupingContent.replace('1.0.0', '1.0.1');
 
       expect(
-        updateDependency({ fileContent: groupingContent, upgrade: upgrade1 }),
+        updateDependency({
+          fileContent: groupingContent,
+          packageFile: 'pom.xml',
+          upgrade: upgrade1,
+        }),
       ).toEqual(groupingContent.replace('1.0.0', '1.0.2'));
       expect(
         updateDependency({
           fileContent: updatedOutside,
+          packageFile: 'pom.xml',
+
           upgrade: upgrade1,
         }),
       ).toEqual(groupingContent.replace('1.0.0', '1.0.2'));
 
       const updatedByPrevious = updateDependency({
         fileContent: groupingContent,
+        packageFile: 'pom.xml',
         upgrade: upgrade1,
       })!;
 
       expect(
         updateDependency({
           fileContent: updatedByPrevious,
+          packageFile: 'pom.xml',
           upgrade: upgrade2,
         }),
       ).toEqual(groupingContent.replace('1.0.0', '1.0.3'));
       expect(
         updateDependency({
           fileContent: updatedOutside,
+          packageFile: 'pom.xml',
           upgrade: upgrade2,
         }),
       ).toEqual(groupingContent.replace('1.0.0', '1.0.3'));
 
       expect(
-        updateDependency({ fileContent: groupingContent, upgrade: upgrade2 }),
+        updateDependency({
+          fileContent: groupingContent,
+          packageFile: 'pom.xml',
+          upgrade: upgrade2,
+        }),
       ).toEqual(groupingContent.replace('1.0.0', '1.0.3'));
     });
 
@@ -124,17 +141,19 @@ describe('modules/manager/maven/index', () => {
 
       const updatedContent = updateDependency({
         fileContent: updatedOutside,
+        packageFile: 'pom.xml',
         upgrade: { ...dep, newValue: '2.0.2' },
       });
       expect(updatedContent).toBeNull();
     });
 
     it('should return null if current versions in content and upgrade are not same', () => {
-      const { deps } = extractPackage(simpleContent, 'some-file')!;
+      const { deps } = extractPackage(simpleContent, 'some-file', {})!;
       const dep = selectDep(deps);
 
       const updatedContent = updateDependency({
         fileContent: simpleContent,
+        packageFile: 'pom.xml',
         upgrade: { ...dep, currentValue: '1.2.2', newValue: '1.2.4' },
       });
       expect(updatedContent).toBeNull();
@@ -142,32 +161,42 @@ describe('modules/manager/maven/index', () => {
 
     it('should update ranges', () => {
       const newValue = '[1.2.3]';
-      const select = (depSet: PackageFileContent) =>
-        selectDep(depSet.deps, 'org.example:hard-range');
-      const oldContent = extractPackage(simpleContent, 'some-file');
+      function select(depSet: PackageFileContent) {
+        return selectDep(depSet.deps, 'org.example:hard-range');
+      }
+      const oldContent = extractPackage(simpleContent, 'some-file', {});
       const dep = select(oldContent!);
       const newContent = extractPackage(
         updateDependency({
           fileContent: simpleContent,
+          packageFile: 'pom.xml',
           upgrade: { ...dep, newValue },
         })!,
         'some-file',
+        {},
       );
       const newDep = select(newContent!);
       expect(newDep?.currentValue).toEqual(newValue);
     });
 
     it('should preserve ranges', () => {
-      const select = (depSet: PackageFileContent) =>
-        depSet?.deps ? selectDep(depSet.deps, 'org.example:hard-range') : null;
-      const oldContent = extractPackage(simpleContent, 'some-file');
+      function select(depSet: PackageFileContent) {
+        return depSet?.deps
+          ? selectDep(depSet.deps, 'org.example:hard-range')
+          : null;
+      }
+      const oldContent = extractPackage(simpleContent, 'some-file', {});
       const dep = select(oldContent!);
       expect(dep).not.toBeNull();
 
       const upgrade = { ...dep, newValue: '[1.0.0]' };
-      expect(updateDependency({ fileContent: simpleContent, upgrade })).toEqual(
-        simpleContent,
-      );
+      expect(
+        updateDependency({
+          fileContent: simpleContent,
+          packageFile: 'pom.xml',
+          upgrade,
+        }),
+      ).toEqual(simpleContent);
     });
   });
 });

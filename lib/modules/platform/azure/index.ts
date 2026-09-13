@@ -1,6 +1,7 @@
-import { setTimeout } from 'timers/promises';
-import is from '@sindresorhus/is';
+import { setTimeout } from 'node:timers/promises';
+import { isString } from '@sindresorhus/is';
 import type {
+  GitItem,
   GitPullRequest,
   GitPullRequestCommentThread,
   GitStatus,
@@ -9,27 +10,33 @@ import type {
 import {
   GitPullRequestMergeStrategy,
   GitStatusState,
+  GitVersionType,
   PullRequestStatus,
 } from 'azure-devops-node-api/interfaces/GitInterfaces.js';
+import type { PolicyEvaluationRecord } from 'azure-devops-node-api/interfaces/PolicyInterfaces.js';
+import { PolicyEvaluationStatus } from 'azure-devops-node-api/interfaces/PolicyInterfaces.js';
+import { getConfig } from '../../../config/defaults.ts';
+import { GlobalConfig } from '../../../config/global.ts';
 import {
   REPOSITORY_ARCHIVED,
   REPOSITORY_EMPTY,
   REPOSITORY_NOT_FOUND,
-} from '../../../constants/error-messages';
-import { logger } from '../../../logger';
-import type { BranchStatus } from '../../../types';
-import { ExternalHostError } from '../../../types/errors/external-host-error';
-import { parseJson } from '../../../util/common';
-import * as git from '../../../util/git';
-import * as hostRules from '../../../util/host-rules';
-import { regEx } from '../../../util/regex';
-import { sanitize } from '../../../util/sanitize';
-import { ensureTrailingSlash } from '../../../util/url';
+} from '../../../constants/error-messages.ts';
+import { logger } from '../../../logger/index.ts';
+import { ExternalHostError } from '../../../types/errors/external-host-error.ts';
+import type { BranchStatus } from '../../../types/index.ts';
+import { parseJson } from '../../../util/common.ts';
+import * as git from '../../../util/git/index.ts';
+import * as hostRules from '../../../util/host-rules.ts';
+import { regEx } from '../../../util/regex.ts';
+import { sanitize } from '../../../util/sanitize.ts';
+import { ensureTrailingSlash } from '../../../util/url.ts';
 import type {
   BranchStatusConfig,
   CreatePRConfig,
   EnsureCommentConfig,
   EnsureCommentRemovalConfig,
+  EnsureIssueConfig,
   EnsureIssueResult,
   FindPRConfig,
   Issue,
@@ -40,13 +47,15 @@ import type {
   RepoParams,
   RepoResult,
   UpdatePrConfig,
-} from '../types';
-import { getNewBranchName, repoFingerprint } from '../util';
-import { smartTruncate } from '../utils/pr-body';
-import * as azureApi from './azure-got-wrapper';
-import * as azureHelper from './azure-helper';
-import type { AzurePr } from './types';
-import { AzurePrVote } from './types';
+} from '../types.ts';
+import { getNewBranchName, repoFingerprint } from '../util.ts';
+import { smartTruncate } from '../utils/pr-body.ts';
+import { readOnlyIssueBody } from '../utils/read-only-issue-body.ts';
+import * as azureApi from './azure-got-wrapper.ts';
+import * as azureHelper from './azure-helper.ts';
+import { IssueService } from './issue.ts';
+import type { AzurePr, Config } from './types.ts';
+import { AzurePrVote } from './types.ts';
 import {
   getBranchNameWithoutRefsheadsPrefix,
   getGitStatusContextCombinedName,
@@ -56,19 +65,7 @@ import {
   getStorageExtraCloneOpts,
   mapMergeStrategy,
   max4000Chars,
-} from './util';
-
-interface Config {
-  repoForceRebase: boolean;
-  mergeMethods: Record<string, GitPullRequestMergeStrategy>;
-  owner: string;
-  repoId: string;
-  project: string;
-  prList: AzurePr[];
-  fileList: null;
-  repository: string;
-  defaultBranch: string;
-}
+} from './util.ts';
 
 interface User {
   id: string;
@@ -77,6 +74,8 @@ interface User {
 }
 
 let config: Config = {} as any;
+let issueService: IssueService;
+let renovateUserId: string | undefined;
 
 const defaults: {
   endpoint?: string;
@@ -107,10 +106,13 @@ export function initPlatform({
   };
   defaults.endpoint = res.endpoint;
   azureApi.setEndpoint(res.endpoint);
-  const platformConfig: PlatformResult = {
-    endpoint: defaults.endpoint,
-  };
-  return Promise.resolve(platformConfig);
+  const credentials = token
+    ? { token }
+    : { username: username!, password: password! };
+  return azureApi.getAuthenticatedUserId(credentials).then((userId) => {
+    renovateUserId = userId;
+    return res;
+  });
 }
 
 export async function getRepos(): Promise<string[]> {
@@ -144,25 +146,36 @@ export async function getRawFile(
       return null;
     }
 
+    let item: GitItem | undefined;
     const versionDescriptor: GitVersionDescriptor = {
       version: branchOrTag,
     } satisfies GitVersionDescriptor;
+    // Try to get file from repo with tag first, if not found, then try with branch #36835
+    for (const versionType of [GitVersionType.Tag, GitVersionType.Branch]) {
+      versionDescriptor.versionType = versionType;
 
-    const item = await azureApiGit.getItem(
-      repoId, // repositoryId
-      fileName, // path
-      undefined, // project
-      undefined, // scopePath
-      undefined, // recursionLevel
-      undefined, // includeContentMetadata
-      undefined, // latestProcessedChange
-      undefined, // download
-      branchOrTag ? versionDescriptor : undefined, // versionDescriptor
-      true, // includeContent
-    );
-
+      item = await azureApiGit.getItem(
+        repoId, // repositoryId
+        fileName, // path
+        undefined, // project
+        undefined, // scopePath
+        undefined, // recursionLevel
+        undefined, // includeContentMetadata
+        undefined, // latestProcessedChange
+        undefined, // download
+        branchOrTag ? versionDescriptor : undefined, // versionDescriptor
+        true, // includeContent
+      );
+      if (item) {
+        break; // exit loop if item is found
+      } else {
+        logger.debug(
+          `File: ${fileName} not found in ${repoName} with ${versionType}: ${branchOrTag}`,
+        );
+      }
+    }
     return item?.content ?? null;
-  } catch (err) /* istanbul ignore next */ {
+  } catch (err) /* v8 ignore next -- Azure API failure modes (service unavailable, malformed items) are not mocked in specs */ {
     if (
       err.message?.includes('<title>Azure DevOps Services Unavailable</title>')
     ) {
@@ -193,9 +206,14 @@ export async function getJsonFile(
 export async function initRepo({
   repository,
   cloneSubmodules,
+  cloneSubmodulesFilter,
+  azureWorkItemType,
 }: RepoParams): Promise<RepoResult> {
   logger.debug(`initRepo("${repository}")`);
-  config = { repository } as Config;
+  config = {
+    ignorePrAuthor: GlobalConfig.get('ignorePrAuthor'),
+    repository,
+  } as Config;
   const azureApiGit = await azureApi.gitApi();
   const repos = await azureApiGit.getRepositories();
   const repo = getRepoByName(repository, repos);
@@ -208,7 +226,7 @@ export async function initRepo({
     logger.debug('Repository is disabled- throwing error to abort renovation');
     throw new Error(REPOSITORY_ARCHIVED);
   }
-  // istanbul ignore if
+  /* v8 ignore next -- defensive: Azure omits defaultBranch only for empty repos, which abort earlier in specs */
   if (!repo.defaultBranch) {
     logger.debug('Repo is empty');
     throw new Error(REPOSITORY_EMPTY);
@@ -217,6 +235,9 @@ export async function initRepo({
   config.repoId = repo.id!;
 
   config.project = repo.project!.name!;
+  config.projectId = repo.project!.id!;
+  config.workItemType = azureWorkItemType ?? getConfig().azureWorkItemType!;
+  issueService = new IssueService(config);
   config.owner = '?owner?';
   logger.debug(`${repository} owner = ${config.owner}`);
   const defaultBranch = repo.defaultBranch.replace('refs/heads/', '');
@@ -240,6 +261,7 @@ export async function initRepo({
     url,
     extraCloneOpts: getStorageExtraCloneOpts(opts),
     cloneSubmodules,
+    cloneSubmodulesFilter,
   });
   const repoConfig: RepoResult = {
     defaultBranch,
@@ -253,13 +275,20 @@ export async function getPrList(): Promise<AzurePr[]> {
   logger.debug('getPrList()');
   if (!config.prList) {
     const azureApiGit = await azureApi.gitApi();
+
     let prs: GitPullRequest[] = [];
     let fetchedPrs: GitPullRequest[];
     let skip = 0;
     do {
       fetchedPrs = await azureApiGit.getPullRequests(
         config.repoId,
-        { status: 4 },
+        {
+          status: PullRequestStatus.All,
+          // fetch only prs directly created on the repo and not by forks
+          sourceRepositoryId: config.repoId,
+          ...(!config.ignorePrAuthor &&
+            renovateUserId && { creatorId: renovateUserId }),
+        },
         config.project,
         0,
         skip,
@@ -297,7 +326,7 @@ export async function getPr(pullRequestId: number): Promise<Pr | null> {
   azurePr.labels = labels
     .filter((label) => label.active)
     .map((label) => label.name)
-    .filter(is.string);
+    .filter(isString);
   return azurePr;
 }
 
@@ -306,9 +335,30 @@ export async function findPr({
   prTitle,
   state = 'all',
   targetBranch,
+  includeOtherAuthors,
 }: FindPRConfig): Promise<Pr | null> {
   let prsFiltered: Pr[] = [];
   try {
+    if (includeOtherAuthors) {
+      const azureApiGit = await azureApi.gitApi();
+      const [pr] = await azureApiGit.getPullRequests(
+        config.repoId,
+        {
+          sourceRefName: getNewBranchName(branchName),
+          sourceRepositoryId: config.repoId,
+          status: PullRequestStatus.Active,
+          ...(targetBranch && {
+            targetRefName: getNewBranchName(targetBranch),
+          }),
+        },
+        config.project,
+        0,
+        0,
+        1,
+      );
+      return pr ? getRenovatePRFormat(pr) : null;
+    }
+
     const prs = await getPrList();
 
     prsFiltered = prs.filter(
@@ -461,6 +511,26 @@ async function getMergeStrategy(
   );
 }
 
+async function getPendingBlockingPolicyEvaluations(
+  pullRequestId: number,
+): Promise<PolicyEvaluationRecord[]> {
+  const artifactId = `vstfs:///CodeReview/CodeReviewId/${config.projectId}/${pullRequestId}`;
+  const policyEvaluations = await azureHelper.getPolicyEvaluations(
+    config.project,
+    artifactId,
+  );
+  logger.debug(
+    { pullRequestId, artifactId, policyEvaluations },
+    'Retrieved policy evaluations for PR',
+  );
+  return policyEvaluations.filter(
+    (evaluation) =>
+      evaluation.configuration?.isBlocking &&
+      evaluation.status !== PolicyEvaluationStatus.Approved &&
+      evaluation.status !== PolicyEvaluationStatus.NotApplicable,
+  );
+}
+
 export async function createPr({
   sourceBranch,
   targetBranch,
@@ -495,31 +565,60 @@ export async function createPr({
       platformPrOptions.automergeStrategy === 'auto'
         ? await getMergeStrategy(pr.targetRefName!)
         : mapMergeStrategy(platformPrOptions.automergeStrategy);
-    pr = await azureApiGit.updatePullRequest(
-      {
-        autoCompleteSetBy: {
-          // TODO #22198
-          id: pr.createdBy!.id,
-        },
-        completionOptions: {
-          mergeStrategy,
-          deleteSourceBranch: true,
-          mergeCommitMessage: title,
-        },
+    const prOptions: GitPullRequest = {
+      autoCompleteSetBy: {
+        // TODO #22198
+        id: pr.createdBy!.id,
       },
+      completionOptions: {
+        mergeStrategy,
+        deleteSourceBranch: true,
+        mergeCommitMessage: title,
+      },
+    };
+
+    logger.debug(
+      {
+        prOptions,
+        repoId: config.repoId,
+        pullRequestId: pr.pullRequestId!,
+      },
+      // TODO #22198
+      `Updating PR ${pr.pullRequestId!} to specify platformAutomerge settings`,
+    );
+
+    pr = await azureApiGit.updatePullRequest(
+      prOptions,
       config.repoId,
       // TODO #22198
       pr.pullRequestId!,
     );
   }
   if (platformPrOptions?.autoApprove) {
-    await azureApiGit.createPullRequestReviewer(
+    const approver = {
+      reviewerUrl: pr.createdBy!.url,
+      vote: AzurePrVote.Approved,
+      isFlagged: false,
+      isRequired: false,
+    };
+
+    logger.debug(
       {
-        reviewerUrl: pr.createdBy!.url,
-        vote: AzurePrVote.Approved,
-        isFlagged: false,
-        isRequired: false,
+        approver,
+
+        repoId: config.repoId,
+        // TODO #22198
+        pullRequestId: pr.pullRequestId!,
+        prCreatedBy: {
+          id: pr.createdBy!.id!,
+        },
       },
+      // TODO #22198
+      `Auto-approving PR ${pr.pullRequestId!}`,
+    );
+
+    await azureApiGit.createPullRequestReviewer(
+      approver,
       config.repoId,
       // TODO #22198
       pr.pullRequestId!,
@@ -607,7 +706,7 @@ export async function updatePr({
     const existingIndex = config.prList.findIndex(
       (item) => item.number === prNo,
     );
-    // istanbul ignore if: should not happen
+    /* v8 ignore next: should not happen */
     if (existingIndex === -1) {
       logger.warn({ prNo }, 'PR not found in cache');
       // Add to cache
@@ -676,7 +775,7 @@ export async function ensureComment({
   } else {
     logger.debug(
       { repository: config.repository, issueNo: number, topic },
-      'Comment is already update-to-date',
+      'Comment is already up-to-date',
     );
   }
 
@@ -767,6 +866,23 @@ export async function mergePr({
   strategy,
 }: MergePRConfig): Promise<boolean> {
   logger.debug(`mergePr(${pullRequestId}, ${branchName!})`);
+
+  const pendingPolicyEvaluations =
+    await getPendingBlockingPolicyEvaluations(pullRequestId);
+  if (pendingPolicyEvaluations.length) {
+    logger.debug(
+      {
+        pullRequestId,
+        pendingPolicies: pendingPolicyEvaluations.map((evaluation) => ({
+          name: evaluation.configuration?.type?.displayName,
+          status: PolicyEvaluationStatus[evaluation.status!],
+        })),
+      },
+      'Not completing PR because branch policies have not been satisfied yet',
+    );
+    return false;
+  }
+
   const azureApiGit = await azureApi.gitApi();
 
   let pr = await azureApiGit.getPullRequestById(pullRequestId, config.project);
@@ -820,11 +936,13 @@ export async function mergePr({
 
     if (!isClosed) {
       logger.warn(
-        { pullRequestId, status: pr.status },
-        `Expected PR to have status ${
-          PullRequestStatus[PullRequestStatus.Completed]
-          // TODO #22198
-        }. However, it is ${PullRequestStatus[pr.status!]}.`,
+        {
+          pullRequestId,
+          status: pr.status,
+          expectedPRStatus: PullRequestStatus[PullRequestStatus.Completed],
+          actualPRStatus: PullRequestStatus[pr.status!],
+        },
+        'Expected PR to have completed status. However, the PR has a different status',
       );
     }
     return true;
@@ -836,54 +954,54 @@ export async function mergePr({
 
 export function massageMarkdown(input: string): string {
   // Remove any HTML we use
-  return smartTruncate(input, maxBodyLength())
-    .replace(
-      'you tick the rebase/retry checkbox',
-      'PR is renamed to start with "rebase!"',
-    )
-    .replace(
-      'checking the rebase/retry box above',
-      'renaming the PR to start with "rebase!"',
-    )
-    .replace(regEx(`\n---\n\n.*?<!-- rebase-check -->.*?\n`), '')
-    .replace(regEx(/<!--renovate-(?:debug|config-hash):.*?-->/g), '');
+  return (
+    smartTruncate(readOnlyIssueBody(input), maxBodyLength())
+      .replace(
+        'you tick the rebase/retry checkbox',
+        'PR is renamed to start with "rebase!"',
+      )
+      .replace(
+        'checking the rebase/retry box above',
+        'renaming the PR to start with "rebase!"',
+      )
+      .replace(regEx(`\n---\n\n.*?<!-- rebase-check -->.*?\n`), '')
+      .replace(regEx(/<!--renovate-(?:debug|config-hash):.*?-->/g), '')
+      // Replace GitHub-style PR links with Azure DevOps format
+      .replace(regEx(/\]\(\.\.\/pull\//g), '](!')
+      // Replace GitHub-style PR references (#123) with Azure DevOps format, needed for text linking config migration PR.
+      // Only match a standalone reference (preceded by start, whitespace or `(`) so we don't corrupt
+      // HTML entities like `&#8203;` or URL anchors like `CHANGELOG.md#4780`.
+      .replace(regEx(/(?<lead>^|[\s(])#(?<num>\d+)/g), '$<lead>!$<num>')
+  );
 }
 
 export function maxBodyLength(): number {
   return 4000;
 }
 
-/* istanbul ignore next */
-export function findIssue(): Promise<Issue | null> {
-  // TODO: Needs implementation (#9592)
-  logger.debug(`findIssue() is not implemented`);
-  return Promise.resolve(null);
+export async function findIssue(title: string): Promise<Issue | null> {
+  return await issueService.findIssue(title);
 }
 
-/* istanbul ignore next */
-export function ensureIssue(): Promise<EnsureIssueResult | null> {
-  // TODO: Needs implementation (#9592)
-  logger.debug(`ensureIssue() is not implemented`);
-  return Promise.resolve(null);
+export async function ensureIssue(
+  issueConfig: EnsureIssueConfig,
+): Promise<EnsureIssueResult | null> {
+  return await issueService.ensureIssue(issueConfig);
 }
 
-/* istanbul ignore next */
-export function ensureIssueClosing(): Promise<void> {
-  return Promise.resolve();
+export async function ensureIssueClosing(title: string): Promise<void> {
+  return await issueService.ensureIssueClosing(title);
 }
 
-/* istanbul ignore next */
-export function getIssueList(): Promise<Issue[]> {
-  logger.debug(`getIssueList()`);
-  // TODO: Needs implementation (#9592)
-  return Promise.resolve([]);
+export async function getIssueList(titleFilter?: string): Promise<Issue[]> {
+  return await issueService.getIssueList(titleFilter);
 }
 
 async function getUserIds(users: string[]): Promise<User[]> {
   const azureApiGit = await azureApi.gitApi();
   const azureApiCore = await azureApi.coreApi();
   const repos = await azureApiGit.getRepositories();
-  const repo = repos.filter((c) => c.id === config.repoId)[0];
+  const repo = repos.find((c) => c.id === config.repoId)!;
   const requiredReviewerPrefix = 'required:';
   const validReviewers = new Set<string>();
 
@@ -911,19 +1029,18 @@ async function getUserIds(users: string[]): Promise<User[]> {
           isRequired = true;
         }
         if (
-          reviewer.toLowerCase() === m.identity?.displayName?.toLowerCase() ||
-          reviewer.toLowerCase() === m.identity?.uniqueName?.toLowerCase()
+          (reviewer.toLowerCase() === m.identity?.displayName?.toLowerCase() ||
+            reviewer.toLowerCase() === m.identity?.uniqueName?.toLowerCase()) &&
+          ids.filter((c) => c.id === m.identity?.id).length === 0
         ) {
-          if (ids.filter((c) => c.id === m.identity?.id).length === 0) {
-            // TODO #22198
-            ids.push({
-              id: m.identity.id!,
-              name: reviewer,
-              isRequired,
-            });
+          // TODO #22198
+          ids.push({
+            id: m.identity.id!,
+            name: reviewer,
+            isRequired,
+          });
 
-            validReviewers.add(reviewer);
-          }
+          validReviewers.add(reviewer);
         }
       });
     });
@@ -937,13 +1054,15 @@ async function getUserIds(users: string[]): Promise<User[]> {
         reviewer = reviewer.replace(requiredReviewerPrefix, '');
         isRequired = true;
       }
-      if (reviewer.toLowerCase() === t.name?.toLowerCase()) {
-        if (ids.filter((c) => c.id === t.id).length === 0) {
-          // TODO #22198
-          ids.push({ id: t.id!, name: reviewer, isRequired });
+      // v8 ignore else -- TODO: add test #40625
+      if (
+        reviewer.toLowerCase() === t.name?.toLowerCase() &&
+        ids.filter((c) => c.id === t.id).length === 0
+      ) {
+        // TODO #22198
+        ids.push({ id: t.id!, name: reviewer, isRequired });
 
-          validReviewers.add(reviewer);
-        }
+        validReviewers.add(reviewer);
       }
     });
   });

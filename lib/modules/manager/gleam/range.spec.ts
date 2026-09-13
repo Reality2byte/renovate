@@ -1,5 +1,5 @@
-import type { RangeConfig } from '../types';
-import { getRangeStrategy } from '.';
+import type { RangeConfig } from '../types.ts';
+import { getRangeStrategy } from './index.ts';
 
 describe('modules/manager/gleam/range', () => {
   it('returns same if not auto', () => {
@@ -13,16 +13,6 @@ describe('modules/manager/gleam/range', () => {
       depType: 'dependencies',
       currentValue: '>= 1.6.0 and < 2.0.0',
     };
-    expect(getRangeStrategy(config)).toBe('widen');
-  });
-
-  it('returns widen if update-lockfile', () => {
-    const config: RangeConfig = { rangeStrategy: 'update-lockfile' };
-    expect(getRangeStrategy(config)).toBe('widen');
-  });
-
-  it('returns widen if in-range-only', () => {
-    const config: RangeConfig = { rangeStrategy: 'in-range-only' };
     expect(getRangeStrategy(config)).toBe('widen');
   });
 

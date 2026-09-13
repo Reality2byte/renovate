@@ -1,17 +1,21 @@
-import type { GotOptions, HttpResponse } from '../types';
-
-export interface HttpCache {
-  etag?: string;
-  lastModified?: string;
-  httpResponse: unknown;
-  timestamp: string;
-}
+import type { GotOptions, HttpResponse } from '../types.ts';
 
 export interface HttpCacheProvider {
   setCacheHeaders<T extends Pick<GotOptions, 'headers'>>(
+    method: string,
     url: string,
     opts: T,
   ): Promise<void>;
 
-  wrapResponse<T>(url: string, resp: HttpResponse<T>): Promise<HttpResponse<T>>;
+  bypassServer<T>(
+    method: string,
+    url: string,
+    ignoreSoftTtl?: boolean,
+  ): Promise<HttpResponse<T> | null>;
+
+  wrapServerResponse<T>(
+    method: string,
+    url: string,
+    resp: HttpResponse<T>,
+  ): Promise<HttpResponse<T>>;
 }

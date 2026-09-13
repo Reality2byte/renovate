@@ -1,17 +1,16 @@
-import is from '@sindresorhus/is';
-import { logger } from '../../../logger';
-import { cache } from '../../../util/cache/package/decorator';
-import { detectPlatform } from '../../../util/common';
-import { parseGitUrl } from '../../../util/git/url';
-import { GithubHttp } from '../../../util/http/github';
-import { fromBase64 } from '../../../util/string';
-import { joinUrlParts } from '../../../util/url';
-import { parseSingleYaml } from '../../../util/yaml';
-import { GithubContentResponse } from '../../platform/github/schema';
-import semver from '../../versioning/semver';
-import { Datasource } from '../datasource';
-import type { GetReleasesConfig, ReleaseResult } from '../types';
-import { BitriseStepFile } from './schema';
+import { isArray } from '@sindresorhus/is';
+import { logger } from '../../../logger/index.ts';
+import { withCache } from '../../../util/cache/package/with-cache.ts';
+import { detectPlatform } from '../../../util/common.ts';
+import { parseGitUrl } from '../../../util/git/url.ts';
+import { GithubHttp } from '../../../util/http/github.ts';
+import { fromBase64 } from '../../../util/string.ts';
+import { joinUrlParts } from '../../../util/url.ts';
+import { GithubContentResponse } from '../../platform/github/schema.ts';
+import semver from '../../versioning/semver/index.ts';
+import { Datasource } from '../datasource.ts';
+import type { GetReleasesConfig, ReleaseResult } from '../types.ts';
+import { BitriseStepFile } from './schema.ts';
 
 export class BitriseDatasource extends Datasource {
   static readonly id = 'bitrise';
@@ -37,16 +36,11 @@ export class BitriseDatasource extends Datasource {
   override readonly sourceUrlNote =
     'The source URL is determined from the `source_code_url` field of the release object in the results.';
 
-  @cache({
-    namespace: `datasource-${BitriseDatasource.id}`,
-    key: ({ packageName, registryUrl }: GetReleasesConfig) =>
-      `${registryUrl}/${packageName}`,
-  })
-  async getReleases({
+  private async _getReleases({
     packageName,
     registryUrl,
   }: GetReleasesConfig): Promise<ReleaseResult | null> {
-    // istanbul ignore if
+    /* v8 ignore next -- should never happen */
     if (!registryUrl) {
       return null;
     }
@@ -54,7 +48,8 @@ export class BitriseDatasource extends Datasource {
     const parsedUrl = parseGitUrl(registryUrl);
     if (detectPlatform(registryUrl) !== 'github') {
       logger.once.warn(
-        `${parsedUrl.source} is not a supported Git hoster for this datasource`,
+        { source: parsedUrl.source },
+        'Unsupported Git hoster for this datasource',
       );
       return null;
     }
@@ -81,7 +76,7 @@ export class BitriseDatasource extends Datasource {
       GithubContentResponse,
     );
 
-    if (!is.array(packageRaw)) {
+    if (!isArray(packageRaw)) {
       logger.warn(
         { data: packageRaw, url: packageUrl },
         'Got unexpected response for Bitrise package location',
@@ -104,16 +99,14 @@ export class BitriseDatasource extends Datasource {
       }
       if (body.encoding !== 'base64') {
         logger.warn(
-          { data: body, url: stepUrl },
-          `Got unexpected encoding for Bitrise step location '${body.encoding}'`,
+          { encoding: body.encoding, data: body, url: stepUrl },
+          `Got unexpected encoding for Bitrise step location`,
         );
         return null;
       }
 
       const content = fromBase64(body.content);
-      const { published_at, source_code_url } = parseSingleYaml(content, {
-        customSchema: BitriseStepFile,
-      });
+      const { published_at, source_code_url } = BitriseStepFile.parse(content);
 
       result.releases.push({
         version: versionDir.name,
@@ -131,5 +124,16 @@ export class BitriseDatasource extends Datasource {
       ...result,
       homepage: `https://bitrise.io/integrations/steps/${packageName}`,
     };
+  }
+
+  getReleases(config: GetReleasesConfig): Promise<ReleaseResult | null> {
+    return withCache(
+      {
+        namespace: `datasource-${BitriseDatasource.id}`,
+        key: `${config.registryUrl}/${config.packageName}`,
+        fallback: true,
+      },
+      () => this._getReleases(config),
+    );
   }
 }

@@ -1,5 +1,5 @@
-import pep440 from '../../modules/versioning/pep440';
-import { CurrentVersionMatcher } from './current-version';
+import pep440 from '../../modules/versioning/pep440/index.ts';
+import { CurrentVersionMatcher } from './current-version.ts';
 
 describe('util/package-rules/current-version', () => {
   const matcher = new CurrentVersionMatcher();
@@ -20,7 +20,7 @@ describe('util/package-rules/current-version', () => {
     });
 
     it('return false on version exception', () => {
-      const spy = jest.spyOn(pep440, 'isValid').mockImplementationOnce(() => {
+      const spy = vi.spyOn(pep440, 'isValid').mockImplementationOnce(() => {
         throw new Error();
       });
       const result = matcher.matches(

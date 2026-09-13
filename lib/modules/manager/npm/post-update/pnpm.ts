@@ -1,22 +1,34 @@
-import is from '@sindresorhus/is';
+import { isNumber, isNumericString } from '@sindresorhus/is';
 import { quote } from 'shlex';
 import upath from 'upath';
-import { GlobalConfig } from '../../../../config/global';
-import { TEMPORARY_ERROR } from '../../../../constants/error-messages';
-import { logger } from '../../../../logger';
-import { exec } from '../../../../util/exec';
+import { GlobalConfig } from '../../../../config/global.ts';
+import { TEMPORARY_ERROR } from '../../../../constants/error-messages.ts';
+import { logger } from '../../../../logger/index.ts';
+import { exec, getToolSettingsOptions } from '../../../../util/exec/index.ts';
 import type {
   ExecOptions,
   ExtraEnv,
   ToolConstraint,
-} from '../../../../util/exec/types';
-import { deleteLocalFile, readLocalFile } from '../../../../util/fs';
-import { uniqueStrings } from '../../../../util/string';
-import { parseSingleYaml } from '../../../../util/yaml';
-import type { PostUpdateConfig, Upgrade } from '../../types';
-import { getNodeToolConstraint } from './node-version';
-import type { GenerateLockFileResult, PnpmLockFile } from './types';
-import { getPackageManagerVersion, lazyLoadPackageJson } from './utils';
+} from '../../../../util/exec/types.ts';
+import {
+  deleteLocalFile,
+  ensureCacheDir,
+  getSiblingFileName,
+  localPathExists,
+  readLocalFile,
+} from '../../../../util/fs/index.ts';
+import { uniqueStrings } from '../../../../util/string.ts';
+import { parseSingleYaml } from '../../../../util/yaml.ts';
+import type { PostUpdateConfig, Upgrade } from '../../types.ts';
+import { PNPM_CACHE_DIR, PNPM_STORE_DIR } from '../constants.ts';
+import type { PnpmWorkspaceFile } from '../extract/types.ts';
+import { getNodeToolConstraint } from './node-version.ts';
+import type { GenerateLockFileResult, PnpmLockFile } from './types.ts';
+import {
+  getNodeOptions,
+  getPackageManagerVersion,
+  lazyLoadPackageJson,
+} from './utils.ts';
 
 function getPnpmConstraintFromUpgrades(upgrades: Upgrade[]): string | null {
   for (const upgrade of upgrades) {
@@ -36,8 +48,6 @@ export async function generateLockFile(
   const lockFileName = upath.join(lockFileDir, 'pnpm-lock.yaml');
   logger.debug(`Spawning pnpm install to create ${lockFileName}`);
   let lockFile: string | null = null;
-  let stdout: string | undefined;
-  let stderr: string | undefined;
   const commands: string[] = [];
   try {
     const lazyPgkJson = lazyLoadPackageJson(lockFileDir);
@@ -50,12 +60,26 @@ export async function generateLockFile(
         (await getConstraintFromLockFile(lockFileName)), // use lockfileVersion to find pnpm version range
     };
 
+    const pnpmConfigCacheDir = await ensureCacheDir(PNPM_CACHE_DIR);
+    const pnpmConfigStoreDir = await ensureCacheDir(PNPM_STORE_DIR);
     const extraEnv: ExtraEnv = {
+      // those arwe no longer working and it's unclear if they ever worked
       NPM_CONFIG_CACHE: env.NPM_CONFIG_CACHE,
       npm_config_store: env.npm_config_store,
+      // these are used by pnpm v5 to v10. Maybe earlier versions too
+      npm_config_cache_dir: pnpmConfigCacheDir,
+      npm_config_store_dir: pnpmConfigStoreDir,
+      // pnpm stops reading npm_config_* env vars since v11
+      pnpm_config_cache_dir: pnpmConfigCacheDir,
+      pnpm_config_store_dir: pnpmConfigStoreDir,
     };
+
+    const { nodeMaxMemory } = getToolSettingsOptions(config.toolSettings);
+    if (nodeMaxMemory) {
+      extraEnv.NODE_OPTIONS = getNodeOptions(nodeMaxMemory);
+    }
+
     const execOptions: ExecOptions = {
-      userConfiguredEnv: config.env,
       cwdFile: lockFileName,
       extraEnv,
       docker: {},
@@ -64,24 +88,51 @@ export async function generateLockFile(
         pnpmToolConstraint,
       ],
     };
-    // istanbul ignore if
+    /* v8 ignore next -- needs test */
     if (GlobalConfig.get('exposeAllEnv')) {
       extraEnv.NPM_AUTH = env.NPM_AUTH;
       extraEnv.NPM_EMAIL = env.NPM_EMAIL;
     }
 
-    let args = '--recursive --lockfile-only';
-    if (!GlobalConfig.get('allowScripts') || config.ignoreScripts) {
+    const pnpmWorkspaceFilePath = getSiblingFileName(
+      lockFileName,
+      'pnpm-workspace.yaml',
+    );
+
+    let args = '--lockfile-only';
+
+    // If it's not a workspaces project/monorepo, but single project with unrelated other npm project in source tree (for example, a git submodule),
+    // `--recursive` will install un-wanted project.
+    // we should avoid this.
+    if (await localPathExists(pnpmWorkspaceFilePath)) {
+      const pnpmWorkspace = parseSingleYaml<PnpmWorkspaceFile>(
+        (await readLocalFile(pnpmWorkspaceFilePath, 'utf8'))!,
+      );
+      if (pnpmWorkspace?.packages?.length) {
+        logger.debug(
+          `Found pnpm workspace with ${pnpmWorkspace.packages.length} package definitions`,
+        );
+        // we are in a monorepo, 'pnpm update' needs the '--recursive' flag contrary to 'pnpm install'
+        args += ' --recursive';
+      }
+    }
+    if (!GlobalConfig.get('allowScripts')) {
+      // If the admin disallows scripts, then neither scripts nor the pnpmfile should be run
       args += ' --ignore-scripts';
       args += ' --ignore-pnpmfile';
+    } else if (config.ignoreScripts) {
+      // If the admin allows scripts then always allow the pnpmfile
+      args += ' --ignore-scripts';
     }
+
     logger.trace({ args }, 'pnpm command options');
 
     const lockUpdates = upgrades.filter((upgrade) => upgrade.isLockfileUpdate);
 
     if (lockUpdates.length !== upgrades.length) {
-      // This command updates the lock file based on package.json
-      commands.push(`pnpm install ${args}`);
+      // This command updates the lock file based on package.json.
+      // Pass `--no-frozen-lockfile` to ensure the lockfile is updated
+      commands.push(`pnpm install ${args} --no-frozen-lockfile`);
     }
 
     // rangeStrategy = update-lockfile
@@ -99,7 +150,7 @@ export async function generateLockFile(
 
     // postUpdateOptions
     if (config.postUpdateOptions?.includes('pnpmDedupe')) {
-      commands.push('pnpm dedupe --config.ignore-scripts=true');
+      commands.push(`pnpm dedupe ${args.replace(' --recursive', '')}`);
     }
 
     if (upgrades.find((upgrade) => upgrade.isLockFileMaintenance)) {
@@ -108,7 +159,7 @@ export async function generateLockFile(
       );
       try {
         await deleteLocalFile(lockFileName);
-      } catch (err) /* istanbul ignore next */ {
+      } catch (err) /* v8 ignore next -- TODO: add test #40625 */ {
         logger.debug(
           { err, lockFileName },
           'Error removing `pnpm-lock.yaml` for lock file maintenance',
@@ -118,7 +169,8 @@ export async function generateLockFile(
 
     await exec(commands, execOptions);
     lockFile = await readLocalFile(lockFileName, 'utf8');
-  } catch (err) /* istanbul ignore next */ {
+  } catch (err) {
+    // v8 ignore if -- TODO: add test #40625
     if (err.message === TEMPORARY_ERROR) {
       throw err;
     }
@@ -126,8 +178,8 @@ export async function generateLockFile(
       {
         commands,
         err,
-        stdout,
-        stderr,
+        stdout: err.stdout,
+        stderr: err.stderr,
         type: 'pnpm',
       },
       'lock file error',
@@ -150,8 +202,8 @@ export async function getConstraintFromLockFile(
     // TODO: use schema (#9610)
     const pnpmLock = parseSingleYaml<PnpmLockFile>(lockfileContent);
     if (
-      !is.number(pnpmLock?.lockfileVersion) &&
-      !is.numericString(pnpmLock?.lockfileVersion)
+      !isNumber(pnpmLock?.lockfileVersion) &&
+      !isNumericString(pnpmLock?.lockfileVersion)
     ) {
       logger.trace(`Invalid pnpm lockfile version: ${lockFileName}`);
       return null;
@@ -224,8 +276,8 @@ const lockToPnpmVersionMapping: LockToPnpmVersionMapping[] = [
   },
 ];
 
-type LockToPnpmVersionMapping = {
+interface LockToPnpmVersionMapping {
   lockfileVersion: string | number;
   lowerConstraint: string;
   upperConstraint?: string;
-};
+}

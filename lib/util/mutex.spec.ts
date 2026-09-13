@@ -1,5 +1,6 @@
-import { afterEach } from '@jest/globals';
-import { acquireLock, getMutex } from './mutex';
+import { acquireLock, getMutex } from './mutex.ts';
+
+vi.unmock('./mutex.ts');
 
 describe('util/mutex', () => {
   describe('getMutex', () => {

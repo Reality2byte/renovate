@@ -1,11 +1,17 @@
 import os from 'node:os';
-import { dirname, join } from 'upath';
-import { GlobalConfig } from '../../../config/global';
-import { logger } from '../../../logger';
-import { chmodLocalFile, readLocalFile, statLocalFile } from '../../../util/fs';
-import { regEx } from '../../../util/regex';
-import gradleVersioning from '../../versioning/gradle';
-import type { GradleVersionExtract } from './types';
+import upath from 'upath';
+import { GlobalConfig } from '../../../config/global.ts';
+import { logger } from '../../../logger/index.ts';
+import {
+  chmodLocalFile,
+  localPathExists,
+  readLocalFile,
+  statLocalFile,
+} from '../../../util/fs/index.ts';
+import { regEx } from '../../../util/regex.ts';
+import gradleVersioning from '../../versioning/gradle/index.ts';
+import { parseJavaToolchainVersion } from '../gradle/parser.ts';
+import type { GradleVersionExtract } from './types.ts';
 
 export const extraEnv = {
   GRADLE_OPTS:
@@ -60,6 +66,16 @@ export async function getJavaConstraint(
         return `^${toolChainVersion}.0.0`;
       }
     }
+    // https://docs.gradle.org/6.7/release-notes.html#new-jvm-ecosystem-features
+    if (major > 6 || (major === 6 && minor && minor >= 7)) {
+      const languageVersion = await getJavaLanguageVersion(gradlewFile);
+      if (languageVersion) {
+        return `^${languageVersion}.0.0`;
+      }
+    }
+    if (major > 9 || (major === 9 && minor && minor >= 1)) {
+      return '^25.0.0';
+    }
     if (major > 8 || (major === 8 && minor && minor >= 5)) {
       return '^21.0.0';
     }
@@ -84,8 +100,8 @@ export async function getJavaConstraint(
 export async function getJvmConfiguration(
   gradlewFile: string,
 ): Promise<string | null> {
-  const daemonJvmFile = join(
-    dirname(gradlewFile),
+  const daemonJvmFile = upath.join(
+    upath.dirname(gradlewFile),
     'gradle/gradle-daemon-jvm.properties',
   );
   const daemonJvm = await readLocalFile(daemonJvmFile, 'utf8');
@@ -101,6 +117,27 @@ export async function getJvmConfiguration(
   }
 
   return null;
+}
+
+/**
+ * https://docs.gradle.org/current/userguide/toolchains.html#sec:consuming
+ */
+export async function getJavaLanguageVersion(
+  gradlewFile: string,
+): Promise<string | null> {
+  const localGradleDir = upath.dirname(gradlewFile);
+  let buildFileName = upath.join(localGradleDir, 'build.gradle');
+  if (!(await localPathExists(buildFileName))) {
+    buildFileName = upath.join(localGradleDir, 'build.gradle.kts');
+  }
+
+  const buildFileContent = await readLocalFile(buildFileName, 'utf8');
+  if (!buildFileContent) {
+    logger.debug('build.gradle or build.gradle.kts not found');
+    return null;
+  }
+
+  return parseJavaToolchainVersion(buildFileContent);
 }
 
 // https://regex101.com/r/IcOs7P/1

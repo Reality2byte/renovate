@@ -1,4 +1,4 @@
-import { api as versioning } from '.';
+import { api as versioning } from './index.ts';
 
 describe('modules/versioning/python/index', () => {
   it.each`
@@ -143,7 +143,6 @@ describe('modules/versioning/python/index', () => {
     ${'~1'}             | ${'replace'}  | ${'1.2.3'}         | ${'2.0.0'}         | ${'~2'}
     ${'^2.2'}           | ${'widen'}    | ${'2.2.0'}         | ${'3.0.0'}         | ${'^2.2 || ^3.0.0'}
     ${'^2.2 || ^3.0.0'} | ${'widen'}    | ${'3.0.0'}         | ${'4.0.0'}         | ${'^2.2 || ^3.0.0 || ^4.0.0'}
-    ${'^3.5'}           | ${'pin'}      | ${'3.5'}           | ${'3.5'}           | ${'3.5'}
   `(
     'getNewValue("$currentValue", "$rangeStrategy", "$currentVersion", "$newVersion") === "$expected"',
     ({ currentValue, rangeStrategy, currentVersion, newVersion, expected }) => {
@@ -178,3 +177,17 @@ it.each`
 `('subset("$a", "$b") === $expected', ({ a, b, expected }) => {
   expect(versioning.subset!(a, b)).toBe(expected);
 });
+
+// isBreaking
+it.each`
+  currentVersion | newVersion | expected
+  ${'3.7'}       | ${'3.8'}   | ${true}
+  ${'3.7.0'}     | ${'3.8.0'} | ${true}
+  ${'3.8.0'}     | ${'3.8.1'} | ${false}
+  ${'3.8.0'}     | ${'4.0.0'} | ${true}
+`(
+  'isBreaking("$currentVersion", "$newVersion") === $expected',
+  ({ currentVersion, newVersion, expected }) => {
+    expect(versioning.isBreaking!(currentVersion, newVersion)).toBe(expected);
+  },
+);

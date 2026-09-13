@@ -1,17 +1,14 @@
-import { z } from 'zod';
+import { z } from 'zod/v4';
 
-const UrlSchema = z.record(
-  z.string(),
-  z.union([z.string(), z.array(z.string())]),
-);
+const Url = z.record(z.string(), z.union([z.string(), z.array(z.string())]));
 
-export const MonorepoSchema = z.object({
-  repoGroups: UrlSchema,
-  orgGroups: UrlSchema,
-  patternGroups: UrlSchema,
+export const Monorepo = z.object({
+  repoGroups: Url,
+  orgGroups: Url,
+  patternGroups: Url,
 });
 
-const PackageRuleSchema = z.object({
+const PackageRule = z.object({
   matchCurrentVersion: z.string().optional(),
   matchDatasources: z.array(z.string()),
   matchPackageNames: z.array(z.string()),
@@ -19,12 +16,13 @@ const PackageRuleSchema = z.object({
   replacementVersion: z.string().optional(),
   description: z.string().optional(),
   replacementNameTemplate: z.string().optional(),
+  replacementVersionTemplate: z.string().optional(),
 });
 
-const RuleSetSchema = z.object({
+const RuleSet = z.object({
   description: z.string(),
   packageRules: z
-    .array(PackageRuleSchema)
+    .array(PackageRule)
     .min(1)
     .refine(
       (rules) =>
@@ -40,27 +38,32 @@ const RuleSetSchema = z.object({
     ),
 });
 
-const AllSchema = z.object({
-  description: z.string(),
+const All = z.object({
   extends: z.array(z.string()),
-  ignoreDeps: z.array(z.string()).optional(),
+  overrideDescription: z.string(),
 });
 
-export const ReplacementsSchema = z
+export const Replacements = z
   .object({
     $schema: z.string(),
-    all: AllSchema,
+    all: All,
   })
-  .catchall(RuleSetSchema);
+  .catchall(RuleSet);
 
-export const ChangelogUrlsSchema = z
+export const ChangelogUrls = z
   .object({
     $schema: z.string(),
   })
   .catchall(z.record(z.string(), z.string().url()));
 
-export const SourceUrlsSchema = z
+export const SourceUrls = z
   .object({
     $schema: z.string(),
   })
   .catchall(z.record(z.string(), z.string().url()));
+
+export const Abandonments = z
+  .object({
+    $schema: z.string(),
+  })
+  .catchall(z.record(z.string(), z.string()));

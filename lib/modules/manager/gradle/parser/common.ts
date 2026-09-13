@@ -1,13 +1,13 @@
-import type { lexer, parser } from 'good-enough-parser';
-import { query as q } from 'good-enough-parser';
-import { clone } from '../../../../util/clone';
-import { regEx } from '../../../../util/regex';
+import type { lexer, parser } from '@renovatebot/good-enough-parser';
+import { query as q } from '@renovatebot/good-enough-parser';
+import { clone } from '../../../../util/clone.ts';
+import { regEx } from '../../../../util/regex.ts';
 import type {
   Ctx,
   NonEmptyArray,
   PackageVariables,
   VariableData,
-} from '../types';
+} from '../types.ts';
 
 export const REGISTRY_URLS = {
   google: 'https://dl.google.com/android/maven2/',
@@ -35,6 +35,14 @@ export const GRADLE_PLUGINS = {
   micronaut: ['version', 'io.micronaut.platform:micronaut-platform'],
   pmd: ['toolVersion', 'net.sourceforge.pmd:pmd-java'],
   spotbugs: ['toolVersion', 'com.github.spotbugs:spotbugs'],
+};
+
+export const GRADLE_TEST_SUITES = {
+  useJunit: 'junit:junit',
+  useJUnitJupiter: 'org.junit.jupiter:junit-jupiter',
+  useKotlinTest: 'org.jetbrains.kotlin:kotlin-test-junit',
+  useSpock: 'org.spockframework:spock-core',
+  useTestNG: 'org.testng:testng',
 };
 
 export function storeVarToken(ctx: Ctx, node: lexer.Token): Ctx {
@@ -121,7 +129,7 @@ export function findVariableInKotlinImport(
 ): VariableData | undefined {
   if (ctx.tmpKotlinImportStore.length && name.includes('.')) {
     for (const tokens of ctx.tmpKotlinImportStore) {
-      const lastToken = tokens[tokens.length - 1];
+      const lastToken = tokens.at(-1);
       if (lastToken && name.startsWith(`${lastToken.value}.`)) {
         const prefix = tokens
           .slice(0, -1)
@@ -202,6 +210,22 @@ export const qStringValueAsSymbol = q.str((ctx: Ctx, node: lexer.Token) => {
   return ctx;
 });
 
+// https://docs.gradle.org/current/javadoc/org/gradle/api/provider/Provider.html#get()
+export const qProviderValue = q
+  .tree({
+    maxDepth: 1,
+    type: 'wrapped-tree',
+    startsWith: '(',
+    endsWith: ')',
+    search: q.begin<Ctx>().end(),
+  })
+  .handler((ctx) => {
+    if (ctx.varTokens.length > 1 && ctx.varTokens.at(-1)?.value === 'get') {
+      ctx.varTokens.pop();
+    }
+    return ctx;
+  });
+
 // foo.bar["baz"] = "1.2.3"
 export const qVariableAssignmentIdentifier = q
   .sym(storeVarToken)
@@ -229,6 +253,7 @@ export const qVariableAccessIdentifier = q
     return ctx;
   })
   .join(qVariableAssignmentIdentifier)
+  .opt(qProviderValue)
   .handler(coalesceVariable)
   .handler((ctx) => {
     ctx.varTokens = [
@@ -267,23 +292,13 @@ export const qTemplateString = q
       ctx.tmpTokenStore.templateTokens = [];
       return ctx;
     },
-    search: q.alt(
-      qStringValue.handler((ctx) => {
+    search: q
+      .alt(qStringValue, qPropertyAccessIdentifier, qVariableAccessIdentifier)
+      .handler((ctx) => {
         ctx.tmpTokenStore.templateTokens?.push(...ctx.varTokens);
         ctx.varTokens = [];
         return ctx;
       }),
-      qPropertyAccessIdentifier.handler((ctx) => {
-        ctx.tmpTokenStore.templateTokens?.push(...ctx.varTokens);
-        ctx.varTokens = [];
-        return ctx;
-      }),
-      qVariableAccessIdentifier.handler((ctx) => {
-        ctx.tmpTokenStore.templateTokens?.push(...ctx.varTokens);
-        ctx.varTokens = [];
-        return ctx;
-      }),
-    ),
   })
   .handler((ctx) => {
     ctx.varTokens = ctx.tmpTokenStore.templateTokens!;
@@ -292,10 +307,11 @@ export const qTemplateString = q
 
 // foo = "bar"
 // foo + foo + "${foo}" + "foo" => "barbarbarfoo"
-export const qConcatExpr = (
+export function qConcatExpr(
   ...matchers: q.QueryBuilder<Ctx, parser.Node>[]
-): q.QueryBuilder<Ctx, parser.Node> =>
-  q.alt(...matchers).many(q.op<Ctx>('+').alt(...matchers), 0, 32);
+): q.QueryBuilder<Ctx, parser.Node> {
+  return q.alt(...matchers).many(q.op<Ctx>('+').alt(...matchers), 0, 32);
+}
 
 export const qValueMatcher = qConcatExpr(
   qTemplateString,
@@ -313,3 +329,33 @@ export const qKotlinImport = q
     return ctx;
   })
   .handler(cleanupTempVars);
+
+// foo { bar { baz } }
+// foo.bar { baz }
+export function qDotOrBraceExpr(
+  symValue: q.SymMatcherValue,
+  matcher: q.QueryBuilder<Ctx, parser.Node>,
+): q.QueryBuilder<Ctx, parser.Node> {
+  return q.sym<Ctx>(symValue).alt(
+    q.op<Ctx>('.').join(matcher),
+    q.tree({
+      type: 'wrapped-tree',
+      maxDepth: 1,
+      startsWith: '{',
+      endsWith: '}',
+      search: matcher,
+    }),
+  );
+}
+
+export const qGroupId = qValueMatcher.handler((ctx) =>
+  storeInTokenMap(ctx, 'groupId'),
+);
+
+export const qArtifactId = qValueMatcher.handler((ctx) =>
+  storeInTokenMap(ctx, 'artifactId'),
+);
+
+export const qVersion = qValueMatcher.handler((ctx) =>
+  storeInTokenMap(ctx, 'version'),
+);

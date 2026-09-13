@@ -1,30 +1,32 @@
-import is from '@sindresorhus/is';
+import { isString, isTruthy } from '@sindresorhus/is';
 import pMap from 'p-map';
 import { quote } from 'shlex';
-import { TEMPORARY_ERROR } from '../../../constants/error-messages';
-import { logger } from '../../../logger';
-import { exec } from '../../../util/exec';
-import type { ExecOptions, ToolConstraint } from '../../../util/exec/types';
+import { TEMPORARY_ERROR } from '../../../constants/error-messages.ts';
+import { logger } from '../../../logger/index.ts';
+import { coerceArray } from '../../../util/array.ts';
+import { exec } from '../../../util/exec/index.ts';
+import type { ExecOptions, ToolConstraint } from '../../../util/exec/types.ts';
 import {
   getParentDir,
   getSiblingFileName,
   readLocalFile,
   writeLocalFile,
-} from '../../../util/fs';
-import { getRepoStatus } from '../../../util/git';
-import * as hostRules from '../../../util/host-rules';
-import * as yaml from '../../../util/yaml';
-import { DockerDatasource } from '../../datasource/docker';
-import { HelmDatasource } from '../../datasource/helm';
-import type { UpdateArtifact, UpdateArtifactsResult } from '../types';
-import { generateHelmEnvs, generateLoginCmd } from './common';
-import { isOCIRegistry, removeOCIPrefix } from './oci';
-import type { ChartDefinition, Repository, RepositoryRule } from './types';
+} from '../../../util/fs/index.ts';
+import { getRepoStatus } from '../../../util/git/index.ts';
+import * as hostRules from '../../../util/host-rules.ts';
+import { regEx } from '../../../util/regex.ts';
+import * as yaml from '../../../util/yaml.ts';
+import { DockerDatasource } from '../../datasource/docker/index.ts';
+import { HelmDatasource } from '../../datasource/helm/index.ts';
+import type { UpdateArtifact, UpdateArtifactsResult } from '../types.ts';
+import { generateHelmEnvs, generateLoginCmd } from './common.ts';
+import { isOCIRegistry, removeOCIPrefix } from './oci.ts';
+import type { ChartDefinition, Repository, RepositoryRule } from './types.ts';
 import {
   aliasRecordToRepositories,
   getRepositories,
   isFileInDir,
-} from './utils';
+} from './utils.ts';
 
 async function helmCommands(
   execOptions: ExecOptions,
@@ -48,7 +50,7 @@ async function helmCommands(
 
   // if credentials for the registry have been found, log into it
   await pMap(registries, async (value) => {
-    const loginCmd = await generateLoginCmd(value, 'helm registry login');
+    const loginCmd = await generateLoginCmd(value);
     if (loginCmd) {
       cmd.push(loginCmd);
     }
@@ -93,7 +95,7 @@ export async function updateArtifacts({
 }: UpdateArtifact): Promise<UpdateArtifactsResult[] | null> {
   logger.debug(`helmv3.updateArtifacts(${packageFileName})`);
 
-  const isLockFileMaintenance = config.updateType === 'lockFileMaintenance';
+  const { isLockFileMaintenance } = config;
   const isUpdateOptionAddChartArchives = config.postUpdateOptions?.includes(
     'helmUpdateSubChartArchives',
   );
@@ -142,7 +144,6 @@ export async function updateArtifacts({
 
     const execOptions: ExecOptions = {
       docker: {},
-      userConfiguredEnv: config.env,
       extraEnv: generateHelmEnvs(),
       toolConstraints: [helmToolConstraint],
     };
@@ -151,9 +152,11 @@ export async function updateArtifacts({
 
     const fileChanges: UpdateArtifactsResult[] = [];
 
-    if (is.truthy(existingLockFileContent)) {
+    if (isTruthy(existingLockFileContent)) {
       const newHelmLockContent = await readLocalFile(lockFileName, 'utf8');
-      const isLockFileChanged = existingLockFileContent !== newHelmLockContent;
+      const isLockFileChanged =
+        !isString(newHelmLockContent) ||
+        isHelmLockChanged(existingLockFileContent, newHelmLockContent);
       if (isLockFileChanged) {
         fileChanges.push({
           file: {
@@ -168,11 +171,11 @@ export async function updateArtifacts({
     }
 
     // add modified helm chart archives to artifacts
-    if (is.truthy(isUpdateOptionAddChartArchives)) {
+    if (isTruthy(isUpdateOptionAddChartArchives)) {
       const chartsPath = getSiblingFileName(packageFileName, 'charts');
       const status = await getRepoStatus();
-      const chartsAddition = status.not_added ?? [];
-      const chartsDeletion = status.deleted ?? [];
+      const chartsAddition = coerceArray(status.not_added);
+      const chartsDeletion = coerceArray(status.deleted);
 
       for (const file of chartsAddition) {
         // only add artifacts in the chart sub path
@@ -212,10 +215,15 @@ export async function updateArtifacts({
     return [
       {
         artifactError: {
-          lockFile: lockFileName,
+          fileName: lockFileName,
           stderr: err.message,
         },
       },
     ];
   }
+}
+
+function isHelmLockChanged(oldContent: string, newContent: string): boolean {
+  const regex = regEx(/^generated: ".+"$/m);
+  return newContent.replace(regex, '') !== oldContent.replace(regex, '');
 }

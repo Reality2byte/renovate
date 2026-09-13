@@ -1,13 +1,13 @@
-import { mocked, partial } from '../../../test/util';
-import * as _repositoryCache from '../cache/repository';
-import type { BranchCache, RepoCacheData } from '../cache/repository/types';
+import { partial } from '~test/util.ts';
+import * as _repositoryCache from '../cache/repository/index.ts';
+import type { BranchCache, RepoCacheData } from '../cache/repository/types.ts';
 import {
   getCachedConflictResult,
   setCachedConflictResult,
-} from './conflicts-cache';
+} from './conflicts-cache.ts';
 
-jest.mock('../cache/repository');
-const repositoryCache = mocked(_repositoryCache);
+vi.mock('../cache/repository/index.ts');
+const repositoryCache = vi.mocked(_repositoryCache);
 
 describe('util/git/conflicts-cache', () => {
   let repoCache: RepoCacheData = {};

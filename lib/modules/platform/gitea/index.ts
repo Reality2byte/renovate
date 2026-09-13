@@ -1,5 +1,6 @@
-import is from '@sindresorhus/is';
+import { isNumber, isString } from '@sindresorhus/is';
 import semver from 'semver';
+import { GlobalConfig } from '../../../config/global.ts';
 import {
   REPOSITORY_ACCESS_FORBIDDEN,
   REPOSITORY_ARCHIVED,
@@ -7,17 +8,18 @@ import {
   REPOSITORY_CHANGED,
   REPOSITORY_EMPTY,
   REPOSITORY_MIRRORED,
-} from '../../../constants/error-messages';
-import { logger } from '../../../logger';
-import type { BranchStatus } from '../../../types';
-import { deduplicateArray } from '../../../util/array';
-import { parseJson } from '../../../util/common';
-import * as git from '../../../util/git';
-import { setBaseUrl } from '../../../util/http/gitea';
-import { map } from '../../../util/promises';
-import { sanitize } from '../../../util/sanitize';
-import { ensureTrailingSlash } from '../../../util/url';
-import { getPrBodyStruct, hashBody } from '../pr-body';
+} from '../../../constants/error-messages.ts';
+import { logger } from '../../../logger/index.ts';
+import type { BranchStatus } from '../../../types/index.ts';
+import { coerceArray, deduplicateArray } from '../../../util/array.ts';
+import { parseJson } from '../../../util/common.ts';
+import { getEnv } from '../../../util/env.ts';
+import * as git from '../../../util/git/index.ts';
+import { setBaseUrl } from '../../../util/http/gitea.ts';
+import { map } from '../../../util/promises.ts';
+import { sanitize } from '../../../util/sanitize.ts';
+import { ensureTrailingSlash } from '../../../util/url.ts';
+import { getPrBodyStruct, hashBody } from '../pr-body.ts';
 import type {
   AutodiscoverConfig,
   BranchStatusConfig,
@@ -37,32 +39,33 @@ import type {
   RepoSortMethod,
   SortMethod,
   UpdatePrConfig,
-} from '../types';
-import { repoFingerprint } from '../util';
-import { smartTruncate } from '../utils/pr-body';
-import * as helper from './gitea-helper';
-import { giteaHttp } from './gitea-helper';
-import { GiteaPrCache } from './pr-cache';
+} from '../types.ts';
+import { repoFingerprint } from '../util.ts';
+import { smartTruncate } from '../utils/pr-body.ts';
+import * as helper from './gitea-helper.ts';
+import { giteaHttp } from './gitea-helper.ts';
+import { GiteaPrCache } from './pr-cache.ts';
 import type {
   CombinedCommitStatus,
   Comment,
-  IssueState,
   Label,
   PRMergeMethod,
   PRUpdateParams,
   Repo,
-} from './types';
+} from './types.ts';
 import {
   DRAFT_PREFIX,
   getMergeMethod,
   getRepoUrl,
+  isAllowed,
   smartLinks,
   toRenovatePR,
   trimTrailingApiPath,
   usableRepo,
-} from './utils';
+} from './utils.ts';
 
 interface GiteaRepoConfig {
+  ignorePrAuthor: boolean;
   repository: string;
   mergeMethod: PRMergeMethod;
 
@@ -70,6 +73,7 @@ interface GiteaRepoConfig {
   labelList: Promise<Label[]> | null;
   defaultBranch: string;
   cloneSubmodules: boolean;
+  cloneSubmodulesFilter: string[] | undefined;
   hasIssuesEnabled: boolean;
 }
 
@@ -85,6 +89,17 @@ const defaults = {
 let config: GiteaRepoConfig = {} as any;
 let botUserID: number;
 let botUserName: string;
+
+export function resetPlatform(): void {
+  config = {} as any;
+  botUserID = undefined as never;
+  botUserName = undefined as never;
+  defaults.hostType = 'gitea';
+  defaults.endpoint = 'https://gitea.com/';
+  defaults.version = '0.0.0';
+  defaults.isForgejo = false;
+  setBaseUrl(defaults.endpoint);
+}
 
 function toRenovateIssue(data: Issue): Issue {
   return {
@@ -139,7 +154,7 @@ function getLabelList(): Promise<Label[]> {
         logger.debug(`Retrieved ${labels.length} org labels`);
         return labels;
       })
-      .catch((err) => {
+      .catch(() => {
         // Will fail if owner of repo is not org or Gitea version < 1.12
         logger.debug(`Unable to fetch organization labels`);
         return [] as Label[];
@@ -201,23 +216,33 @@ const platform: Platform = {
       baseEndpoint = ensureTrailingSlash(baseEndpoint);
       defaults.endpoint = baseEndpoint;
     } else {
-      logger.debug('Using default Gitea endpoint: ' + defaults.endpoint);
+      logger.debug(`Using default Gitea endpoint: ${defaults.endpoint}`);
     }
     setBaseUrl(defaults.endpoint);
 
     let gitAuthor: string;
     try {
       const user = await helper.getCurrentUser({ token });
-      gitAuthor = `${user.full_name ?? user.username} <${user.email}>`;
+      // oxlint-disable-next-line typescript/prefer-nullish-coalescing -- `full_name` can be emtpy string
+      gitAuthor = `${user.full_name || user.login} <${user.email}>`;
       botUserID = user.id;
-      botUserName = user.username;
-      defaults.version = await helper.getVersion({ token });
-      if (defaults.version?.includes('gitea-')) {
-        defaults.version = defaults.version.substring(
-          defaults.version.indexOf('gitea-') + 6,
-        );
-        defaults.isForgejo = true;
+      botUserName = user.login;
+      const env = getEnv();
+      /* v8 ignore next: experimental feature */
+      if (semver.valid(env.RENOVATE_X_PLATFORM_VERSION)) {
+        defaults.version = env.RENOVATE_X_PLATFORM_VERSION!;
+      } else {
+        defaults.version = await helper.getVersion({ token });
       }
+      if (defaults.version?.includes('gitea-')) {
+        defaults.isForgejo = true;
+        logger.info(
+          `Detected Forgejo instance, please use 'forgejo' platform instead`,
+        );
+      }
+      logger.debug(
+        `${defaults.isForgejo ? 'Forgejo' : 'Gitea'} version: ${defaults.version}`,
+      );
     } catch (err) {
       logger.debug(
         { err },
@@ -255,6 +280,7 @@ const platform: Platform = {
   async initRepo({
     repository,
     cloneSubmodules,
+    cloneSubmodulesFilter,
     gitUrl,
   }: RepoParams): Promise<RepoResult> {
     let repo: Repo;
@@ -262,6 +288,8 @@ const platform: Platform = {
     config = {} as any;
     config.repository = repository;
     config.cloneSubmodules = !!cloneSubmodules;
+    config.cloneSubmodulesFilter = cloneSubmodulesFilter;
+    config.ignorePrAuthor = GlobalConfig.get('ignorePrAuthor');
 
     // Try to fetch information about repository
     try {
@@ -296,14 +324,22 @@ const platform: Platform = {
       throw new Error(REPOSITORY_BLOCKED);
     }
 
-    if (repo.allow_rebase) {
-      config.mergeMethod = 'rebase';
-    } else if (repo.allow_rebase_explicit) {
-      config.mergeMethod = 'rebase-merge';
-    } else if (repo.allow_squash_merge) {
-      config.mergeMethod = 'squash';
-    } else if (repo.allow_merge_commits) {
-      config.mergeMethod = 'merge';
+    // similar to gitea behaviour- if default merge style is allowed, use this;
+    // else fall back to predefined order. Order chosen to minimize commits - see
+    // https://github.com/renovatebot/renovate/pull/37768 for discussion.
+    const preferredOrder: PRMergeMethod[] = [
+      repo.default_merge_style,
+      'fast-forward-only',
+      'squash',
+      'merge',
+      'rebase',
+      'rebase-merge',
+    ];
+
+    const mergeStyle = preferredOrder.find((style) => isAllowed(style, repo));
+
+    if (mergeStyle) {
+      config.mergeMethod = mergeStyle;
     } else {
       logger.debug(
         'Repository has no allowed merge methods - aborting renovation',
@@ -351,7 +387,8 @@ const platform: Platform = {
         );
         const repos = await map(fetchRepoArgs, fetchRepositories);
         return deduplicateArray(repos.flat());
-      } else if (config?.namespaces) {
+      }
+      if (config?.namespaces) {
         logger.debug(
           { namespaces: config.namespaces },
           'Auto-discovering by organization',
@@ -366,12 +403,11 @@ const platform: Platform = {
           },
         );
         return deduplicateArray(repos.flat());
-      } else {
-        return await fetchRepositories({
-          sort: config?.sort,
-          order: config?.order,
-        });
       }
+      return await fetchRepositories({
+        sort: config?.sort,
+        order: config?.order,
+      });
     } catch (err) {
       logger.error({ err }, 'Gitea getRepos() error');
       throw err;
@@ -437,10 +473,8 @@ const platform: Platform = {
       return 'yellow';
     }
 
-    return (
-      helper.giteaToRenovateStatusMapping[ccs.worstStatus] ??
-      /* istanbul ignore next */ 'yellow'
-    );
+    /* v8 ignore next -- the mapping covers every status Gitea returns, 'yellow' fallback is defensive */
+    return helper.giteaToRenovateStatusMapping[ccs.worstStatus] ?? 'yellow';
   },
 
   async getBranchStatusCheck(
@@ -467,7 +501,12 @@ const platform: Platform = {
   },
 
   getPrList(): Promise<Pr[]> {
-    return GiteaPrCache.getPrs(giteaHttp, config.repository, botUserName);
+    return GiteaPrCache.getPrs(
+      giteaHttp,
+      config.repository,
+      config.ignorePrAuthor,
+      botUserName,
+    );
   },
 
   async getPr(number: number): Promise<Pr | null> {
@@ -483,7 +522,13 @@ const platform: Platform = {
 
       // Add pull request to cache for further lookups / queries
       if (pr) {
-        await GiteaPrCache.addPr(giteaHttp, config.repository, botUserName, pr);
+        await GiteaPrCache.setPr(
+          giteaHttp,
+          config.repository,
+          config.ignorePrAuthor,
+          botUserName,
+          pr,
+        );
       }
     }
 
@@ -500,8 +545,22 @@ const platform: Platform = {
     prTitle: title,
     state = 'all',
     includeOtherAuthors,
+    targetBranch,
   }: FindPRConfig): Promise<Pr | null> {
     logger.debug(`findPr(${branchName}, ${title!}, ${state})`);
+    if (includeOtherAuthors && isString(targetBranch)) {
+      // do not use pr cache as it only fetches prs created by the Renovate account
+      const pr = await helper.getPRByBranch(
+        config.repository,
+        targetBranch,
+        branchName,
+      );
+      if (!pr) {
+        return null;
+      }
+
+      return toRenovatePR(pr, null);
+    }
     const prList = await platform.getPrList();
     const pr = prList.find(
       (p) =>
@@ -544,17 +603,22 @@ const platform: Platform = {
         head,
         title,
         body,
-        labels: labels.filter(is.number),
+        labels: labels.filter(isNumber),
       });
 
       if (platformPrOptions?.usePlatformAutomerge) {
-        if (semver.gte(defaults.version, '1.17.0')) {
+        // Only Gitea v1.24.0+ and Forgejo v10.0.0+ support delete_branch_after_merge.
+        // This is required to not have undesired behavior when renovate finds existing branches on next run.
+        if (
+          semver.gte(defaults.version, defaults.isForgejo ? '10.0.0' : '1.24.0')
+        ) {
           try {
             await helper.mergePR(config.repository, gpr.number, {
               Do:
                 getMergeMethod(platformPrOptions?.automergeStrategy) ??
                 config.mergeMethod,
               merge_when_checks_succeed: true,
+              delete_branch_after_merge: true,
             });
 
             logger.debug(
@@ -570,7 +634,7 @@ const platform: Platform = {
         } else {
           logger.debug(
             { prNumber: gpr.number },
-            'Gitea-native automerge: not supported on this version of Gitea. Use 1.17.0 or newer.',
+            `Gitea-native automerge: not supported on this version of ${defaults.isForgejo ? 'Forgejo' : 'Gitea'}. Use ${defaults.isForgejo ? '10.0.0' : '1.24.0'} or newer.`,
           );
         }
       }
@@ -580,7 +644,13 @@ const platform: Platform = {
         throw new Error('Can not parse newly created Pull Request');
       }
 
-      await GiteaPrCache.addPr(giteaHttp, config.repository, botUserName, pr);
+      await GiteaPrCache.setPr(
+        giteaHttp,
+        config.repository,
+        config.ignorePrAuthor,
+        botUserName,
+        pr,
+      );
       return pr;
     } catch (err) {
       // When the user manually deletes a branch from Renovate, the PR remains but is no longer linked to any branch. In
@@ -589,7 +659,8 @@ const platform: Platform = {
       // would cause a HTTP 409 conflict error, which we hereby gracefully handle.
       if (err.statusCode === 409) {
         logger.warn(
-          `Attempting to gracefully recover from 409 Conflict response in createPr(${title}, ${sourceBranch})`,
+          { prTitle: title, sourceBranch },
+          'Attempting to gracefully recover from 409 Conflict response in createPr()',
         );
 
         // Refresh cached PR list and search for pull request with matching information
@@ -600,6 +671,7 @@ const platform: Platform = {
         });
 
         // If a valid PR was found, return and gracefully recover from the error. Otherwise, abort and throw error.
+        // v8 ignore else -- TODO: add test #40625
         if (pr?.bodyStruct) {
           if (pr.title !== title || pr.bodyStruct.hash !== hashBody(body)) {
             logger.debug(
@@ -657,7 +729,7 @@ const platform: Platform = {
      */
     if (Array.isArray(labels)) {
       prUpdateParams.labels = (await map(labels, lookupLabelByName)).filter(
-        is.number,
+        isNumber,
       );
       if (labels.length !== prUpdateParams.labels.length) {
         logger.warn(
@@ -673,7 +745,13 @@ const platform: Platform = {
     );
     const pr = toRenovatePR(gpr, botUserName);
     if (pr) {
-      await GiteaPrCache.addPr(giteaHttp, config.repository, botUserName, pr);
+      await GiteaPrCache.setPr(
+        giteaHttp,
+        config.repository,
+        config.ignorePrAuthor,
+        botUserName,
+        pr,
+      );
     }
   },
 
@@ -693,15 +771,13 @@ const platform: Platform = {
     if (config.hasIssuesEnabled === false) {
       return Promise.resolve([]);
     }
-    if (config.issueList === null) {
-      config.issueList = helper
-        .searchIssues(config.repository, { state: 'all' }, { memCache: false })
-        .then((issues) => {
-          const issueList = issues.map(toRenovateIssue);
-          logger.debug(`Retrieved ${issueList.length} Issues`);
-          return issueList;
-        });
-    }
+    config.issueList ??= helper
+      .searchIssues(config.repository, { state: 'all' }, { memCache: false })
+      .then((issues) => {
+        const issueList = issues.map(toRenovateIssue);
+        logger.debug(`Retrieved ${issueList.length} Issues`);
+        return issueList;
+      });
 
     return config.issueList;
   },
@@ -718,7 +794,7 @@ const platform: Platform = {
         number,
         body,
       };
-    } catch (err) /* istanbul ignore next */ {
+    } catch (err) /* v8 ignore next -- defensive: issue fetch failures are logged and swallowed, not simulated in specs */ {
       logger.debug({ err, number }, 'Error getting issue');
       return null;
     }
@@ -765,7 +841,7 @@ const platform: Platform = {
 
       const labels = Array.isArray(labelNames)
         ? (await Promise.all(labelNames.map(lookupLabelByName))).filter(
-            is.number,
+            isNumber,
           )
         : undefined;
 
@@ -784,7 +860,7 @@ const platform: Platform = {
           }
 
           // Pick the last issue in the list as the active one
-          activeIssue = issues[issues.length - 1];
+          activeIssue = issues.at(-1)!;
         }
 
         // Close any duplicate issues
@@ -810,41 +886,42 @@ const platform: Platform = {
           return null;
         }
 
-        // Update issue body and re-open if enabled
-        // TODO: types (#22198)
-        logger.debug(`Updating Issue #${activeIssue.number!}`);
-        const existingIssue = await helper.updateIssue(
-          config.repository,
-          // TODO #22198
-          activeIssue.number!,
-          {
-            body,
-            title,
-            state: shouldReOpen ? 'open' : (activeIssue.state as IssueState),
-          },
-        );
-
-        // Test whether the issues need to be updated
-        const existingLabelIds = (existingIssue.labels ?? []).map(
-          (label) => label.id,
-        );
-        if (
-          labels &&
-          (labels.length !== existingLabelIds.length ||
-            labels.filter((labelId) => !existingLabelIds.includes(labelId))
-              .length !== 0)
-        ) {
-          await helper.updateIssueLabels(
+        if (shouldReOpen || activeIssue.state === 'open') {
+          // Update issue body and re-open
+          logger.debug(`Updating Issue #${activeIssue.number}`);
+          const existingIssue = await helper.updateIssue(
             config.repository,
             // TODO #22198
             activeIssue.number!,
             {
-              labels,
+              body,
+              title,
+              state: 'open',
             },
           );
-        }
 
-        return 'updated';
+          // Test whether the issues need to be updated
+          const existingLabelIds = coerceArray(existingIssue.labels).map(
+            (label) => label.id,
+          );
+          if (
+            labels &&
+            (labels.length !== existingLabelIds.length ||
+              labels.filter((labelId) => !existingLabelIds.includes(labelId))
+                .length !== 0)
+          ) {
+            await helper.updateIssueLabels(
+              config.repository,
+              // TODO #22198
+              activeIssue.number!,
+              {
+                labels,
+              },
+            );
+          }
+
+          return 'updated';
+        }
       }
 
       // Create new issue and reset cache
@@ -943,6 +1020,7 @@ const platform: Platform = {
     const commentList = await helper.getComments(config.repository, issue);
 
     let comment: Comment | null = null;
+    // v8 ignore else -- TODO: add test #40625
     if (deleteConfig.type === 'by-topic') {
       comment = findCommentByTopic(commentList, deleteConfig.topic);
     } else if (deleteConfig.type === 'by-content') {
@@ -1008,7 +1086,7 @@ export function maxBodyLength(): number {
   return 1000000;
 }
 
-/* eslint-disable @typescript-eslint/unbound-method */
+/* oxlint-disable typescript/unbound-method */
 export const {
   addAssignees,
   addReviewers,

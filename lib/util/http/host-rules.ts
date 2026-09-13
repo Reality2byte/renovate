@@ -1,24 +1,26 @@
-import is from '@sindresorhus/is';
-import { GlobalConfig } from '../../config/global';
+import { isNonEmptyString } from '@sindresorhus/is';
+import { GlobalConfig } from '../../config/global.ts';
 import {
   BITBUCKET_API_USING_HOST_TYPES,
+  BITBUCKET_SERVER_API_USING_HOST_TYPES,
+  FORGEJO_API_USING_HOST_TYPES,
   GITEA_API_USING_HOST_TYPES,
   GITHUB_API_USING_HOST_TYPES,
   GITLAB_API_USING_HOST_TYPES,
-} from '../../constants';
-import { logger } from '../../logger';
-import { hasProxy } from '../../proxy';
-import type { HostRule } from '../../types';
-import * as hostRules from '../host-rules';
-import { matchRegexOrGlobList } from '../string-match';
-import { parseUrl } from '../url';
-import { keepAliveAgents } from './keep-alive';
-import type { GotOptions, InternalHttpOptions } from './types';
+} from '../../constants/index.ts';
+import { logger } from '../../logger/index.ts';
+import { hasProxy } from '../../proxy.ts';
+import type { CombinedHostRule, HostRule } from '../../types/index.ts';
+import * as hostRules from '../host-rules.ts';
+import { matchRegexOrGlobList } from '../string-match.ts';
+import { parseUrl } from '../url.ts';
+import type { InternalHttpOptions } from './http.ts';
+import { keepAliveAgents } from './keep-alive.ts';
+import type { GotOptions } from './types.ts';
 
 export type HostRulesGotOptions = Pick<
   GotOptions & InternalHttpOptions,
   | 'hostType'
-  | 'url'
   | 'noAuth'
   | 'headers'
   | 'token'
@@ -29,7 +31,6 @@ export type HostRulesGotOptions = Pick<
   | 'abortOnError'
   | 'abortIgnoreStatusCodes'
   | 'timeout'
-  | 'lookup'
   | 'agent'
   | 'http2'
   | 'https'
@@ -39,14 +40,14 @@ export type HostRulesGotOptions = Pick<
 export function findMatchingRule<GotOptions extends HostRulesGotOptions>(
   url: string,
   options: GotOptions,
-): HostRule {
+): CombinedHostRule {
   const { hostType, readOnly } = options;
   let res = hostRules.find({ hostType, url, readOnly });
 
   if (
-    is.nonEmptyString(res.token) ||
-    is.nonEmptyString(res.username) ||
-    is.nonEmptyString(res.password)
+    isNonEmptyString(res.token) ||
+    isNonEmptyString(res.username) ||
+    isNonEmptyString(res.password)
   ) {
     // do not fallback if we already have auth infos
     return res;
@@ -65,6 +66,33 @@ export function findMatchingRule<GotOptions extends HostRulesGotOptions>(
       }),
       ...res,
     };
+  }
+
+  const platform = GlobalConfig.get('platform');
+  const platformEndpoint = GlobalConfig.get('endpoint');
+
+  // in the case that an API URL is used for GitHub.com, fallback to `github` hostType, and use the `url`'s host to find a `matchHost: api.github.com` (or `matchHost: github.com`)
+  if (url.startsWith('https://api.github.com/')) {
+    res = {
+      ...hostRules.find({
+        hostType: 'github',
+        url,
+      }),
+      ...res,
+    };
+  } else if (platform === 'github' && platformEndpoint) {
+    // Fallback to `github` hostType when the request URL targets the same host
+    // as the configured GitHub platform endpoint.
+    //
+    // This covers GitHub Enterprise Server without hardcoding URLs.
+    const requestHost = parseUrl(url)?.hostname;
+    const endpointHost = parseUrl(platformEndpoint)?.hostname;
+    if (requestHost && endpointHost && requestHost === endpointHost) {
+      res = {
+        ...hostRules.find({ hostType: 'github', url }),
+        ...res,
+      };
+    }
   }
 
   // Fallback to `gitlab` hostType
@@ -97,6 +125,36 @@ export function findMatchingRule<GotOptions extends HostRulesGotOptions>(
     };
   }
 
+  // Fallback to `bitbucket-server` hostType
+  if (
+    hostType &&
+    BITBUCKET_SERVER_API_USING_HOST_TYPES.includes(hostType) &&
+    hostType !== 'bitbucket-server'
+  ) {
+    res = {
+      ...hostRules.find({
+        hostType: 'bitbucket-server',
+        url,
+      }),
+      ...res,
+    };
+  }
+
+  // Fallback to `forgejo` hostType
+  if (
+    hostType &&
+    FORGEJO_API_USING_HOST_TYPES.includes(hostType) &&
+    hostType !== 'forgejo'
+  ) {
+    res = {
+      ...hostRules.find({
+        hostType: 'forgejo',
+        url,
+      }),
+      ...res,
+    };
+  }
+
   // Fallback to `gitea` hostType
   if (
     hostType &&
@@ -121,14 +179,19 @@ export function applyHostRule<GotOptions extends HostRulesGotOptions>(
   options: GotOptions,
   hostRule: HostRule,
 ): GotOptions {
-  const { username, password, token, enabled, authType } = hostRule;
+  if (hostRule.enabled === false) {
+    options.enabled = false;
+    return options;
+  }
+
+  const { username, password, token, authType } = hostRule;
   const host = parseUrl(url)?.host;
   if (options.noAuth) {
     logger.trace({ url }, `Authorization disabled`);
   } else if (
-    is.nonEmptyString(options.headers?.authorization) ||
-    is.nonEmptyString(options.password) ||
-    is.nonEmptyString(options.token)
+    isNonEmptyString(options.headers?.authorization) ||
+    isNonEmptyString(options.password) ||
+    isNonEmptyString(options.token)
   ) {
     logger.once.debug(`hostRules: authentication already set for ${host}`);
     logger.trace({ url }, `Authorization already set`);
@@ -142,8 +205,6 @@ export function applyHostRule<GotOptions extends HostRulesGotOptions>(
     logger.trace({ url }, `Applying Bearer authentication`);
     options.token = token;
     options.context = { ...options.context, authType };
-  } else if (enabled === false) {
-    options.enabled = false;
   } else {
     logger.once.debug(`hostRules: no authentication for ${host}`);
   }
@@ -161,7 +222,7 @@ export function applyHostRule<GotOptions extends HostRulesGotOptions>(
   }
 
   if (hostRule.headers) {
-    const allowedHeaders = GlobalConfig.get('allowedHeaders', []);
+    const allowedHeaders = GlobalConfig.get('allowedHeaders');
     const filteredHeaders: Record<string, string> = {};
 
     for (const [header, value] of Object.entries(hostRule.headers)) {
@@ -176,8 +237,8 @@ export function applyHostRule<GotOptions extends HostRulesGotOptions>(
     }
 
     options.headers = {
-      ...filteredHeaders,
       ...options.headers,
+      ...filteredHeaders,
     };
   }
 
@@ -189,23 +250,23 @@ export function applyHostRule<GotOptions extends HostRulesGotOptions>(
     options.http2 = true;
   }
 
-  if (is.nonEmptyString(hostRule.httpsCertificateAuthority)) {
+  if (isNonEmptyString(hostRule.httpsCertificateAuthority)) {
     options.https = {
-      ...(options.https ?? {}),
+      ...options.https,
       certificateAuthority: hostRule.httpsCertificateAuthority,
     };
   }
 
-  if (is.nonEmptyString(hostRule.httpsPrivateKey)) {
+  if (isNonEmptyString(hostRule.httpsPrivateKey)) {
     options.https = {
-      ...(options.https ?? {}),
+      ...options.https,
       key: hostRule.httpsPrivateKey,
     };
   }
 
-  if (is.nonEmptyString(hostRule.httpsCertificate)) {
+  if (isNonEmptyString(hostRule.httpsCertificate)) {
     options.https = {
-      ...(options.https ?? {}),
+      ...options.https,
       certificate: hostRule.httpsCertificate,
     };
   }

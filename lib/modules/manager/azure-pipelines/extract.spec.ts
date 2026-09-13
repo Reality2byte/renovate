@@ -1,21 +1,18 @@
 import { codeBlock } from 'common-tags';
-import { Fixtures } from '../../../../test/fixtures';
-import { GlobalConfig } from '../../../config/global';
-import { AzurePipelinesTasksDatasource } from '../../datasource/azure-pipelines-tasks';
+import { Fixtures } from '~test/fixtures.ts';
+import { GlobalConfig } from '../../../config/global.ts';
+import { AzurePipelinesTasksDatasource } from '../../datasource/azure-pipelines-tasks/index.ts';
 import {
   extractAzurePipelinesTasks,
   extractContainer,
   extractRepository,
   parseAzurePipelines,
-} from './extract';
-import { extractPackageFile } from '.';
+} from './extract.ts';
+import { extractPackageFile } from './index.ts';
 
 const azurePipelinesFilename = 'azure-pipelines.yaml';
 
 const azurePipelines = Fixtures.get('azure-pipelines.yaml');
-const azurePipelinesNoDependency = Fixtures.get(
-  'azure-pipelines-no-dependency.yaml',
-);
 
 describe('modules/manager/azure-pipelines/extract', () => {
   afterEach(() => {
@@ -243,6 +240,15 @@ describe('modules/manager/azure-pipelines/extract', () => {
     });
 
     it('should return null when there is no dependency found', () => {
+      const azurePipelinesNoDependency = codeBlock`
+        resources:
+          pipelines:
+            - pipeline: MyAppA
+              source: MyCIPipelineA
+            - pipeline: MyAppB
+              source: MyCIPipelineB
+              trigger: true
+      `;
       expect(
         extractPackageFile(azurePipelinesNoDependency, azurePipelinesFilename, {
           repository: 'repo',

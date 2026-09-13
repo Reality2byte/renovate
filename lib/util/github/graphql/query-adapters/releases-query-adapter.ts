@@ -1,9 +1,10 @@
-import { z } from 'zod';
+import { z } from 'zod/v4';
+import { Timestamp } from '../../../timestamp.ts';
 import type {
   GithubGraphqlDatasourceAdapter,
   GithubReleaseItem,
-} from '../types';
-import { prepareQuery } from '../util';
+} from '../types.ts';
+import { prepareQuery } from '../util.ts';
 
 const key = 'github-releases-datasource-v2';
 
@@ -32,7 +33,7 @@ const query = prepareQuery(`
 
 const GithubGraphqlRelease = z.object({
   version: z.string(),
-  releaseTimestamp: z.string(),
+  releaseTimestamp: Timestamp,
   isDraft: z.boolean(),
   isPrerelease: z.boolean(),
   url: z.string(),
@@ -69,14 +70,17 @@ function transform(item: GithubGraphqlRelease): GithubReleaseItem | null {
     url,
   };
 
+  // v8 ignore else -- TODO: add test #40625
   if (id) {
     result.id = id;
   }
 
+  // v8 ignore else -- TODO: add test #40625
   if (name) {
     result.name = name;
   }
 
+  // v8 ignore else -- TODO: add test #40625
   if (description) {
     result.description = description;
   }

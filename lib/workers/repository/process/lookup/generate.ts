@@ -1,13 +1,13 @@
-import is from '@sindresorhus/is';
-import { logger } from '../../../../logger';
-import type { Release } from '../../../../modules/datasource';
-import type { LookupUpdate } from '../../../../modules/manager/types';
-import type { VersioningApi } from '../../../../modules/versioning';
-import type { RangeStrategy } from '../../../../types';
-import { getElapsedDays } from '../../../../util/date';
-import { getMergeConfidenceLevel } from '../../../../util/merge-confidence';
-import type { LookupUpdateConfig } from './types';
-import { getUpdateType } from './update-type';
+import { isNonEmptyArray } from '@sindresorhus/is';
+import { logger } from '../../../../logger/index.ts';
+import type { Release } from '../../../../modules/datasource/index.ts';
+import type { LookupUpdate } from '../../../../modules/manager/types.ts';
+import type { VersioningApi } from '../../../../modules/versioning/index.ts';
+import type { RangeStrategy } from '../../../../types/index.ts';
+import { getElapsedDays } from '../../../../util/date.ts';
+import { getMergeConfidenceLevel } from '../../../../util/merge-confidence/index.ts';
+import type { LookupUpdateConfig } from './types.ts';
+import { getUpdateType } from './update-type.ts';
 
 export async function generateUpdate(
   config: LookupUpdateConfig,
@@ -17,12 +17,14 @@ export async function generateUpdate(
   currentVersion: string,
   bucket: string,
   release: Release,
+  allVersions: Set<string>,
 ): Promise<LookupUpdate> {
   const newVersion = release.version;
   const update: LookupUpdate = {
     bucket,
     newVersion,
     newValue: null!,
+    hasAttestation: release.attestation,
   };
 
   // istanbul ignore if
@@ -59,6 +61,7 @@ export async function generateUpdate(
         rangeStrategy,
         currentVersion,
         newVersion,
+        allVersions,
       })!;
     } catch (err) /* istanbul ignore next */ {
       logger.warn(
@@ -82,8 +85,17 @@ export async function generateUpdate(
   update.updateType =
     update.updateType ??
     getUpdateType(config, versioningApi, currentVersion, newVersion);
+  if (versioningApi.isBreaking) {
+    // This versioning scheme has breaking awareness
+    update.isBreaking = versioningApi.isBreaking(currentVersion, newVersion);
+  } else {
+    // This versioning scheme does not have breaking awareness - assume only major updates are breaking
+    // Updates from, or to, unstable releases should be treated as breaking too.
+    // But we should not add that as default behavior until we stop treating non-LTS versions as unstable first
+    update.isBreaking = update.updateType === 'major';
+  }
   const { datasource, packageName, packageRules } = config;
-  if (packageRules?.some((pr) => is.nonEmptyArray(pr.matchConfidence))) {
+  if (packageRules?.some((pr) => isNonEmptyArray(pr.matchConfidence))) {
     update.mergeConfidenceLevel = await getMergeConfidenceLevel(
       datasource,
       packageName,

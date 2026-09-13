@@ -1,16 +1,20 @@
-import is from '@sindresorhus/is';
+import { isArray, isNonEmptyStringAndNotWhitespace } from '@sindresorhus/is';
 import { dequal } from 'dequal';
-import { logger } from '../../../../../logger';
-import { escapeRegExp, regEx } from '../../../../../util/regex';
-import { matchAt, replaceAt } from '../../../../../util/string';
-import type { UpdateDependencyConfig, Upgrade } from '../../../types';
+import { logger } from '../../../../../logger/index.ts';
+import { regEx } from '../../../../../util/regex.ts';
+import { matchAt, replaceAt } from '../../../../../util/string.ts';
+import type { UpdateDependencyConfig, Upgrade } from '../../../types.ts';
+import { pnpmWorkspaceOverrides } from '../../dep-types.ts';
 import type {
   DependenciesMeta,
   NpmPackage,
   OverrideDependency,
   RecursiveOverride,
-} from '../../extract/types';
-import type { NpmDepType, NpmManagerData } from '../../types';
+} from '../../extract/types.ts';
+import type { NpmDepType, NpmManagerData } from '../../types.ts';
+import { getNewGitValue, getNewNpmAliasValue } from './common.ts';
+import { updatePnpmWorkspaceDependency } from './pnpm.ts';
+import { updateYarnrcCatalogDependency } from './yarn.ts';
 
 function renameObjKey(
   oldObj: DependenciesMeta,
@@ -32,10 +36,7 @@ function replaceAsString(
   parsedContents: NpmPackage,
   fileContent: string,
   depType:
-    | NpmDepType
-    | 'dependenciesMeta'
-    | 'packageManager'
-    | 'pnpm.overrides',
+    NpmDepType | 'dependenciesMeta' | 'packageManager' | 'pnpm.overrides',
   depName: string,
   oldValue: string,
   newValue: string,
@@ -51,6 +52,7 @@ function replaceAsString(
       [newValue]: parsedContents[depType]![oldValue],
     })[oldValue];
   } else if (depType === 'dependenciesMeta') {
+    // v8 ignore else -- TODO: add test #40625
     if (oldValue !== newValue) {
       parsedContents.dependenciesMeta = renameObjKey(
         // TODO #22198
@@ -66,6 +68,7 @@ function replaceAsString(
       parents,
       depName,
     );
+    // v8 ignore else -- TODO: add test #40625
     if (depObjectReference) {
       depObjectReference[overrideDepName] = newValue;
     }
@@ -77,7 +80,7 @@ function replaceAsString(
   const searchString = `"${oldValue}"`;
   let newString = `"${newValue}"`;
 
-  const escapedDepName = escapeRegExp(depName);
+  const escapedDepName = RegExp.escape(depName);
   const patchRe = regEx(`^(patch:${escapedDepName}@(npm:)?).*#`);
   const match = patchRe.exec(oldValue);
   if (match && depType === 'resolutions') {
@@ -107,37 +110,39 @@ function replaceAsString(
       }
     }
   }
-  // istanbul ignore next
+  // v8 ignore next -- TODO: add test #40625
   throw new Error();
 }
 
 export function updateDependency({
   fileContent,
+  packageFile: packageFileName,
   upgrade,
 }: UpdateDependencyConfig): string | null {
-  const { depType, managerData } = upgrade;
-  const depName: string = managerData?.key || upgrade.depName;
-  let { newValue } = upgrade;
-  if (upgrade.currentRawValue) {
-    if (upgrade.currentDigest) {
-      logger.debug('Updating package.json git digest');
-      newValue = upgrade.currentRawValue.replace(
-        upgrade.currentDigest,
-        // TODO #22198
+  if (
+    upgrade.depType?.startsWith('pnpm.catalog') ||
+    upgrade.depType === pnpmWorkspaceOverrides
+  ) {
+    return updatePnpmWorkspaceDependency({
+      fileContent,
+      packageFile: packageFileName,
+      upgrade,
+    });
+  }
+  if (upgrade.depType?.startsWith('yarn.catalog')) {
+    return updateYarnrcCatalogDependency({
+      fileContent,
+      packageFile: packageFileName,
+      upgrade,
+    });
+  }
 
-        upgrade.newDigest!.substring(0, upgrade.currentDigest.length),
-      );
-    } else {
-      logger.debug('Updating package.json git version tag');
-      newValue = upgrade.currentRawValue.replace(
-        upgrade.currentValue,
-        upgrade.newValue,
-      );
-    }
-  }
-  if (upgrade.npmPackageAlias) {
-    newValue = `npm:${upgrade.packageName}@${newValue}`;
-  }
+  const { depType, managerData } = upgrade;
+  const depName: string = managerData?.key ?? upgrade.depName;
+  let { newValue } = upgrade;
+
+  newValue = getNewGitValue(upgrade) ?? newValue;
+  newValue = getNewNpmAliasValue(newValue, upgrade) ?? newValue;
 
   logger.debug(`npm.updateDependency(): ${depType}.${depName} = ${newValue}`);
   try {
@@ -150,13 +155,15 @@ export function updateDependency({
       newValue = `${depName}@${newValue}`;
     } else if (isOverrideObject(upgrade)) {
       overrideDepParents = managerData?.parents;
+      // v8 ignore else -- TODO: add test #40625
       if (overrideDepParents) {
         // old version when there is an object as a value in overrides block
         const { depObjectReference, overrideDepName } = overrideDepPosition(
-          parsedContents['overrides']!,
+          parsedContents.overrides!,
           overrideDepParents,
           depName,
         );
+        // v8 ignore else -- TODO: add test #40625
         if (depObjectReference) {
           oldVersion = depObjectReference[overrideDepName]!;
         }
@@ -166,33 +173,49 @@ export function updateDependency({
     } else {
       oldVersion = parsedContents[depType as NpmDepType]![depName] as string;
     }
-    if (oldVersion === newValue) {
+    if (
+      oldVersion === newValue &&
+      (!upgrade.newName || upgrade.newName === depName)
+    ) {
       logger.trace('Version is already updated');
       return fileContent;
     }
 
     // TODO #22198
-    let newFileContent = replaceAsString(
-      parsedContents,
-      fileContent,
-      depType as NpmDepType,
-      depName,
-      oldVersion!,
-      newValue!,
-      overrideDepParents,
-    );
-    if (upgrade.newName) {
+    let newFileContent: string;
+    if (upgrade.newName && upgrade.replacementApproach === 'alias') {
       newFileContent = replaceAsString(
         parsedContents,
-        newFileContent,
+        fileContent,
         depType as NpmDepType,
         depName,
-        depName,
-        upgrade.newName,
+        oldVersion!,
+        `npm:${upgrade.newName}@${newValue}`,
         overrideDepParents,
       );
+    } else {
+      newFileContent = replaceAsString(
+        parsedContents,
+        fileContent,
+        depType as NpmDepType,
+        depName,
+        oldVersion!,
+        newValue!,
+        overrideDepParents,
+      );
+      if (upgrade.newName && upgrade.newName !== depName) {
+        newFileContent = replaceAsString(
+          parsedContents,
+          newFileContent,
+          depType as NpmDepType,
+          depName,
+          depName,
+          upgrade.newName,
+          overrideDepParents,
+        );
+      }
     }
-    // istanbul ignore if
+    /* v8 ignore next -- needs test */
     if (!newFileContent) {
       logger.debug(
         { fileContent, parsedContents, depType, depName, newValue },
@@ -200,6 +223,7 @@ export function updateDependency({
       );
       return fileContent;
     }
+
     if (parsedContents?.resolutions) {
       let depKey: string | undefined;
       if (parsedContents.resolutions[depName]) {
@@ -208,7 +232,7 @@ export function updateDependency({
         depKey = `**/${depName}`;
       }
       if (depKey) {
-        // istanbul ignore if
+        /* v8 ignore next -- needs test */
         if (parsedContents.resolutions[depKey] !== oldVersion) {
           logger.debug(
             {
@@ -230,7 +254,7 @@ export function updateDependency({
           // TODO #22198
           newValue!,
         );
-        if (upgrade.newName) {
+        if (upgrade.newName && upgrade.newName !== depName) {
           if (depKey === `**/${depName}`) {
             // handles the case where a replacement is in a resolution
             upgrade.newName = `**/${upgrade.newName}`;
@@ -248,7 +272,7 @@ export function updateDependency({
     }
     if (parsedContents?.dependenciesMeta) {
       for (const [depKey] of Object.entries(parsedContents.dependenciesMeta)) {
-        if (depKey.startsWith(depName + '@')) {
+        if (depKey.startsWith(`${depName}@`)) {
           newFileContent = replaceAsString(
             parsedContents,
             newFileContent,
@@ -277,9 +301,10 @@ function overrideDepPosition(
   overrideDepName: string;
 } {
   // get override dep position when its nested in an object
-  const lastParent = parents[parents.length - 1];
+  const lastParent = parents.at(-1);
   let overrideDep: OverrideDependency = overrideBlock;
   for (const parent of parents) {
+    // v8 ignore else -- TODO: add test #40625
     if (overrideDep) {
       overrideDep = overrideDep[parent] as Record<string, RecursiveOverride>;
     }
@@ -291,7 +316,7 @@ function overrideDepPosition(
 
 function isOverrideObject(upgrade: Upgrade<NpmManagerData>): boolean {
   return (
-    is.array(upgrade.managerData?.parents, is.nonEmptyStringAndNotWhitespace) &&
+    isArray(upgrade.managerData?.parents, isNonEmptyStringAndNotWhitespace) &&
     upgrade.depType === 'overrides'
   );
 }

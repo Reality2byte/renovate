@@ -1,43 +1,26 @@
-import crypto from 'node:crypto';
-import { expect, jest } from '@jest/globals';
-import type { DeepMockProxy } from 'jest-mock-extended';
-import type { Plugin } from 'pretty-format';
 import upath from 'upath';
-import type { RenovateConfig } from '../lib/config/types';
-import * as _logger from '../lib/logger';
-import type { Platform } from '../lib/modules/platform';
-import { platform as _platform } from '../lib/modules/platform';
-import { scm as _scm } from '../lib/modules/platform/scm';
-import * as _env from '../lib/util/exec/env';
-import * as _fs from '../lib/util/fs';
-import * as _git from '../lib/util/git';
-import * as _hostRules from '../lib/util/host-rules';
-import { regEx } from '../lib/util/regex';
+import type { DeepMockProxy } from 'vitest-mock-extended';
+import type { RenovateConfig } from '../lib/config/types.ts';
+import * as _logger from '../lib/logger/index.ts';
+import type { Platform } from '../lib/modules/platform/index.ts';
+import { platform as _platform } from '../lib/modules/platform/index.ts';
+import { scm as _scm } from '../lib/modules/platform/scm.ts';
+import * as _env from '../lib/util/exec/env.ts';
+import * as _fs from '../lib/util/fs/index.ts';
+import * as _git from '../lib/util/git/index.ts';
+import { hash } from '../lib/util/hash.ts';
+import * as _hostRules from '../lib/util/host-rules.ts';
+import {
+  type LongCommitSha,
+  toLongCommitSha,
+} from '../lib/util/schema-utils/git.ts';
 
 /**
  * Simple wrapper for getting mocked version of a module
- * @param module module which is mocked by `jest.mock`
- */
-export function mocked<T extends object>(module: T): jest.Mocked<T> {
-  return jest.mocked(module);
-}
-
-/**
- * Simple wrapper for getting mocked version of a module
- * @param module module which is mocked by `jest-mock-extended.mockDeep`
+ * @param module module which is mocked by `vitest-mock-extended.mockDeep`
  */
 export function mockedExtended<T extends object>(module: T): DeepMockProxy<T> {
   return module as DeepMockProxy<T>;
-}
-
-/**
- * Simple wrapper for getting mocked version of a function
- * @param func function which is mocked by `jest.mock`
- */
-export function mockedFunction<T extends (...args: any[]) => any>(
-  func: T,
-): jest.MockedFunction<T> {
-  return func as jest.MockedFunction<T>;
 }
 
 /**
@@ -51,15 +34,14 @@ export function partial(obj: unknown = {}): unknown {
   return obj;
 }
 
-export const fs = jest.mocked(_fs);
-export const git = jest.mocked(_git);
+export const fs = vi.mocked(_fs);
+export const git = vi.mocked(_git);
 
-// TODO: fix types, jest / typescript is using wrong overload (#22198)
-export const platform = jest.mocked(partial<Required<Platform>>(_platform));
-export const scm = jest.mocked(_scm);
-export const env = jest.mocked(_env);
-export const hostRules = jest.mocked(_hostRules);
-export const logger = jest.mocked(_logger);
+export const platform = vi.mocked(partial<Required<Platform>>(_platform));
+export const scm = vi.mocked(_scm);
+export const env = vi.mocked(_env);
+export const hostRules = vi.mocked(_hostRules);
+export const logger = vi.mocked(_logger, true);
 
 export type { RenovateConfig };
 
@@ -103,46 +85,36 @@ export function getFixturePath(fixtureFile: string, fixtureRoot = '.'): string {
 }
 
 /**
- * Can be used to search and replace strings in jest snapshots.
- * @example
- * expect.addSnapshotSerializer(
- *     replacingSerializer(upath.toUnix(gradleDir.path), 'localDir')
- * );
+ * Deterministically derive a valid {@link LongCommitSha} from a seed, for tests.
+ * Same seed always yields the same SHA, keeping snapshots stable.
+ * Defaults to a 40-char (sha1) hash; pass 'sha256' for a 64-char hash.
  */
-export const replacingSerializer = (
-  search: string,
-  replacement: string,
-): Plugin => ({
-  test: (value) => typeof value === 'string' && value.includes(search),
-  serialize: (val, config, indent, depth, refs, printer) => {
-    const replaced = (val as string).replace(search, replacement);
-    return printer(replaced, config, indent, depth, refs);
-  },
-});
-
-export function addReplacingSerializer(from: string, to: string): void {
-  expect.addSnapshotSerializer(replacingSerializer(from, to));
+export function fakeSha(
+  seed: string,
+  algorithm: 'sha1' | 'sha256' = 'sha1',
+): LongCommitSha {
+  return toLongCommitSha(hash(seed, algorithm));
 }
 
-function toHash(buf: Buffer): string {
-  return crypto.createHash('sha256').update(buf).digest('hex');
-}
+/**
+ * Variables that `vi.stubEnv()` treats as booleans: it maps them onto '1' / ''
+ * rather than deleting them, so they cannot be cleared through a stub.
+ * Vitest sets them itself, and nothing under test reads them.
+ */
+const unstubbableEnvVars = new Set(['PROD', 'DEV', 'SSR']);
 
-const bufferSerializer: Plugin = {
-  test: (value) => Buffer.isBuffer(value),
-  serialize: (val, config, indent, depth, refs, printer) => {
-    const replaced = toHash(val);
-    return printer(replaced, config, indent, depth, refs);
-  },
-};
-
-export function addBufferSerializer(): void {
-  expect.addSnapshotSerializer(bufferSerializer);
-}
-
-export function regexMatches(target: string, patterns: string[]): boolean {
-  return patterns.some((patt: string) => {
-    const re = regEx(patt);
-    return re.test(target);
-  });
+/**
+ * Clear every environment variable for the duration of the current test.
+ *
+ * Replacing `process.env` wholesale would break `vi.stubEnv()`, which captures
+ * the original object when the worker starts and would keep deleting from it.
+ * Stubbing each key instead keeps that intact, and `unstubEnvs` restores them
+ * all before the next test.
+ */
+export function clearEnv(): void {
+  for (const key of Object.keys(process.env)) {
+    if (!unstubbableEnvVars.has(key)) {
+      vi.stubEnv(key, undefined);
+    }
+  }
 }

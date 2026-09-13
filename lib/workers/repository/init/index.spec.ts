@@ -1,30 +1,31 @@
-import type { RenovateConfig } from '../../../../test/util';
-import { logger, mocked, partial } from '../../../../test/util';
-import { GlobalConfig } from '../../../config/global';
-import * as _secrets from '../../../config/secrets';
-import * as _onboarding from '../onboarding/branch';
-import * as _apis from './apis';
-import * as _config from './config';
-import * as _merge from './merge';
-import { initRepo } from '.';
+import type { RenovateConfig } from '~test/util.ts';
+import { logger, partial } from '~test/util.ts';
+import { GlobalConfig } from '../../../config/global.ts';
+import * as _secrets from '../../../config/secrets.ts';
+import * as _onboarding from '../onboarding/branch/index.ts';
+import * as _apis from './apis.ts';
+import * as _config from './config.ts';
+import { initRepo } from './index.ts';
+import * as _merge from './merge.ts';
 
-jest.mock('../../../util/git');
-jest.mock('../onboarding/branch');
-jest.mock('../configured');
-jest.mock('../init/apis');
-jest.mock('../init/config');
-jest.mock('../init/merge');
-jest.mock('../../../config/secrets');
-jest.mock('../../../modules/platform', () => ({
-  platform: { initRepo: jest.fn() },
-  getPlatformList: jest.fn(),
+vi.mock('../onboarding/branch/index.ts');
+vi.mock('../configured.ts');
+vi.mock('../init/apis.ts');
+vi.mock('../init/config.ts');
+vi.mock('../init/merge.ts');
+vi.mock('../../../config/secrets.ts');
+vi.mock('../../../config/variables.ts');
+vi.mock('../../../modules/platform/index.ts', () => ({
+  platform: { initRepo: vi.fn() },
+  getPlatformList: vi.fn(),
 }));
+vi.unmock('../../../util/mutex.ts');
 
-const apis = mocked(_apis);
-const config = mocked(_config);
-const merge = mocked(_merge);
-const onboarding = mocked(_onboarding);
-const secrets = mocked(_secrets);
+const apis = vi.mocked(_apis);
+const config = vi.mocked(_config);
+const merge = vi.mocked(_merge);
+const onboarding = vi.mocked(_onboarding);
+const secrets = vi.mocked(_secrets);
 
 describe('workers/repository/init/index', () => {
   beforeEach(() => {
@@ -41,7 +42,7 @@ describe('workers/repository/init/index', () => {
       onboarding.checkOnboardingBranch.mockResolvedValueOnce({});
       config.getRepoConfig.mockResolvedValueOnce({ mode: 'silent' });
       merge.mergeRenovateConfig.mockResolvedValueOnce({});
-      secrets.applySecretsToConfig.mockReturnValueOnce(
+      secrets.applySecretsAndVariablesToConfig.mockReturnValueOnce(
         partial<RenovateConfig>(),
       );
       const renovateConfig = await initRepo({});
@@ -56,15 +57,19 @@ describe('workers/repository/init/index', () => {
         expandCodeOwnersGroups: true,
       });
       merge.mergeRenovateConfig.mockResolvedValueOnce({});
-      secrets.applySecretsToConfig.mockReturnValueOnce(
+      secrets.applySecretsAndVariablesToConfig.mockReturnValueOnce(
         partial<RenovateConfig>(),
       );
       await initRepo({});
+
       expect(logger.logger.warn).toHaveBeenCalledWith(
-        "Configuration option 'filterUnavailableUsers' is not supported on the current platform 'undefined'.",
+        { platform: 'github' },
+        "Configuration option 'filterUnavailableUsers' is not supported on the current platform.",
       );
+
       expect(logger.logger.warn).toHaveBeenCalledWith(
-        "Configuration option 'expandCodeOwnersGroups' is not supported on the current platform 'undefined'.",
+        { platform: 'github' },
+        "Configuration option 'expandCodeOwnersGroups' is not supported on the current platform.",
       );
     });
   });

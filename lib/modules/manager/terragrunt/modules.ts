@@ -1,26 +1,29 @@
-import { logger } from '../../../logger';
-import { detectPlatform } from '../../../util/common';
-import { regEx } from '../../../util/regex';
-import { BitbucketTagsDatasource } from '../../datasource/bitbucket-tags';
-import { GitTagsDatasource } from '../../datasource/git-tags';
-import { GiteaTagsDatasource } from '../../datasource/gitea-tags';
-import { GithubTagsDatasource } from '../../datasource/github-tags';
-import { GitlabTagsDatasource } from '../../datasource/gitlab-tags';
-import { TerraformModuleDatasource } from '../../datasource/terraform-module';
-import type { PackageDependency } from '../types';
-import { extractTerragruntProvider } from './providers';
-import type { ExtractionResult, TerraformManagerData } from './types';
+import { logger } from '../../../logger/index.ts';
+import { detectPlatform } from '../../../util/common.ts';
+import { regEx } from '../../../util/regex.ts';
+import { parseUrl } from '../../../util/url.ts';
+import { BitbucketTagsDatasource } from '../../datasource/bitbucket-tags/index.ts';
+import { GitTagsDatasource } from '../../datasource/git-tags/index.ts';
+import { GiteaTagsDatasource } from '../../datasource/gitea-tags/index.ts';
+import { GithubTagsDatasource } from '../../datasource/github-tags/index.ts';
+import { GitlabTagsDatasource } from '../../datasource/gitlab-tags/index.ts';
+import { TerraformModuleDatasource } from '../../datasource/terraform-module/index.ts';
+import type { PackageDependency } from '../types.ts';
+import { extractTerragruntProvider } from './providers.ts';
+import type { ExtractionResult, TerraformManagerData } from './types.ts';
 
 export const githubRefMatchRegex = regEx(
-  /github\.com([/:])(?<project>[^/]+\/[a-z0-9-_.]+).*\?(depth=\d+&)?ref=(?<tag>.*?)(&depth=\d+)?$/i,
+  /github\.com(?:[/:])(?<project>[^/]+\/[a-z0-9-_.]+).*\?(?:depth=\d+&)?ref=(?<tag>.*?)(?:&depth=\d+)?$/i,
 );
 export const gitTagsRefMatchRegex = regEx(
-  /(?:git::)?(?<url>(?:http|https|ssh):\/\/(?:.*@)?(?<host>[^/]*)\/(?<path>.*))\?(depth=\d+&)?ref=(?<tag>.*?)(&depth=\d+)?$/,
+  /(?:git::)?(?<url>(?:http|https|ssh):\/\/(?:.*@)?(?<host>[^/]*)\/(?<path>.*))\?(?:depth=\d+&)?ref=(?<tag>.*?)(?:&depth=\d+)?$/,
 );
 export const tfrVersionMatchRegex = regEx(
   /tfr:\/\/(?<registry>.*?)\/(?<org>[^/]+?)\/(?<name>[^/]+?)\/(?<cloud>[^/?]+).*\?(?:ref|version)=(?<currentValue>.*?)$/,
 );
-const hostnameMatchRegex = regEx(/^(?<hostname>([\w|\d]+\.)+[\w|\d]+)/);
+const hostnameMatchRegex = regEx(
+  /^(?<hostname>[a-zA-Z\d](?:[a-zA-Z\d-]*\.)+[a-zA-Z\d]+)/,
+);
 
 export function extractTerragruntModule(
   startingLine: number,
@@ -64,12 +67,18 @@ export function analyseTerragruntModule(
       regEx(/\.git$/),
       '',
     );
-    dep.depName = 'github.com/' + dep.packageName;
+    dep.depName = `github.com/${dep.packageName}`;
     dep.currentValue = githubRefMatch.groups.tag;
     dep.datasource = GithubTagsDatasource.id;
   } else if (gitTagsRefMatch?.groups) {
     const { url, tag } = gitTagsRefMatch.groups;
-    const { hostname, host, origin, pathname, protocol } = new URL(url);
+    const parsedUrl = parseUrl(url);
+    if (!parsedUrl) {
+      logger.debug({ url }, 'Terragrunt module has invalid URL, skipping');
+      dep.skipReason = 'invalid-url';
+      return;
+    }
+    const { hostname, host, pathname, protocol } = parsedUrl;
     const containsSubDirectory = pathname.includes('//');
     if (containsSubDirectory) {
       logger.debug('Terragrunt module contains subdirectory');
@@ -85,7 +94,8 @@ export function analyseTerragruntModule(
     dep.datasource = detectGitTagDatasource(url);
     if (dep.datasource === GitTagsDatasource.id) {
       if (containsSubDirectory) {
-        dep.packageName = `${origin}${pathname.split('//')[0]}`;
+        const tempLookupName = url.split('//');
+        dep.packageName = `${tempLookupName[0]}//${tempLookupName[1]}`;
       } else {
         dep.packageName = url;
       }
@@ -98,12 +108,7 @@ export function analyseTerragruntModule(
     }
   } else if (tfrVersionMatch?.groups) {
     dep.depType = 'terragrunt';
-    dep.depName =
-      tfrVersionMatch.groups.org +
-      '/' +
-      tfrVersionMatch.groups.name +
-      '/' +
-      tfrVersionMatch.groups.cloud;
+    dep.depName = `${tfrVersionMatch.groups.org}/${tfrVersionMatch.groups.name}/${tfrVersionMatch.groups.cloud}`;
     dep.currentValue = tfrVersionMatch.groups.currentValue;
     dep.datasource = TerraformModuleDatasource.id;
     if (tfrVersionMatch.groups.registry) {

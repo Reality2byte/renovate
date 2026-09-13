@@ -1,42 +1,66 @@
-import { readFile, readdir } from 'fs-extra';
+import { readdir } from 'node:fs/promises';
+import { readFile } from 'fs-extra';
+import { z } from 'zod/v4';
+import { markdownLinkRegex } from './common.ts';
+
+const allVersioning = (
+  await readdir('lib/modules/versioning', {
+    withFileTypes: true,
+  })
+)
+  .filter((item) => item.isDirectory())
+  .map((item) => item.name);
 
 describe('modules/versioning/versioning-metadata', () => {
-  it('readme no markdown headers', async () => {
-    const allVersioning = (await readdir('lib/modules/versioning')).filter(
-      (item) => !item.includes('.'),
-    );
-    for (const versioning of allVersioning) {
-      let readme: string | undefined;
+  describe.each(allVersioning)('%s', (versioning) => {
+    it('readme with no h1 or h2 markdown headers', async () => {
+      let readme = '';
       try {
         readme = await readFile(
-          'lib/modules/versioning/' + versioning + '/readme.md',
+          `lib/modules/versioning/${versioning}/readme.md`,
           'utf8',
         );
       } catch {
         // ignore missing file
       }
-      if (readme) {
-        // eslint-disable-next-line jest/no-conditional-expect
-        expect(RegExp(/(^|\n)#+ /).exec(readme)).toBeNull();
+      const lines = readme.split('\n');
+      let isCode = false;
+      const res: string[] = [];
+
+      for (const line of lines) {
+        if (line.startsWith('```')) {
+          isCode = !isCode;
+        } else if (!isCode) {
+          res.push(line);
+        }
       }
-    }
-  });
 
-  it('contains mandatory fields', async () => {
-    const allVersioning = (await readdir('lib/modules/versioning')).filter(
-      (item) => !item.includes('.') && !item.startsWith('_'),
-    );
+      expect(
+        res.some((line) => line.startsWith('# ') || line.startsWith('## ')),
+      ).toBeFalse();
+    });
 
-    for (const versioning of allVersioning) {
-      const versioningObj = await import(`./${versioning}`);
+    it('contains mandatory fields', async () => {
+      const Base = z.object({
+        id: z.string(),
+        displayName: z.string(),
+        urls: z.array(
+          z.string().regex(markdownLinkRegex, 'url must be a markdown link'),
+        ),
+      });
+      const VersioningMetadata = z.discriminatedUnion('supportsRanges', [
+        Base.extend({
+          supportsRanges: z.literal(true),
+          supportedRangeStrategies: z.array(z.string()),
+        }),
+        Base.extend({
+          supportsRanges: z.literal(false),
+        }),
+      ]);
+      const versioningObj = VersioningMetadata.parse(
+        await import(`./${versioning}/index.ts`),
+      );
       expect(versioningObj.id).toEqual(versioning);
-      expect(versioningObj.displayName).toBeDefined();
-      expect(versioningObj.urls).toBeDefined();
-      expect(versioningObj.supportsRanges).toBeDefined();
-      if (versioningObj.supportsRanges === true) {
-        // eslint-disable-next-line jest/no-conditional-expect
-        expect(versioningObj.supportedRangeStrategies).toBeDefined();
-      }
-    }
+    });
   });
 });

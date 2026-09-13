@@ -1,9 +1,9 @@
-import is from '@sindresorhus/is';
-import { z } from 'zod';
-import { logger } from '../../logger';
-import versionings from './api';
-import * as defaultVersioning from './semver-coerced';
-import type { VersioningApi } from './types';
+import { isFunction } from '@sindresorhus/is';
+import { z } from 'zod/v4';
+import { logger } from '../../logger/index.ts';
+import versionings from './api.ts';
+import * as defaultVersioning from './semver-coerced/index.ts';
+import type { VersioningApi } from './types.ts';
 
 export const Versioning = z
   .string()
@@ -12,14 +12,13 @@ export const Versioning = z
 
     let versioning = versionings.get(versioningName);
     if (!versioning) {
-      logger.info(
-        { versioning: versioningSpec },
+      logger.debug(
         `Versioning: '${versioningSpec}' not found, falling back to ${defaultVersioning.id}`,
       );
       return defaultVersioning.api;
     }
 
-    if (is.function_(versioning)) {
+    if (isFunction(versioning)) {
       const versioningConfig = versioningRest.length
         ? versioningRest.join(':')
         : undefined;

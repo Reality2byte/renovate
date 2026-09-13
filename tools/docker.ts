@@ -1,7 +1,9 @@
 import { Command } from 'commander';
-import { logger } from '../lib/logger';
-import { parsePositiveInt, parseVersion } from './utils';
-import { bake } from './utils/docker';
+import { init, logger } from '../lib/logger/index.ts';
+import { bake } from './utils/docker.ts';
+import { parsePositiveInt, parseVersion } from './utils/index.ts';
+
+await init();
 
 const program = new Command('pnpm build:docker');
 
@@ -16,6 +18,7 @@ program
     'delay between tries for docker build (eg. 5s, 10m, 1h)',
     '30s',
   )
+  .option('--args <args...>', 'additional arguments to pass to docker build')
   .action(async (opts) => {
     logger.info('Building docker images ...');
     await bake('build', opts);

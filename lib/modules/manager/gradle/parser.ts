@@ -1,23 +1,24 @@
-import { lang, query as q } from 'good-enough-parser';
-import { newlineRegex, regEx } from '../../../util/regex';
-import type { PackageDependency } from '../types';
-import { qApplyFrom } from './parser/apply-from';
-import { qAssignments } from './parser/assignments';
-import { qKotlinImport } from './parser/common';
-import { qDependencies, qLongFormDep } from './parser/dependencies';
-import { setParseGradleFunc } from './parser/handlers';
-import { qKotlinMultiObjectVarAssignment } from './parser/objects';
-import { qPlugins } from './parser/plugins';
-import { qRegistryUrls } from './parser/registry-urls';
-import { qVersionCatalogs } from './parser/version-catalogs';
+import { lang, query as q } from '@renovatebot/good-enough-parser';
+import { newlineRegex, regEx } from '../../../util/regex.ts';
+import type { PackageDependency } from '../types.ts';
+import { qApplyFrom } from './parser/apply-from.ts';
+import { qAssignments } from './parser/assignments.ts';
+import { qKotlinImport } from './parser/common.ts';
+import { qDependencies, qLongFormDep } from './parser/dependencies.ts';
+import { setParseGradleFunc } from './parser/handlers.ts';
+import { qToolchainVersion } from './parser/language-version.ts';
+import { qKotlinMultiObjectVarAssignment } from './parser/objects.ts';
+import { qPlugins } from './parser/plugins.ts';
+import { qRegistryUrls } from './parser/registry-urls.ts';
+import { qVersionCatalogs } from './parser/version-catalogs.ts';
 import type {
   Ctx,
   GradleManagerData,
   PackageRegistry,
   PackageVariables,
   ParseGradleResult,
-} from './types';
-import { isDependencyString, parseDependencyString } from './utils';
+} from './types.ts';
+import { parseDependencyString } from './utils.ts';
 
 const groovy = lang.createLang('groovy');
 const ctx: Ctx = {
@@ -32,6 +33,7 @@ const ctx: Ctx = {
   varTokens: [],
   tmpKotlinImportStore: [],
   tmpNestingDepth: [],
+  tmpRegistryContent: [],
   tmpTokenStore: {},
   tokenMap: {},
 };
@@ -51,10 +53,10 @@ export function parseGradle(
 
   const query = q.tree<Ctx>({
     type: 'root-tree',
-    maxDepth: 32,
     search: q.alt<Ctx>(
       qKotlinImport,
       qAssignments,
+      qKotlinMultiObjectVarAssignment,
       qDependencies,
       qPlugins,
       qRegistryUrls,
@@ -109,6 +111,13 @@ export function parseKotlinSource(
   return { deps, vars };
 }
 
+export function parseJavaToolchainVersion(input: string): string | null {
+  const ctx: Partial<Ctx> = {};
+  const parsedResult = groovy.query(input, qToolchainVersion, ctx);
+
+  return parsedResult?.javaLanguageVersion ?? null;
+}
+
 const propWord = '[a-zA-Z_][a-zA-Z0-9_]*(?:\\.[a-zA-Z_][a-zA-Z0-9_]*)*';
 const propRegex = regEx(
   `^(?<leftPart>\\s*(?<key>${propWord})\\s*[= :]\\s*['"]?)(?<value>[^\\s'"]+)['"]?\\s*$`,
@@ -120,28 +129,27 @@ export function parseProps(
 ): { vars: PackageVariables; deps: PackageDependency<GradleManagerData>[] } {
   let offset = 0;
   const vars: PackageVariables = {};
-  const deps: PackageDependency[] = [];
+  const deps: PackageDependency<GradleManagerData>[] = [];
+
   for (const line of input.split(newlineRegex)) {
     const lineMatch = propRegex.exec(line);
     if (lineMatch?.groups) {
       const { key, value, leftPart } = lineMatch.groups;
-      if (isDependencyString(value)) {
-        const dep = parseDependencyString(value);
-        if (dep) {
-          deps.push({
-            ...dep,
-            managerData: {
-              fileReplacePosition:
-                offset + leftPart.length + dep.depName!.length + 1,
-              packageFile,
-            },
-          });
-        }
+      const replacePosition = offset + leftPart.length;
+      const dep = parseDependencyString(value);
+      if (dep) {
+        deps.push({
+          ...dep,
+          managerData: {
+            fileReplacePosition: replacePosition + dep.depName!.length + 1,
+            packageFile,
+          },
+        });
       } else {
         vars[key] = {
           key,
           value,
-          fileReplacePosition: offset + leftPart.length,
+          fileReplacePosition: replacePosition,
           packageFile,
         };
       }

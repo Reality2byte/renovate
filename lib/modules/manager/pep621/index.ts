@@ -1,15 +1,23 @@
-import type { Category } from '../../../constants';
-import { PypiDatasource } from '../../datasource/pypi';
-export { bumpPackageVersion } from './update';
-export { extractPackageFile } from './extract';
-export { updateArtifacts } from './artifacts';
+import type { Category } from '../../../constants/index.ts';
+import { PypiDatasource } from '../../datasource/pypi/index.ts';
 
-export const supportedDatasources = [PypiDatasource.id];
+export { updateArtifacts } from './artifacts.ts';
+export { extractPackageFile } from './extract.ts';
+export { bumpPackageVersion } from './update.ts';
 
 export const supportsLockFileMaintenance = true;
+export const lockFileNames = ['pdm.lock', 'uv.lock'];
+export const lockFileMaintenanceIsDelegatedToPackageManager =
+  'Delegated to the underlying package manager CLI - `pdm` or `uv` - depending on which lockfile format the project uses.';
 
+export const displayName = 'PEP 621';
+export const url = 'https://peps.python.org/pep-0621';
 export const categories: Category[] = ['python'];
 
 export const defaultConfig = {
-  fileMatch: ['(^|/)pyproject\\.toml$'],
+  managerFilePatterns: ['/(^|/)pyproject\\.toml$/'],
 };
+
+export const supportedDatasources = [PypiDatasource.id];
+
+export { knownDepTypes, supportsDynamicDepTypesNote } from './dep-types.ts';

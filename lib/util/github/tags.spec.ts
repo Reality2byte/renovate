@@ -1,24 +1,25 @@
-import { GithubHttp } from '../http/github';
-import * as githubGraphql from './graphql';
-import { findCommitOfTag } from './tags';
+import type { Timestamp } from '../../util/timestamp.ts';
+import { GithubHttp } from '../http/github.ts';
+import * as githubGraphql from './graphql/index.ts';
+import { findCommitOfTag } from './tags.ts';
 
 describe('util/github/tags', () => {
   describe('findCommitOfTag', () => {
     const http = new GithubHttp();
-    const queryTagsSpy = jest.spyOn(githubGraphql, 'queryTags');
+    const queryTagsSpy = vi.spyOn(githubGraphql, 'queryTags');
 
     it('should be able to find the hash of a Git tag', async () => {
       queryTagsSpy.mockResolvedValueOnce([
         {
           version: 'v1.0.0',
           gitRef: 'v1.0.0',
-          releaseTimestamp: '2021-01-01',
+          releaseTimestamp: '2021-01-01' as Timestamp,
           hash: '123',
         },
         {
           version: 'v2.0.0',
           gitRef: 'v2.0.0',
-          releaseTimestamp: '2022-01-01',
+          releaseTimestamp: '2022-01-01' as Timestamp,
           hash: 'abc',
         },
       ]);
@@ -42,7 +43,7 @@ describe('util/github/tags', () => {
         http,
       );
       expect(commit).toBeNull();
-      expect(githubGraphql.queryTags).toHaveBeenCalledWith(
+      expect(githubGraphql.queryTags).toHaveBeenCalledExactlyOnceWith(
         {
           packageName: 'some-org/repo',
           registryUrl: 'https://my-enterprise-github.dev',

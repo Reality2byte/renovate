@@ -1,44 +1,44 @@
 import os from 'node:os';
 import fs from 'fs-extra';
 import upath from 'upath';
-import { applySecretsToConfig } from '../../config/secrets';
-import type { AllConfig, RenovateConfig } from '../../config/types';
-import { logger } from '../../logger';
-import { resetGlobalLogLevelRemaps } from '../../logger/remap';
-import { initPlatform } from '../../modules/platform';
-import * as packageCache from '../../util/cache/package';
-import { setEmojiConfig } from '../../util/emoji';
-import { validateGitVersion } from '../../util/git';
-import * as hostRules from '../../util/host-rules';
-import { setHttpRateLimits } from '../../util/http/rate-limits';
-import { initMergeConfidence } from '../../util/merge-confidence';
-import { setMaxLimit } from './limits';
+import { applySecretsAndVariablesToConfig } from '../../config/secrets.ts';
+import type { AllConfig, RenovateConfig } from '../../config/types.ts';
+import { logger } from '../../logger/index.ts';
+import { resetGlobalLogLevelRemaps } from '../../logger/remap.ts';
+import { initPlatform } from '../../modules/platform/index.ts';
+import * as packageCache from '../../util/cache/package/index.ts';
+import { setEmojiConfig } from '../../util/emoji.ts';
+import { validateGitVersion } from '../../util/git/index.ts';
+import * as hostRules from '../../util/host-rules.ts';
+import { setHttpRateLimits } from '../../util/http/rate-limits.ts';
+import { initMergeConfidence } from '../../util/merge-confidence/index.ts';
+import { setMaxLimit } from './limits.ts';
 
 async function setDirectories(input: AllConfig): Promise<AllConfig> {
   const config: AllConfig = { ...input };
   process.env.TMPDIR = process.env.RENOVATE_TMPDIR ?? os.tmpdir();
   if (config.baseDir) {
-    logger.debug('Using configured baseDir: ' + config.baseDir);
+    logger.debug(`Using configured baseDir: ${config.baseDir}`);
   } else {
     config.baseDir = upath.join(process.env.TMPDIR, 'renovate');
-    logger.debug('Using baseDir: ' + config.baseDir);
+    logger.debug(`Using baseDir: ${config.baseDir}`);
   }
   await fs.ensureDir(config.baseDir);
   if (config.cacheDir) {
-    logger.debug('Using configured cacheDir: ' + config.cacheDir);
+    logger.debug(`Using configured cacheDir: ${config.cacheDir}`);
   } else {
     config.cacheDir = upath.join(config.baseDir, 'cache');
-    logger.debug('Using cacheDir: ' + config.cacheDir);
+    logger.debug(`Using cacheDir: ${config.cacheDir}`);
   }
   await fs.ensureDir(config.cacheDir);
   if (config.binarySource === 'docker' || config.binarySource === 'install') {
     if (config.containerbaseDir) {
       logger.debug(
-        'Using configured containerbaseDir: ' + config.containerbaseDir,
+        `Using configured containerbaseDir: ${config.containerbaseDir}`,
       );
     } else {
       config.containerbaseDir = upath.join(config.cacheDir, 'containerbase');
-      logger.debug('Using containerbaseDir: ' + config.containerbaseDir);
+      logger.debug(`Using containerbaseDir: ${config.containerbaseDir}`);
     }
     await fs.ensureDir(config.containerbaseDir);
   }
@@ -46,9 +46,8 @@ async function setDirectories(input: AllConfig): Promise<AllConfig> {
 }
 
 function limitCommitsPerRun(config: RenovateConfig): void {
-  let limit = config.prCommitsPerRunLimit;
-  limit = typeof limit === 'number' && limit > 0 ? limit : null;
-  setMaxLimit('Commits', limit);
+  const limit = config.prCommitsPerRunLimit;
+  setMaxLimit('Commits', typeof limit === 'number' && limit > 0 ? limit : null);
 }
 
 async function checkVersions(): Promise<void> {
@@ -58,11 +57,29 @@ async function checkVersions(): Promise<void> {
   }
 }
 
-function setGlobalHostRules(config: RenovateConfig): void {
+function setGlobalHostRules(config: AllConfig, warnOnDenied = true): void {
   if (config.hostRules) {
     logger.debug('Setting global hostRules');
-    applySecretsToConfig(config, undefined, false);
-    config.hostRules.forEach((rule) => hostRules.add(rule));
+    applySecretsAndVariablesToConfig({
+      config,
+      deleteVariables: false,
+      deleteSecrets: false,
+    });
+    // filtered here, rather than left to `add()`, so that the WARN about any dropped header can be suppressed when the same rules are registered again
+    // `config.hostRules` is deliberately left as it is: a `repositories[]` entry can widen `allowedHeaders` for its own repository, and `start()` re-filters these rules with the entry's allowlist to honour that
+    const rules = hostRules.filterAllowedHeaders(
+      config.hostRules,
+      config.allowedHeaders,
+      warnOnDenied,
+    );
+    for (const rule of rules) {
+      // already filtered above, so `add()`'s own enforcement has nothing left to drop
+      // the self-hosted admin's own rules: `trusted`, so that their `headers` are applied over any a repository or preset sets for the same host
+      hostRules.add(rule, {
+        allowedHeaders: config.allowedHeaders,
+        trusted: true,
+      });
+    }
   }
 }
 
@@ -88,7 +105,8 @@ export async function globalInitialize(
   await packageCache.init(config);
   limitCommitsPerRun(config);
   setEmojiConfig(config);
-  setGlobalHostRules(config);
+  // registered a second time in case initialization changed them; anything `allowedHeaders` drops was already warned about by the call above
+  setGlobalHostRules(config, false);
   configureThirdPartyLibraries(config);
   await initMergeConfidence(config);
   return config;

@@ -1,17 +1,18 @@
 import type { Stats } from 'node:fs';
 import os from 'node:os';
 import { codeBlock } from 'common-tags';
-import { fs, partial } from '../../../../test/util';
+import { fs, partial } from '~test/util.ts';
 import {
   extractGradleVersion,
   getJavaConstraint,
+  getJavaLanguageVersion,
   getJvmConfiguration,
   gradleWrapperFileName,
   prepareGradleCommand,
-} from './utils';
+} from './utils.ts';
 
-const platform = jest.spyOn(os, 'platform');
-jest.mock('../../../util/fs');
+const platform = vi.spyOn(os, 'platform');
+vi.mock('../../../util/fs/index.ts');
 
 describe('modules/manager/gradle-wrapper/util', () => {
   describe('getJavaConstraint()', () => {
@@ -27,10 +28,12 @@ describe('modules/manager/gradle-wrapper/util', () => {
         ${'8.0.1'}    | ${'^17.0.0'}
         ${'8.5.0'}    | ${'^21.0.0'}
         ${'9.0.1'}    | ${'^21.0.0'}
+        ${'9.1.0'}    | ${'^25.0.0'}
+        ${'10.0.1'}   | ${'^25.0.0'}
       `(
         '$gradleVersion | $javaConstraint',
         async ({ gradleVersion, javaConstraint }) => {
-          expect(await getJavaConstraint(gradleVersion, '')).toBe(
+          await expect(getJavaConstraint(gradleVersion, '')).resolves.toBe(
             javaConstraint,
           );
         },
@@ -43,7 +46,20 @@ describe('modules/manager/gradle-wrapper/util', () => {
         toolchainVersion=999
       `;
       fs.readLocalFile.mockResolvedValue(daemonJvm);
-      expect(await getJavaConstraint('8.8', './gradlew')).toBe('^999.0.0');
+      await expect(getJavaConstraint('8.8', './gradlew')).resolves.toBe(
+        '^999.0.0',
+      );
+    });
+
+    it('returns languageVersion constraint if found', async () => {
+      const buildGradle = codeBlock`
+        java { toolchain { languageVersion = JavaLanguageVersion.of(456) } }
+      `;
+      fs.localPathExists.mockResolvedValueOnce(true);
+      fs.readLocalFile.mockResolvedValue(buildGradle);
+      await expect(getJavaConstraint('6.7', './gradlew')).resolves.toBe(
+        '^456.0.0',
+      );
     });
   });
 
@@ -54,16 +70,46 @@ describe('modules/manager/gradle-wrapper/util', () => {
         toolchainVersion=21
       `;
       fs.readLocalFile.mockResolvedValue(daemonJvm);
-      expect(await getJvmConfiguration('')).toBe('21');
+      await expect(getJvmConfiguration('')).resolves.toBe('21');
     });
 
     it('returns null if gradle-daemon-jvm.properties file not found', async () => {
       fs.readLocalFile.mockResolvedValueOnce(null);
-      expect(await getJvmConfiguration('sub/gradlew')).toBeNull();
-      expect(fs.readLocalFile).toHaveBeenCalledWith(
+      await expect(getJvmConfiguration('sub/gradlew')).resolves.toBeNull();
+      expect(fs.readLocalFile).toHaveBeenCalledExactlyOnceWith(
         'sub/gradle/gradle-daemon-jvm.properties',
         'utf8',
       );
+    });
+  });
+
+  describe('getJavaLanguageVersion', () => {
+    it('extract languageVersion value', async () => {
+      const buildGradle = codeBlock`
+        java { toolchain { languageVersion = JavaLanguageVersion.of(21) } }
+      `;
+      fs.localPathExists.mockResolvedValue(true);
+      fs.readLocalFile.mockResolvedValue(buildGradle);
+      await expect(getJavaLanguageVersion('')).resolves.toBe('21');
+    });
+
+    it('returns null if build.gradle or build.gradle.kts file not found', async () => {
+      fs.localPathExists.mockResolvedValue(false);
+      fs.readLocalFile.mockResolvedValue(null);
+      await expect(getJavaLanguageVersion('sub/gradlew')).resolves.toBeNull();
+      expect(fs.readLocalFile).toHaveBeenCalledExactlyOnceWith(
+        'sub/build.gradle.kts',
+        'utf8',
+      );
+    });
+
+    it('returns null if build.gradle does not include languageVersion', async () => {
+      const buildGradle = codeBlock`
+        dependencies { implementation "com.google.protobuf:protobuf-java:2.17.0" }
+      `;
+      fs.localPathExists.mockResolvedValue(true);
+      fs.readLocalFile.mockResolvedValue(buildGradle);
+      await expect(getJavaLanguageVersion('')).resolves.toBeNull();
     });
   });
 
@@ -110,7 +156,9 @@ describe('modules/manager/gradle-wrapper/util', () => {
           mode: 0o550,
         }),
       );
-      expect(await prepareGradleCommand('./gradlew')).toBe('./gradlew');
+      await expect(prepareGradleCommand('./gradlew')).resolves.toBe(
+        './gradlew',
+      );
     });
 
     it('returns null', async () => {
@@ -119,7 +167,7 @@ describe('modules/manager/gradle-wrapper/util', () => {
           isFile: () => false,
         }),
       );
-      expect(await prepareGradleCommand('./gradlew')).toBeNull();
+      await expect(prepareGradleCommand('./gradlew')).resolves.toBeNull();
     });
   });
 });

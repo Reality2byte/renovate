@@ -1,5 +1,5 @@
-import { getPkgReleases } from '..';
-import { GithubRunnersDatasource } from '.';
+import { getPkgReleases } from '../index.ts';
+import { GithubRunnersDatasource } from './index.ts';
 
 describe('modules/datasource/github-runners/index', () => {
   describe('getReleases', () => {
@@ -13,9 +13,13 @@ describe('modules/datasource/github-runners/index', () => {
         releases: [
           { version: '16.04', isDeprecated: true },
           { version: '18.04', isDeprecated: true },
-          { version: '20.04' },
+          { version: '20.04', isDeprecated: true },
+          { version: '22.04-arm' },
           { version: '22.04' },
+          { version: '24.04-arm' },
           { version: '24.04' },
+          { version: '26.04-arm', isStable: false },
+          { version: '26.04', isStable: false },
         ],
         sourceUrl: 'https://github.com/actions/runner-images',
       });
@@ -31,17 +35,21 @@ describe('modules/datasource/github-runners/index', () => {
         releases: [
           { version: '10.15', isDeprecated: true },
           { version: '11', isDeprecated: true },
-          { version: '12-large' },
-          { version: '12' },
-          { version: '13-xlarge' },
-          { version: '13-large' },
-          { version: '13' },
+          { version: '12-large', isDeprecated: true },
+          { version: '12', isDeprecated: true },
+          { version: '13-xlarge', isDeprecated: true },
+          { version: '13-large', isDeprecated: true },
+          { version: '13', isDeprecated: true },
           { version: '14-xlarge' },
           { version: '14-large' },
           { version: '14' },
-          { version: '15-xlarge', isStable: false },
-          { version: '15-large', isStable: false },
-          { version: '15', isStable: false },
+          { version: '15-xlarge' },
+          { version: '15-large' },
+          { version: '15-intel' },
+          { version: '15' },
+          { version: '26-xlarge' },
+          { version: '26-intel' },
+          { version: '26' },
         ],
         sourceUrl: 'https://github.com/actions/runner-images',
       });
@@ -55,9 +63,11 @@ describe('modules/datasource/github-runners/index', () => {
 
       expect(res).toMatchObject({
         releases: [
+          { version: '11-arm' },
           { version: '2016', isDeprecated: true },
-          { version: '2019' },
+          { version: '2019', isDeprecated: true },
           { version: '2022' },
+          { version: '2025' },
         ],
         sourceUrl: 'https://github.com/actions/runner-images',
       });

@@ -1,15 +1,16 @@
-import { logger } from '../../../logger';
-import { platform } from '../../../modules/platform';
-import { ExternalHostError } from '../../../types/errors/external-host-error';
-import type { Preset } from '../types';
-import { PRESET_DEP_NOT_FOUND, fetchPreset, parsePreset } from '../util';
+import { logger } from '../../../logger/index.ts';
+import { ExternalHostError } from '../../../types/errors/external-host-error.ts';
+import type { Nullish } from '../../../types/index.ts';
+import type { Preset } from '../types.ts';
+import { PRESET_DEP_NOT_FOUND, fetchPreset, parsePreset } from '../util.ts';
 
 export async function fetchJSONFile(
   repo: string,
   fileName: string,
   _endpoint?: string,
   tag?: string,
-): Promise<Preset> {
+): Promise<Nullish<Preset>> {
+  const { platform } = await import('../../../modules/platform/index.ts');
   let raw: string | null;
   try {
     raw = await platform.getRawFile(fileName, repo, tag ?? undefined);
@@ -38,7 +39,7 @@ export function getPresetFromEndpoint(
   presetPath: string | undefined,
   endpoint: string,
   tag?: string,
-): Promise<Preset | undefined> {
+): Promise<Nullish<Preset>> {
   return fetchPreset({
     repo,
     filePreset,

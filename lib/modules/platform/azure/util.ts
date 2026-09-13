@@ -7,14 +7,15 @@ import {
   GitPullRequestMergeStrategy,
   PullRequestStatus,
 } from 'azure-devops-node-api/interfaces/GitInterfaces.js';
-import type { MergeStrategy } from '../../../config/types';
-import { logger } from '../../../logger';
-import type { HostRule, PrState } from '../../../types';
-import type { GitOptions } from '../../../types/git';
-import { addSecretForSanitizing } from '../../../util/sanitize';
-import { toBase64 } from '../../../util/string';
-import { getPrBodyStruct } from '../pr-body';
-import type { AzurePr } from './types';
+import type { MergeStrategy } from '../../../config/types.ts';
+import { logger } from '../../../logger/index.ts';
+import type { GitOptions } from '../../../types/git.ts';
+import type { HostRule, PrState } from '../../../types/index.ts';
+import { isProbablyJwt } from '../../../util/http/jwt.ts';
+import { addSecretForSanitizing } from '../../../util/sanitize.ts';
+import { toBase64 } from '../../../util/string.ts';
+import { getPrBodyStruct } from '../pr-body.ts';
+import type { AzurePr } from './types.ts';
 
 export function getGitStatusContextCombinedName(
   context: GitStatusContext | null | undefined,
@@ -122,16 +123,16 @@ export function getStorageExtraCloneOpts(config: HostRule): GitOptions {
   if (!config.token && config.username && config.password) {
     authType = 'basic';
     authValue = toBase64(`${config.username}:${config.password}`);
-  } else if (config.token?.length === 52) {
+  } else if (config.token && isProbablyJwt(config.token)) {
+    authType = 'bearer';
+    authValue = config.token;
+  } else {
     authType = 'basic';
     authValue = toBase64(`:${config.token}`);
-  } else {
-    authType = 'bearer';
-    authValue = config.token!;
   }
   addSecretForSanitizing(authValue, 'global');
   return {
-    '-c': `http.extraheader=AUTHORIZATION: ${authType} ${authValue}`,
+    '-c': `http.extraHeader=AUTHORIZATION: ${authType} ${authValue}`,
   };
 }
 
@@ -160,8 +161,8 @@ export function getProjectAndRepo(str: string): {
       repo: strSplit[1],
     };
   }
-  const msg = `${str} can be only structured this way : 'repository' or 'projectName/repository'!`;
-  logger.error(msg);
+  const msg = `Azure repository can be only structured this way : 'repository' or 'projectName/repository'!`;
+  logger.warn({ repository: str }, msg);
   throw new Error(msg);
 }
 
@@ -195,9 +196,20 @@ export function mapMergeStrategy(
       return GitPullRequestMergeStrategy.Rebase;
     case 'merge-commit':
       return GitPullRequestMergeStrategy.NoFastForward;
+    case 'rebase-merge':
+      return GitPullRequestMergeStrategy.RebaseMerge;
     case 'squash':
       return GitPullRequestMergeStrategy.Squash;
     default:
       return GitPullRequestMergeStrategy.NoFastForward;
   }
+}
+
+export function getWorkItemTitle(rawTitle: string, repository: string): string {
+  const repoName = repository.split('/').pop();
+  const isDependencyDashboard = rawTitle.includes('Dependency Dashboard');
+  if (isDependencyDashboard && !rawTitle.includes(`[${repoName}]`)) {
+    return `[${repoName}] ${rawTitle}`;
+  }
+  return rawTitle;
 }

@@ -1,11 +1,30 @@
 import { codeBlock } from 'common-tags';
-import { extractPackageFile } from './extract';
+import { extractPackageFile } from './extract.ts';
 
 describe('modules/manager/scalafmt/extract', () => {
   describe('extractPackageFile()', () => {
     it('extracts version correctly', () => {
       const scalafmtConf = codeBlock`
       version = 3.8.0
+    `;
+      const packages = extractPackageFile(scalafmtConf);
+      expect(packages).toMatchObject({
+        deps: [
+          {
+            datasource: 'github-releases',
+            packageName: 'scalameta/scalafmt',
+            depName: 'scalafmt',
+            currentValue: '3.8.0',
+            versioning: 'semver',
+            extractVersion: '^v(?<version>\\S+)',
+          },
+        ],
+      });
+    });
+
+    it('extracts version correctly if enclosed in quotes', () => {
+      const scalafmtConf = codeBlock`
+      version = "3.8.0"
     `;
       const packages = extractPackageFile(scalafmtConf);
       expect(packages).toMatchObject({

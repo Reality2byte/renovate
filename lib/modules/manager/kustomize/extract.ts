@@ -1,36 +1,37 @@
-import is from '@sindresorhus/is';
-import { logger } from '../../../logger';
-import { coerceArray } from '../../../util/array';
-import { regEx } from '../../../util/regex';
-import { parseSingleYaml } from '../../../util/yaml';
-import { GitTagsDatasource } from '../../datasource/git-tags';
-import { GithubTagsDatasource } from '../../datasource/github-tags';
-import { HelmDatasource } from '../../datasource/helm';
-import { getDep } from '../dockerfile/extract';
-import { isOCIRegistry, removeOCIPrefix } from '../helmv3/oci';
+import querystring from 'node:querystring';
+import { isString } from '@sindresorhus/is';
+import { logger } from '../../../logger/index.ts';
+import { coerceArray } from '../../../util/array.ts';
+import { regEx } from '../../../util/regex.ts';
+import { parseSingleYaml } from '../../../util/yaml.ts';
+import { GitTagsDatasource } from '../../datasource/git-tags/index.ts';
+import { GithubTagsDatasource } from '../../datasource/github-tags/index.ts';
+import { HelmDatasource } from '../../datasource/helm/index.ts';
+import { getDep } from '../dockerfile/extract.ts';
+import { getOciChartDep, isOCIRegistry } from '../helmv3/oci.ts';
 import type {
   ExtractConfig,
   PackageDependency,
   PackageFileContent,
-} from '../types';
-import type { HelmChart, Image, Kustomize } from './types';
+} from '../types.ts';
+import type { HelmChart, Image, Kustomize } from './types.ts';
 
 // URL specifications should follow the hashicorp URL format
 // https://github.com/hashicorp/go-getter#url-format
 const gitUrl = regEx(
-  /^(?:git::)?(?<url>(?:(?:(?:http|https|ssh):\/\/)?(?:.*@)?)?(?<path>(?:[^:/\s]+(?::[0-9]+)?[:/])?(?<project>[^/\s]+\/[^/\s]+)))(?<subdir>[^?\s]*)\?ref=(?<currentValue>.+)$/,
+  /^(?:git::)?(?<url>(?:(?:(?:http|https|ssh):\/\/)?(?:.*@)?)?(?<path>(?:[^:/\s]+(?::[0-9]+)?[:/])?(?<project>[^/\s]+\/[^/\s]+)))(?<subdir>[^?\s]*)\?(?<queryString>.+)$/,
 );
 // regex to match URLs with ".git" delimiter
 const dotGitRegex = regEx(
-  /^(?:git::)?(?<url>(?:(?:(?:http|https|ssh):\/\/)?(?:.*@)?)?(?<path>(?:[^:/\s]+(?::[0-9]+)?[:/])?(?<project>[^?\s]*(\.git))))(?<subdir>[^?\s]*)\?ref=(?<currentValue>.+)$/,
+  /^(?:git::)?(?<url>(?:(?:(?:http|https|ssh):\/\/)?(?:.*@)?)?(?<path>(?:[^:/\s]+(?::[0-9]+)?[:/])?(?<project>[^?\s]*(?:\.git))))(?<subdir>[^?\s]*)\?(?<queryString>.+)$/,
 );
 // regex to match URLs with "_git" delimiter
 const underscoreGitRegex = regEx(
-  /^(?:git::)?(?<url>(?:(?:(?:http|https|ssh):\/\/)?(?:.*@)?)?(?<path>(?:[^:/\s]+(?::[0-9]+)?[:/])?(?<project>[^?\s]*)(_git\/[^/\s]+)))(?<subdir>[^?\s]*)\?ref=(?<currentValue>.+)$/,
+  /^(?:git::)?(?<url>(?:(?:(?:http|https|ssh):\/\/)?(?:.*@)?)?(?<path>(?:[^:/\s]+(?::[0-9]+)?[:/])?(?<project>[^?\s]*)(?:_git\/[^/\s]+)))(?<subdir>[^?\s]*)\?(?<queryString>.+)$/,
 );
 // regex to match URLs having an extra "//"
 const gitUrlWithPath = regEx(
-  /^(?:git::)?(?<url>(?:(?:(?:http|https|ssh):\/\/)?(?:.*@)?)?(?<path>(?:[^:/\s]+(?::[0-9]+)?[:/])(?<project>[^?\s]+)))(?:\/\/)(?<subdir>[^?\s]+)\?ref=(?<currentValue>.+)$/,
+  /^(?:git::)?(?<url>(?:(?:(?:http|https|ssh):\/\/)?(?:.*@)?)?(?<path>(?:[^:/\s]+(?::[0-9]+)?[:/])(?<project>[^?\s]+)))(?:\/\/)(?<subdir>[^?\s]+)\?(?<queryString>.+)$/,
 );
 
 export function extractResource(base: string): PackageDependency | null {
@@ -50,10 +51,20 @@ export function extractResource(base: string): PackageDependency | null {
     return null;
   }
 
-  const { path } = match.groups;
-  if (regEx(/(?:github\.com)(:|\/)/).test(path)) {
+  const { path, queryString } = match.groups;
+  const params = querystring.parse(queryString);
+  const refParam = Array.isArray(params.ref) ? params.ref[0] : params.ref;
+  const versionParam = Array.isArray(params.version)
+    ? params.version[0]
+    : params.version;
+  const currentValue = refParam ?? versionParam;
+  if (!currentValue) {
+    return null;
+  }
+
+  if (regEx(/(?:github\.com)(?::|\/)/).test(path)) {
     return {
-      currentValue: match.groups.currentValue,
+      currentValue,
       datasource: GithubTagsDatasource.id,
       depName: match.groups.project.replace('.git', ''),
     };
@@ -63,7 +74,7 @@ export function extractResource(base: string): PackageDependency | null {
     datasource: GitTagsDatasource.id,
     depName: path.replace('.git', ''),
     packageName: match.groups.url,
-    currentValue: match.groups.currentValue,
+    currentValue,
   };
 }
 
@@ -75,7 +86,7 @@ export function extractImage(
     return null;
   }
   const nameToSplit = image.newName ?? image.name;
-  if (!is.string(nameToSplit)) {
+  if (!isString(nameToSplit)) {
     logger.debug({ image }, 'Invalid image name');
     return null;
   }
@@ -96,7 +107,7 @@ export function extractImage(
   }
 
   if (digest) {
-    if (!is.string(digest) || !digest.startsWith('sha256:')) {
+    if (!isString(digest) || !digest.startsWith('sha256:')) {
       return {
         depName,
         currentValue: digest,
@@ -112,7 +123,7 @@ export function extractImage(
   }
 
   if (newTag) {
-    if (!is.string(newTag) || newTag.startsWith('sha256:')) {
+    if (!isString(newTag) || newTag.startsWith('sha256:')) {
       return {
         depName,
         currentValue: newTag,
@@ -148,18 +159,10 @@ export function extractHelmChart(
   }
 
   if (isOCIRegistry(helmChart.repo)) {
-    const dep = getDep(
-      `${removeOCIPrefix(helmChart.repo)}/${helmChart.name}:${helmChart.version}`,
-      false,
-      aliases,
-    );
     return {
-      ...dep,
+      ...getOciChartDep(helmChart.repo, helmChart.name, aliases),
       depName: helmChart.name,
-      packageName: dep.depName,
-      // https://github.com/helm/helm/issues/10312
-      // https://github.com/helm/helm/issues/10678
-      pinDigests: false,
+      currentValue: helmChart.version,
     };
   }
 
@@ -184,7 +187,7 @@ export function parseKustomize(
     return null;
   }
 
-  if (!pkg || is.string(pkg)) {
+  if (!pkg || isString(pkg)) {
     return null;
   }
 
@@ -211,7 +214,7 @@ export function extractPackageFile(
   }
 
   // grab the remote bases
-  for (const base of coerceArray(pkg.bases).filter(is.string)) {
+  for (const base of coerceArray(pkg.bases).filter(isString)) {
     const dep = extractResource(base);
     if (dep) {
       deps.push({
@@ -222,7 +225,7 @@ export function extractPackageFile(
   }
 
   // grab the remote resources
-  for (const resource of coerceArray(pkg.resources).filter(is.string)) {
+  for (const resource of coerceArray(pkg.resources).filter(isString)) {
     const dep = extractResource(resource);
     if (dep) {
       deps.push({
@@ -233,7 +236,7 @@ export function extractPackageFile(
   }
 
   // grab the remote components
-  for (const component of coerceArray(pkg.components).filter(is.string)) {
+  for (const component of coerceArray(pkg.components).filter(isString)) {
     const dep = extractResource(component);
     if (dep) {
       deps.push({

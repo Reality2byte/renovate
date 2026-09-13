@@ -1,15 +1,22 @@
-import is from '@sindresorhus/is';
-import { supportedDatasources as presetSupportedDatasources } from '../../config/presets/internal/merge-confidence';
-import type { AllConfig, UpdateType } from '../../config/types';
-import { logger } from '../../logger';
-import { ExternalHostError } from '../../types/errors/external-host-error';
-import * as packageCache from '../cache/package';
-import * as hostRules from '../host-rules';
-import { Http } from '../http';
-import { regEx } from '../regex';
-import { ensureTrailingSlash, joinUrlParts } from '../url';
-import { MERGE_CONFIDENCE } from './common';
-import type { MergeConfidence } from './types';
+import { isNullOrUndefined } from '@sindresorhus/is';
+import { supportedDatasources as presetSupportedDatasources } from '../../config/presets/internal/merge-confidence.preset.ts';
+import type { AllConfig, UpdateType } from '../../config/types.ts';
+import { instrument } from '../../instrumentation/index.ts';
+import {
+  ATTR_RENOVATE_DATASOURCE,
+  ATTR_RENOVATE_PACKAGE_NAME,
+} from '../../instrumentation/types.ts';
+import { logger } from '../../logger/index.ts';
+import { ExternalHostError } from '../../types/errors/external-host-error.ts';
+import * as packageCache from '../cache/package/index.ts';
+import * as hostRules from '../host-rules.ts';
+import { memCacheProvider } from '../http/cache/memory-http-cache-provider.ts';
+import { Http } from '../http/index.ts';
+import { regEx } from '../regex.ts';
+import { ensureTrailingSlash, joinUrlParts, parseUrl } from '../url.ts';
+import { MERGE_CONFIDENCE } from './common.ts';
+import { MergeConfidenceResponse } from './schema.ts';
+import type { MergeConfidence } from './types.ts';
 
 const hostType = 'merge-confidence';
 const http = new Http(hostType);
@@ -34,7 +41,7 @@ export function initConfig({
   supportedDatasources =
     mergeConfidenceDatasources ?? presetSupportedDatasources;
 
-  if (!is.nullOrUndefined(token)) {
+  if (!isNullOrUndefined(token)) {
     logger.debug(`Merge confidence token found for ${apiBaseUrl}`);
   }
 }
@@ -94,24 +101,40 @@ export async function getMergeConfidenceLevel(
   newVersion: string,
   updateType: UpdateType,
 ): Promise<MergeConfidence | undefined> {
-  if (is.nullOrUndefined(apiBaseUrl) || is.nullOrUndefined(token)) {
-    return undefined;
-  }
+  return await instrument(
+    'getMergeConfidenceLevel',
+    async () => {
+      if (isNullOrUndefined(apiBaseUrl) || isNullOrUndefined(token)) {
+        return undefined;
+      }
 
-  if (!supportedDatasources.includes(datasource)) {
-    return undefined;
-  }
+      if (!supportedDatasources.includes(datasource)) {
+        return undefined;
+      }
 
-  if (!(currentVersion && newVersion && updateType)) {
-    return 'neutral';
-  }
+      if (!(currentVersion && newVersion && updateType)) {
+        return 'neutral';
+      }
 
-  const mappedConfidence = updateTypeConfidenceMapping[updateType];
-  if (mappedConfidence) {
-    return mappedConfidence;
-  }
+      const mappedConfidence = updateTypeConfidenceMapping[updateType];
+      if (mappedConfidence) {
+        return mappedConfidence;
+      }
 
-  return await queryApi(datasource, packageName, currentVersion, newVersion);
+      return await queryApi(
+        datasource,
+        packageName,
+        currentVersion,
+        newVersion,
+      );
+    },
+    {
+      attributes: {
+        [ATTR_RENOVATE_DATASOURCE]: datasource,
+        [ATTR_RENOVATE_PACKAGE_NAME]: packageName,
+      },
+    },
+  );
 }
 
 /**
@@ -135,11 +158,13 @@ async function queryApi(
   newVersion: string,
 ): Promise<MergeConfidence> {
   // istanbul ignore if: defensive, already been validated before calling this function
-  if (is.nullOrUndefined(apiBaseUrl) || is.nullOrUndefined(token)) {
+  if (isNullOrUndefined(apiBaseUrl) || isNullOrUndefined(token)) {
     return 'neutral';
   }
 
-  const escapedPackageName = packageName.replace(regEx(/\//g), '%2f');
+  const escapedPackageName = packageName
+    .replace(regEx(/\//g), '%2f')
+    .replace(regEx(/:/g), '%3A');
   const url = joinUrlParts(
     apiBaseUrl,
     'api/mc/json',
@@ -168,7 +193,13 @@ async function queryApi(
 
   let confidence: MergeConfidence = 'neutral';
   try {
-    const res = (await http.getJson<{ confidence: MergeConfidence }>(url)).body;
+    const res = (
+      await http.getJson(
+        url,
+        { cacheProvider: memCacheProvider },
+        MergeConfidenceResponse,
+      )
+    ).body;
     if (isMergeConfidence(res.confidence)) {
       confidence = res.confidence;
     }
@@ -195,7 +226,7 @@ async function queryApi(
 export async function initMergeConfidence(config: AllConfig): Promise<void> {
   initConfig(config);
 
-  if (is.nullOrUndefined(apiBaseUrl) || is.nullOrUndefined(token)) {
+  if (isNullOrUndefined(apiBaseUrl) || isNullOrUndefined(token)) {
     logger.trace('merge confidence API usage is disabled');
     return;
   }
@@ -218,20 +249,19 @@ function getApiBaseUrl(mergeConfidenceEndpoint: string | undefined): string {
   const defaultBaseUrl = 'https://developer.mend.io/';
   const baseFromEnv = mergeConfidenceEndpoint ?? defaultBaseUrl;
 
-  try {
-    const parsedBaseUrl = new URL(baseFromEnv).toString();
-    logger.trace(
-      { baseUrl: parsedBaseUrl },
-      'using merge confidence API base found in environment variables',
-    );
-    return ensureTrailingSlash(parsedBaseUrl);
-  } catch (err) {
+  const parsedBaseUrl = parseUrl(baseFromEnv)?.toString();
+  if (!parsedBaseUrl) {
     logger.warn(
-      { err, baseFromEnv },
+      { baseFromEnv },
       'invalid merge confidence API base URL found in environment variables - using default value instead',
     );
     return defaultBaseUrl;
   }
+  logger.trace(
+    { baseUrl: parsedBaseUrl },
+    'using merge confidence API base found in environment variables',
+  );
+  return ensureTrailingSlash(parsedBaseUrl);
 }
 
 export function getApiToken(): string | undefined {

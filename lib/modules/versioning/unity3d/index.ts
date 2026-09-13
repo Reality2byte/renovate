@@ -1,12 +1,11 @@
-import { regEx } from '../../../util/regex';
-import type { GenericVersion } from '../generic';
-import { GenericVersioningApi } from '../generic';
-import type { VersioningApi } from '../types';
+import { regEx } from '../../../util/regex.ts';
+import { GenericVersioningApi } from '../generic.ts';
+import type { GenericVersion, VersioningApi } from '../types.ts';
 
 export const id = 'unity3d';
 export const displayName = 'Unity3D';
 export const urls = [
-  'https://docs.unity3d.com/Manual/ScriptCompilationAssemblyDefinitionFiles.html#version-define-expressions',
+  '[Unity version define expressions](https://docs.unity3d.com/Manual/assembly-definition-includes.html#version-define-expressions)',
 ];
 export const supportsRanges = false;
 

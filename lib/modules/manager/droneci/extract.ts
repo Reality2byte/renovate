@@ -1,11 +1,11 @@
-import { logger } from '../../../logger';
-import { newlineRegex, regEx } from '../../../util/regex';
-import { getDep } from '../dockerfile/extract';
+import { logger } from '../../../logger/index.ts';
+import { newlineRegex, regEx } from '../../../util/regex.ts';
+import { getDep } from '../dockerfile/extract.ts';
 import type {
   ExtractConfig,
   PackageDependency,
   PackageFileContent,
-} from '../types';
+} from '../types.ts';
 
 export function extractPackageFile(
   content: string,
@@ -33,14 +33,14 @@ export function extractPackageFile(
           ).exec(internalLine);
           if (middleLineMatch?.groups) {
             currentFrom += middleLineMatch.groups.currentFrom;
-            replaceString += '\n' + middleLineMatch.groups.replaceString;
+            replaceString += `\n${middleLineMatch.groups.replaceString}`;
           } else {
             const finalLineMatch = regEx(
               /^(?<replaceString>\s*(?<currentFrom>[^\s'"]+)['"])$/,
             ).exec(internalLine);
             if (finalLineMatch?.groups) {
               currentFrom += finalLineMatch.groups.currentFrom;
-              replaceString += '\n' + finalLineMatch.groups.replaceString;
+              replaceString += `\n${finalLineMatch.groups.replaceString}`;
 
               const dep = getDep(currentFrom, true, config.registryAliases);
               dep.depType = 'docker';

@@ -1,10 +1,11 @@
 import semver from 'semver';
 import stable from 'semver-stable';
-import type { NewValueConfig, VersioningApi } from '../types';
+import { regEx } from '../../../util/regex.ts';
+import type { NewValueConfig, VersioningApi } from '../types.ts';
 
 export const id = 'semver';
 export const displayName = 'Semantic';
-export const urls = ['https://semver.org/'];
+export const urls = ['[Semantic Versioning](https://semver.org/)'];
 export const supportsRanges = false;
 
 const { is: isStable } = stable;
@@ -24,9 +25,11 @@ const {
 } = semver;
 
 // If this is left as an alias, inputs like "17.04.0" throw errors
-export const isVersion = (input: string): boolean => !!valid(input);
+export function isVersion(input: string): boolean {
+  return !!valid(input);
+}
 
-export { isVersion as isValid, getSatisfyingVersion };
+export { getSatisfyingVersion, isVersion as isValid };
 
 function getNewValue({
   currentValue,
@@ -34,9 +37,23 @@ function getNewValue({
   newVersion,
 }: NewValueConfig): string {
   if (currentVersion === `v${currentValue}`) {
-    return newVersion.replace(/^v/, '');
+    return newVersion.replace(regEx(/^v/), '');
   }
   return newVersion;
+}
+
+export function isBreaking(current: string, version: string): boolean {
+  // The change may be breaking if either version is unstable
+  if (!isStable(version) || !isStable(current)) {
+    return true;
+  }
+  const currentMajor = getMajor(current);
+  if (currentMajor === 0) {
+    // All v0.x updates might be breaking
+    return true;
+  }
+  // Otherwise, only major updates are breaking
+  return currentMajor !== getMajor(version);
 }
 
 function isCompatible(version: string): boolean {
@@ -56,6 +73,7 @@ export const api: VersioningApi = {
   getMajor,
   getMinor,
   getPatch,
+  isBreaking,
   isCompatible,
   isGreaterThan,
   isLessThanRange,

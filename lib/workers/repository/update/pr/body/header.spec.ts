@@ -1,9 +1,8 @@
-import { mocked } from '../../../../../../test/util';
-import * as _template from '../../../../../util/template';
-import { getPrHeader } from './header';
+import * as _template from '../../../../../util/template/index.ts';
+import { getPrHeader } from './header.ts';
 
-jest.mock('../../../../../util/template');
-const template = mocked(_template);
+vi.mock('../../../../../util/template/index.ts');
+const template = vi.mocked(_template);
 
 describe('workers/repository/update/pr/body/header', () => {
   it('renders empty header', () => {

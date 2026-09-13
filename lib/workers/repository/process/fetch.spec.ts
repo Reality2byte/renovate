@@ -1,15 +1,17 @@
-import type { RenovateConfig } from '../../../../test/util';
-import { mocked } from '../../../../test/util';
-import { getConfig } from '../../../config/defaults';
-import { MavenDatasource } from '../../../modules/datasource/maven';
-import type { PackageFile } from '../../../modules/manager/types';
-import { ExternalHostError } from '../../../types/errors/external-host-error';
-import { fetchUpdates } from './fetch';
-import * as lookup from './lookup';
+import type { RenovateConfig } from '~test/util.ts';
+import { partial } from '~test/util.ts';
+import { getConfig } from '../../../config/defaults.ts';
+import { MavenDatasource } from '../../../modules/datasource/maven/index.ts';
+import type { PackageFile } from '../../../modules/manager/types.ts';
+import { ExternalHostError } from '../../../types/errors/external-host-error.ts';
+import { Result } from '../../../util/result.ts';
+import { fetchUpdates } from './fetch.ts';
+import * as lookup from './lookup/index.ts';
+import type { UpdateResult } from './lookup/types.ts';
 
-const lookupUpdates = mocked(lookup).lookupUpdates;
+const lookupUpdates = vi.mocked(lookup).lookupUpdates;
 
-jest.mock('./lookup');
+vi.mock('./lookup/index.ts');
 
 describe('workers/repository/process/fetch', () => {
   describe('fetchUpdates()', () => {
@@ -50,7 +52,33 @@ describe('workers/repository/process/fetch', () => {
         ],
       };
       await fetchUpdates(config, packageFiles);
-      expect(packageFiles).toMatchSnapshot();
+      expect(packageFiles).toEqual({
+        npm: [
+          {
+            deps: [
+              {
+                depName: 'abcd',
+                packageName: 'abcd',
+                skipReason: 'ignored',
+                updates: [],
+              },
+              {
+                depName: 'foo',
+                packageName: 'foo',
+                skipReason: 'disabled',
+                updates: [],
+              },
+              {
+                depName: 'skipped',
+                packageName: 'skipped',
+                skipReason: 'some-reason',
+                updates: [],
+              },
+            ],
+            packageFile: 'package.json',
+          },
+        ],
+      });
       expect(packageFiles.npm[0].deps[0].skipReason).toBe('ignored');
       expect(packageFiles.npm[0].deps[0].updates).toHaveLength(0);
       expect(packageFiles.npm[0].deps[1].skipReason).toBe('disabled');
@@ -59,6 +87,7 @@ describe('workers/repository/process/fetch', () => {
 
     it('fetches updates', async () => {
       config.rangeStrategy = 'auto';
+      // @ts-expect-error -- intentionally using invalid constraint names
       config.constraints = { some: 'different' };
       const packageFiles: any = {
         maven: [
@@ -69,9 +98,166 @@ describe('workers/repository/process/fetch', () => {
           },
         ],
       };
-      lookupUpdates.mockResolvedValue({ updates: ['a', 'b'] } as never);
+      lookupUpdates.mockResolvedValue(
+        Result.ok(partial<UpdateResult>({ updates: ['a', 'b'] as never })),
+      );
       await fetchUpdates(config, packageFiles);
-      expect(packageFiles).toMatchSnapshot();
+      expect(packageFiles).toEqual({
+        maven: [
+          {
+            deps: [
+              {
+                datasource: 'maven',
+                depName: 'bbb',
+                packageName: 'bbb',
+                updates: ['a', 'b'],
+              },
+            ],
+            extractedConstraints: { other: 'constraint', some: 'constraint' },
+            packageFile: 'pom.xml',
+          },
+        ],
+      });
+    });
+
+    describe('constraintsVersioning', () => {
+      it('is merged from packageFile with config', async () => {
+        config.constraintsVersioning = { gomodMod: 'config-version' };
+        const packageFiles: any = {
+          maven: [
+            {
+              packageFile: 'pom.xml',
+              constraintsVersioning: {
+                gomodMod: 'pfile-version',
+                go: 'go-version',
+              },
+              deps: [{ datasource: MavenDatasource.id, depName: 'bbb' }],
+            },
+          ],
+        };
+        lookupUpdates.mockResolvedValue(
+          Result.ok(partial<UpdateResult>({ updates: [] })),
+        );
+
+        await fetchUpdates(config, packageFiles);
+
+        expect(lookupUpdates).toHaveBeenCalledWith(
+          expect.objectContaining({
+            constraintsVersioning: {
+              gomodMod: 'config-version',
+              go: 'go-version',
+            },
+          }),
+        );
+      });
+
+      it('is set from packageFile if only set on packageFile', async () => {
+        const packageFiles: any = {
+          maven: [
+            {
+              packageFile: 'pom.xml',
+              constraintsVersioning: { go: 'go-version' },
+              deps: [{ datasource: MavenDatasource.id, depName: 'bbb' }],
+            },
+          ],
+        };
+        lookupUpdates.mockResolvedValue(
+          Result.ok(partial<UpdateResult>({ updates: [] })),
+        );
+
+        await fetchUpdates(config, packageFiles);
+
+        expect(lookupUpdates).toHaveBeenCalledWith(
+          expect.objectContaining({
+            constraintsVersioning: { go: 'go-version' },
+          }),
+        );
+      });
+
+      it('is not set if neither config nor packageFile are set', async () => {
+        const packageFiles: any = {
+          maven: [
+            {
+              packageFile: 'pom.xml',
+              // no constraintsVersioning on pFile
+              deps: [{ datasource: MavenDatasource.id, depName: 'bbb' }],
+            },
+          ],
+        };
+        lookupUpdates.mockResolvedValue(
+          Result.ok(partial<UpdateResult>({ updates: [] })),
+        );
+
+        await fetchUpdates(config, packageFiles);
+
+        expect(lookupUpdates).toHaveBeenCalledWith(
+          expect.objectContaining({
+            constraintsVersioning: {},
+          }),
+        );
+      });
+
+      it('is set if config is set', async () => {
+        config.rangeStrategy = 'auto';
+        config.constraintsVersioning = { gomodMod: 'config-version' };
+        const packageFiles: any = {
+          maven: [
+            {
+              packageFile: 'pom.xml',
+              // no constraintsVersioning on pFile
+              deps: [{ datasource: MavenDatasource.id, depName: 'bbb' }],
+            },
+          ],
+        };
+        lookupUpdates.mockResolvedValue(
+          Result.ok(partial<UpdateResult>({ updates: [] })),
+        );
+        await fetchUpdates(config, packageFiles);
+        expect(lookupUpdates).toHaveBeenCalledWith(
+          expect.objectContaining({
+            constraintsVersioning: { gomodMod: 'config-version' },
+          }),
+        );
+      });
+    });
+
+    it('prefers configured constraints over extracted constraints', async () => {
+      config.rangeStrategy = 'auto';
+      config.constraints = { python: '>=3.9' };
+      const packageFiles: any = {
+        maven: [
+          {
+            packageFile: 'pom.xml',
+            extractedConstraints: { python: '>=3.8' },
+            deps: [
+              {
+                datasource: MavenDatasource.id,
+                depName: 'bbb',
+                extractedConstraints: { python: '<3.12' },
+              },
+            ],
+          },
+        ],
+      };
+      lookupUpdates.mockResolvedValue(
+        Result.ok(partial<UpdateResult>({ updates: ['a', 'b'] as never })),
+      );
+
+      await fetchUpdates(config, packageFiles);
+
+      expect(lookupUpdates).toHaveBeenCalledWith(
+        expect.objectContaining({
+          constraints: { python: '>=3.9' },
+          datasource: 'maven',
+          depName: 'bbb',
+        }),
+      );
+      expect(packageFiles.maven[0].deps[0]).toEqual(
+        expect.objectContaining({
+          extractedConstraints: { python: '<3.12' },
+          updates: ['a', 'b'],
+        }),
+      );
     });
 
     it('skips deps with empty names', async () => {
@@ -86,6 +272,7 @@ describe('workers/repository/process/fetch', () => {
               { depName: ' ' },
               {},
               { depName: undefined },
+              // oxlint-disable-next-line renovate/prefer-partial-in-specs -- intentionally invalid depName type to test invalid-name skip handling
               { depName: { oh: 'no' } as unknown as string },
             ],
           },
@@ -141,7 +328,9 @@ describe('workers/repository/process/fetch', () => {
           },
         ],
       };
-      lookupUpdates.mockResolvedValue({ updates: ['a', 'b'] } as never);
+      lookupUpdates.mockResolvedValue(
+        Result.ok(partial<UpdateResult>({ updates: ['a', 'b'] as never })),
+      );
       await fetchUpdates(config, packageFiles);
       expect(packageFiles.maven[0].deps[0].updates).toHaveLength(2);
     });
@@ -160,7 +349,7 @@ describe('workers/repository/process/fetch', () => {
 
       await expect(
         fetchUpdates({ ...config, repoIsOnboarded: true }, packageFiles),
-      ).rejects.toThrow();
+      ).rejects.toThrow('some error');
     });
 
     it('throws lookup errors for not onboarded repos', async () => {
@@ -177,7 +366,7 @@ describe('workers/repository/process/fetch', () => {
 
       await expect(
         fetchUpdates({ ...config, repoIsOnboarded: true }, packageFiles),
-      ).rejects.toThrow();
+      ).rejects.toThrow('some error');
     });
 
     it('produces external host warnings for not onboarded repos', async () => {

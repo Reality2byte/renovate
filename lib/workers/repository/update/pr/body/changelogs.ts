@@ -1,9 +1,9 @@
-import { unemojify } from '../../../../../util/emoji';
-import { sanitizeMarkdown } from '../../../../../util/markdown';
-import { regEx } from '../../../../../util/regex';
-import * as template from '../../../../../util/template';
-import type { BranchConfig } from '../../../../types';
-import releaseNotesHbs from '../changelog/hbs-template';
+import { unemojify } from '../../../../../util/emoji.ts';
+import { sanitizeMarkdown } from '../../../../../util/markdown.ts';
+import { regEx } from '../../../../../util/regex.ts';
+import * as template from '../../../../../util/template/index.ts';
+import type { BranchConfig } from '../../../../types.ts';
+import releaseNotesHbs from '../changelog/hbs-template.ts';
 
 export function getChangelogs(config: BranchConfig): string {
   let releaseNotes = '';
@@ -19,8 +19,7 @@ export function getChangelogs(config: BranchConfig): string {
     }
   }
 
-  releaseNotes +=
-    '\n\n---\n\n' + template.compile(releaseNotesHbs, config, false) + '\n\n';
+  releaseNotes += `\n\n---\n\n${template.compile(releaseNotesHbs, config, false)}\n\n`;
   releaseNotes = releaseNotes.replace(regEx(/### \[`vv/g), '### [`v');
   releaseNotes = sanitizeMarkdown(releaseNotes);
   releaseNotes = unemojify(releaseNotes);

@@ -1,14 +1,21 @@
-import type { Category } from '../../../constants';
-import { GitTagsDatasource } from '../../datasource/git-tags';
-import { PypiDatasource } from '../../datasource/pypi';
+import type { Category } from '../../../constants/index.ts';
+import { GitTagsDatasource } from '../../datasource/git-tags/index.ts';
+import { PypiDatasource } from '../../datasource/pypi/index.ts';
 
-export { extractAllPackageFiles, extractPackageFile } from './extract';
-export { updateArtifacts } from './artifacts';
+export { updateArtifacts } from './artifacts.ts';
+export { extractAllPackageFiles, extractPackageFile } from './extract.ts';
 
 export const supportsLockFileMaintenance = true;
+export const lockFileNames = ['requirements.txt'];
+export const lockFileMaintenanceIsDelegatedToPackageManager = true;
+
+export const displayName = 'pip-compile';
+export const url =
+  'https://pip-tools.readthedocs.io/en/latest/reference/pip-compile/';
+export const categories: Category[] = ['python'];
 
 export const defaultConfig = {
-  fileMatch: [],
+  managerFilePatterns: [],
   lockFileMaintenance: {
     enabled: true,
     branchTopic: 'pip-compile-refresh',
@@ -16,6 +23,6 @@ export const defaultConfig = {
   },
 };
 
-export const categories: Category[] = ['python'];
-
 export const supportedDatasources = [PypiDatasource.id, GitTagsDatasource.id];
+
+export { knownDepTypes } from './dep-types.ts';

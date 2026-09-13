@@ -1,15 +1,16 @@
-import is from '@sindresorhus/is';
-import { TEMPORARY_ERROR } from '../../../constants/error-messages';
-import { logger } from '../../../logger';
-import { exec } from '../../../util/exec';
-import type { ExecOptions } from '../../../util/exec/types';
+import { isEmptyArray, isString } from '@sindresorhus/is';
+import { quote } from 'shlex';
+import { TEMPORARY_ERROR } from '../../../constants/error-messages.ts';
+import { logger } from '../../../logger/index.ts';
+import { exec } from '../../../util/exec/index.ts';
+import type { ExecOptions } from '../../../util/exec/types.ts';
 import {
   deleteLocalFile,
   getSiblingFileName,
   readLocalFile,
   writeLocalFile,
-} from '../../../util/fs';
-import type { UpdateArtifact, UpdateArtifactsResult } from '../types';
+} from '../../../util/fs/index.ts';
+import type { UpdateArtifact, UpdateArtifactsResult } from '../types.ts';
 
 export async function updateArtifacts(
   updateArtifact: UpdateArtifact,
@@ -17,9 +18,9 @@ export async function updateArtifacts(
   const { packageFileName, updatedDeps, newPackageFileContent, config } =
     updateArtifact;
   logger.debug(`gleam.updateArtifacts(${packageFileName})`);
-  const isLockFileMaintenance = config.updateType === 'lockFileMaintenance';
+  const { isLockFileMaintenance } = config;
 
-  if (is.emptyArray(updatedDeps) && !isLockFileMaintenance) {
+  if (isEmptyArray(updatedDeps) && !isLockFileMaintenance) {
     logger.debug('No updated gleam deps - returning null');
     return null;
   }
@@ -49,7 +50,16 @@ export async function updateArtifacts(
       ],
     };
 
-    await exec('gleam deps download', execOptions);
+    // `gleam deps update` with no packages rebuilds the lock file
+    const packagesToUpdate = isLockFileMaintenance
+      ? []
+      : updatedDeps.map((dep) => dep.depName).filter(isString);
+
+    const updateCommand = [
+      'gleam deps update',
+      ...packagesToUpdate.map(quote),
+    ].join(' ');
+    await exec(updateCommand, execOptions);
     const newLockFileContent = await readLocalFile(lockFileName, 'utf8');
     if (!newLockFileContent) {
       logger.debug(`No ${lockFileName} found`);
@@ -76,7 +86,7 @@ export async function updateArtifacts(
     return [
       {
         artifactError: {
-          lockFile: lockFileName,
+          fileName: lockFileName,
           stderr: err.message,
         },
       },

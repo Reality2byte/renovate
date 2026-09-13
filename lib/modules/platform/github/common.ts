@@ -1,7 +1,9 @@
-import is from '@sindresorhus/is';
-import { GithubHttp } from '../../../util/http/github';
-import { getPrBodyStruct } from '../pr-body';
-import type { GhPr, GhRestPr } from './types';
+import { isNonEmptyArray, isNonEmptyString, isString } from '@sindresorhus/is';
+import { logger } from '../../../logger/index.ts';
+import { GithubHttp } from '../../../util/http/github.ts';
+import { getPrBodyStruct } from '../pr-body.ts';
+import type { MergePRConfig } from '../types.ts';
+import type { GhPr, GhRestPr } from './types.ts';
 
 export const githubApi = new GithubHttp();
 
@@ -15,7 +17,7 @@ export function coerceRestPr(pr: GhRestPr): GhPr {
     sourceBranch: pr.head?.ref,
     title: pr.title,
     state:
-      pr.state === 'closed' && is.string(pr.merged_at) ? 'merged' : pr.state,
+      pr.state === 'closed' && isString(pr.merged_at) ? 'merged' : pr.state,
     bodyStruct,
     updated_at: pr.updated_at,
     node_id: pr.node_id,
@@ -33,14 +35,14 @@ export function coerceRestPr(pr: GhRestPr): GhPr {
     result.labels = pr.labels.map(({ name }) => name);
   }
 
-  if (!!pr.assignee || is.nonEmptyArray(pr.assignees)) {
+  if (!!pr.assignee || isNonEmptyArray(pr.assignees)) {
     result.hasAssignees = true;
   }
 
   if (pr.requested_reviewers) {
     result.reviewers = pr.requested_reviewers
       .map(({ login }) => login)
-      .filter(is.nonEmptyString);
+      .filter(isNonEmptyString);
   }
 
   if (pr.created_at) {
@@ -56,4 +58,23 @@ export function coerceRestPr(pr: GhRestPr): GhPr {
   }
 
   return result;
+}
+
+export function mapMergeStartegy(
+  strategy: MergePRConfig['strategy'],
+): string | undefined {
+  switch (strategy) {
+    case 'auto':
+      return undefined;
+    case 'fast-forward': {
+      logger.warn(
+        'Fast-forward merge strategy is not supported by Github. Falling back to merge strategy set for the repository.',
+      );
+      return undefined;
+    }
+    case 'merge-commit':
+      return 'merge';
+    default:
+      return strategy;
+  }
 }

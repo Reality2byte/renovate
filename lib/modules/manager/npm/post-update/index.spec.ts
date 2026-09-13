@@ -1,28 +1,26 @@
-// TODO: add tests
 import upath from 'upath';
-import { Fixtures } from '../../../../../test/fixtures';
-import { fs, git, logger, partial, scm } from '../../../../../test/util';
-import { GlobalConfig } from '../../../../config/global';
-import type { FileChange } from '../../../../util/git/types';
-import type { PostUpdateConfig } from '../../types';
-import * as npm from './npm';
-import * as pnpm from './pnpm';
-import * as rules from './rules';
-import type { AdditionalPackageFiles } from './types';
-import * as yarn from './yarn';
+import { Fixtures } from '~test/fixtures.ts';
+import { fs, git, logger, partial, scm } from '~test/util.ts';
+import { GlobalConfig } from '../../../../config/global.ts';
+import type { FileChange } from '../../../../util/git/types.ts';
+import type { PostUpdateConfig } from '../../types.ts';
 import {
   determineLockFileDirs,
   getAdditionalFiles,
   updateYarnBinary,
   writeExistingFiles,
   writeUpdatedPackageFiles,
-} from './';
+} from './index.ts';
+import * as npm from './npm.ts';
+import * as pnpm from './pnpm.ts';
+import * as rules from './rules.ts';
+import type { AdditionalPackageFiles } from './types.ts';
+import * as yarn from './yarn.ts';
 
-jest.mock('../../../../util/fs');
-jest.mock('../../../../util/git');
-jest.mock('./npm');
-jest.mock('./yarn');
-jest.mock('./pnpm');
+vi.mock('../../../../util/fs/index.ts');
+vi.mock('./npm.ts');
+vi.mock('./yarn.ts');
+vi.mock('./pnpm.ts');
 
 describe('modules/manager/npm/post-update/index', () => {
   let baseConfig: PostUpdateConfig;
@@ -52,7 +50,7 @@ describe('modules/manager/npm/post-update/index', () => {
       {
         packageFile: 'packages/pnpm/package.json',
         managerData: {
-          pnpmShrinkwrap: 'packages/pnpm/pnpm-lock.yaml',
+          pnpmLockFile: 'packages/pnpm/pnpm-lock.yaml',
         },
       },
     ],
@@ -161,7 +159,7 @@ describe('modules/manager/npm/post-update/index', () => {
         ),
       ).toStrictEqual({
         npmLockDirs: ['package-lock.json', 'randomFolder/package-lock.json'],
-        pnpmShrinkwrapDirs: ['packages/pnpm/pnpm-lock.yaml'],
+        pnpmLockFileDirs: ['packages/pnpm/pnpm-lock.yaml'],
         yarnLockDirs: ['yarn.lock'],
       });
     });
@@ -184,7 +182,7 @@ describe('modules/manager/npm/post-update/index', () => {
         ),
       ).toStrictEqual({
         npmLockDirs: [],
-        pnpmShrinkwrapDirs: [],
+        pnpmLockFileDirs: [],
         yarnLockDirs: ['yarn.lock'],
       });
     });
@@ -201,7 +199,113 @@ describe('modules/manager/npm/post-update/index', () => {
 
       expect(fs.writeLocalFile).toHaveBeenCalledTimes(2);
       expect(fs.deleteLocalFile).not.toHaveBeenCalled();
-      expect(git.getFile).toHaveBeenCalledOnce();
+      expect(git.getFile).toHaveBeenCalledExactlyOnceWith('package-lock.json');
+    });
+
+    it('massages out lockstep siblings pinning the old version', async () => {
+      git.getFile.mockResolvedValueOnce(
+        JSON.stringify({
+          name: 'update-lockfile-massage-2',
+          version: '1.0.0',
+          lockfileVersion: 3,
+          requires: true,
+          packages: {
+            '': {
+              name: 'update-lockfile-massage-2',
+              version: '1.0.0',
+              dependencies: { vue: '^3.3.10' },
+              devDependencies: { '@vue/test-utils': '^2.4.3' },
+            },
+            'node_modules/vue': {
+              version: '3.5.39',
+              dependencies: {
+                '@vue/server-renderer': '3.5.39',
+                '@vue/shared': '3.5.39',
+              },
+            },
+            // lockstep sibling pinning vue via peerDependencies
+            'node_modules/@vue/server-renderer': {
+              version: '3.5.39',
+              dependencies: { '@vue/shared': '3.5.39' },
+              peerDependencies: { vue: '3.5.39' },
+            },
+            // lockstep sibling pinning vue via dependencies
+            'node_modules/@vue/compiler-sfc': {
+              version: '3.5.39',
+              dependencies: { vue: '3.5.39' },
+            },
+            // lockstep sibling pinning vue via optionalDependencies
+            'node_modules/@vue/optional-consumer': {
+              version: '3.5.39',
+              optionalDependencies: { vue: '3.5.39' },
+            },
+            'node_modules/@vue/shared': {
+              version: '3.5.39',
+            },
+            // range peer pin on vue, must stay
+            'node_modules/@vue/test-utils': {
+              version: '2.4.11',
+              dev: true,
+              peerDependencies: { vue: '3.x' },
+            },
+            // workspace pinning vue exactly, must stay: it is the link target
+            // of node_modules/@vue-repro/app
+            'packages/app': {
+              name: '@vue-repro/app',
+              version: '1.0.0',
+              dependencies: { vue: '3.5.39' },
+            },
+            'node_modules/@vue-repro/app': {
+              resolved: 'packages/app',
+              link: true,
+            },
+          },
+        }),
+      );
+      const config = {
+        ...baseConfig,
+        upgrades: [
+          {
+            depName: 'vue',
+            lockedVersion: '3.5.39',
+            newVersion: '3.5.40',
+            managerData: { npmLock: 'package-lock.json' },
+          },
+        ],
+      };
+
+      await writeExistingFiles(config, {
+        npm: [
+          {
+            packageFile: 'package.json',
+            managerData: { npmLock: 'package-lock.json' },
+          },
+        ],
+      });
+
+      const lockWrite = fs.writeLocalFile.mock.calls.find(
+        (call) => call[0] === 'package-lock.json',
+      );
+      expect(lockWrite).toBeDefined();
+      const written = JSON.parse(lockWrite![1] as string);
+      // the updated dep itself and its exact-pinned lockstep siblings go
+      expect(written.packages['node_modules/vue']).toBeUndefined();
+      expect(
+        written.packages['node_modules/@vue/server-renderer'],
+      ).toBeUndefined();
+      expect(
+        written.packages['node_modules/@vue/compiler-sfc'],
+      ).toBeUndefined();
+      expect(
+        written.packages['node_modules/@vue/optional-consumer'],
+      ).toBeUndefined();
+      // packages without an exact pin on the updated dep stay
+      expect(written.packages['node_modules/@vue/test-utils']).toBeDefined();
+      expect(written.packages['node_modules/@vue/shared']).toBeDefined();
+      // workspaces stay even when they pin exactly, else npm fails with
+      // EMISSINGTARGET on the link entry referencing them
+      expect(written.packages['packages/app']).toBeDefined();
+      expect(written.packages['node_modules/@vue-repro/app']).toBeDefined();
     });
 
     it('writes .npmrc files', async () => {
@@ -218,8 +322,7 @@ describe('modules/manager/npm/post-update/index', () => {
         ],
       });
 
-      expect(fs.writeLocalFile).toHaveBeenCalledOnce();
-      expect(fs.writeLocalFile).toHaveBeenCalledWith(
+      expect(fs.writeLocalFile).toHaveBeenCalledExactlyOnceWith(
         'packages/core/.npmrc',
         '#dummy\n',
       );
@@ -242,10 +345,64 @@ describe('modules/manager/npm/post-update/index', () => {
         },
       );
 
-      expect(fs.writeLocalFile).toHaveBeenCalledOnce();
-      expect(fs.writeLocalFile).toHaveBeenCalledWith(
+      expect(fs.writeLocalFile).toHaveBeenCalledExactlyOnceWith(
         'packages/core/.npmrc',
         '#dummy\n',
+      );
+    });
+
+    it('snapshots a shared .npmrc only once', async () => {
+      fs.readLocalFile.mockResolvedValue('original');
+      const originalNpmrcFiles = new Map<string, string>();
+
+      await writeExistingFiles(
+        updateConfig,
+        {
+          npm: [
+            {
+              packageFile: 'packages/core/package.json',
+              npmrc: 'first',
+              managerData: {},
+            },
+            {
+              packageFile: 'packages/core/package.json',
+              npmrc: 'second',
+              managerData: {},
+            },
+          ],
+        },
+        originalNpmrcFiles,
+      );
+
+      expect(fs.readLocalFile).toHaveBeenCalledExactlyOnceWith(
+        'packages/core/.npmrc',
+        'utf8',
+      );
+      expect(originalNpmrcFiles).toEqual(
+        new Map([['packages/core/.npmrc', 'original']]),
+      );
+    });
+
+    it('logs and continues if a temporary .npmrc cannot be prepared', async () => {
+      const err = new Error('read failed');
+      fs.readLocalFile.mockRejectedValueOnce(err);
+
+      await expect(
+        writeExistingFiles(updateConfig, {
+          npm: [
+            {
+              packageFile: 'packages/core/package.json',
+              npmrc: 'sanitized',
+              managerData: {},
+            },
+          ],
+        }),
+      ).toResolve();
+
+      expect(fs.writeLocalFile).not.toHaveBeenCalled();
+      expect(logger.logger.warn).toHaveBeenCalledWith(
+        { npmrcFilename: 'packages/core/.npmrc', err },
+        'Error writing .npmrc',
       );
     });
 
@@ -259,7 +416,7 @@ describe('modules/manager/npm/post-update/index', () => {
 
       expect(fs.writeLocalFile).toHaveBeenCalledTimes(2);
       expect(fs.deleteLocalFile).not.toHaveBeenCalled();
-      expect(git.getFile).toHaveBeenCalledOnce();
+      expect(git.getFile).toHaveBeenCalledExactlyOnceWith('package-lock.json');
     });
 
     it('has no npm files', async () => {
@@ -282,6 +439,36 @@ describe('modules/manager/npm/post-update/index', () => {
       ).resolves.toBeUndefined();
       expect(fs.writeLocalFile).not.toHaveBeenCalled();
     });
+
+    it('prefers artifact content over package file content for the same path', async () => {
+      await writeUpdatedPackageFiles({
+        ...baseConfig,
+        updatedPackageFiles: [
+          {
+            type: 'addition',
+            path: 'pnpm-workspace.yaml',
+            contents: 'catalog:\n  effect: ^3.20.0\nminimumReleaseAge: 10080\n',
+          },
+        ],
+        updatedArtifacts: [
+          {
+            type: 'deletion',
+            path: 'some-deleted-file.yaml',
+          },
+          {
+            type: 'addition',
+            path: 'pnpm-workspace.yaml',
+            contents:
+              'catalog:\n  effect: ^3.20.0\nminimumReleaseAge: 10080\nminimumReleaseAgeExclude:\n  - effect@3.20.0\n',
+          },
+        ],
+      });
+      expect(fs.writeLocalFile).toHaveBeenCalledOnce();
+      expect(fs.writeLocalFile).toHaveBeenCalledWith(
+        'pnpm-workspace.yaml',
+        'catalog:\n  effect: ^3.20.0\nminimumReleaseAge: 10080\nminimumReleaseAgeExclude:\n  - effect@3.20.0\n',
+      );
+    });
   });
 
   describe('updateYarnBinary()', () => {
@@ -301,7 +488,23 @@ describe('modules/manager/npm/post-update/index', () => {
         undefined,
       );
       expect(yarnrcYmlContent).toBeUndefined();
-      expect(updatedArtifacts).toMatchSnapshot();
+      expect(updatedArtifacts).toEqual([
+        {
+          type: 'addition',
+          path: 'path/to/lockfile/.yarnrc.yml',
+          contents: 'yarnPath: .yarn/releases/yarn-3.0.2.cjs\na: b\n',
+        },
+        {
+          type: 'deletion',
+          path: 'path/to/lockfile/.yarn/releases/yarn-3.0.1.cjs',
+        },
+        {
+          type: 'addition',
+          path: 'path/to/lockfile/.yarn/releases/yarn-3.0.2.cjs',
+          contents: 'new yarn\n',
+          isExecutable: true,
+        },
+      ]);
     });
 
     it('should return .yarnrc.yml content if it has been overwritten', async () => {
@@ -314,8 +517,26 @@ describe('modules/manager/npm/post-update/index', () => {
         oldYarnrcYml,
       );
       expect(git.getFile).not.toHaveBeenCalled();
-      expect(existingYarnrcYmlContent).toMatchSnapshot();
-      expect(updatedArtifacts).toMatchSnapshot();
+      expect(existingYarnrcYmlContent).toBe(
+        'yarnPath: .yarn/releases/yarn-3.0.2.cjs\na: b\n',
+      );
+      expect(updatedArtifacts).toEqual([
+        {
+          type: 'addition',
+          path: 'path/to/lockfile/.yarnrc.yml',
+          contents: 'yarnPath: .yarn/releases/yarn-3.0.2.cjs\na: b\n',
+        },
+        {
+          type: 'deletion',
+          path: 'path/to/lockfile/.yarn/releases/yarn-3.0.1.cjs',
+        },
+        {
+          type: 'addition',
+          path: 'path/to/lockfile/.yarn/releases/yarn-3.0.2.cjs',
+          contents: 'new yarn\n',
+          isExecutable: true,
+        },
+      ]);
     });
 
     it("should not update the Yarn binary if the old .yarnrc.yml doesn't exist", async () => {
@@ -333,7 +554,7 @@ describe('modules/manager/npm/post-update/index', () => {
 
     it("should not update the Yarn binary if the new .yarnrc.yml doesn't exist", async () => {
       git.getFile.mockResolvedValueOnce(oldYarnrcYml);
-      fs.readLocalFile.mockResolvedValueOnce(null as never);
+      fs.readLocalFile.mockResolvedValueOnce(null);
       const updatedArtifacts: FileChange[] = [];
       const yarnrcYmlContent = await updateYarnBinary(
         lockFileDir,
@@ -345,7 +566,7 @@ describe('modules/manager/npm/post-update/index', () => {
     });
 
     it("should return existing .yarnrc.yml if the new one doesn't exist", async () => {
-      fs.readLocalFile.mockResolvedValueOnce(null as never);
+      fs.readLocalFile.mockResolvedValueOnce(null);
       const updatedArtifacts: FileChange[] = [];
       const existingYarnrcYmlContent = await updateYarnBinary(
         lockFileDir,
@@ -374,10 +595,10 @@ describe('modules/manager/npm/post-update/index', () => {
   });
 
   describe('getAdditionalFiles()', () => {
-    const spyNpm = jest.spyOn(npm, 'generateLockFile');
-    const spyYarn = jest.spyOn(yarn, 'generateLockFile');
-    const spyPnpm = jest.spyOn(pnpm, 'generateLockFile');
-    const spyProcessHostRules = jest.spyOn(rules, 'processHostRules');
+    const spyNpm = vi.spyOn(npm, 'generateLockFile');
+    const spyYarn = vi.spyOn(yarn, 'generateLockFile');
+    const spyPnpm = vi.spyOn(pnpm, 'generateLockFile');
+    const spyProcessHostRules = vi.spyOn(rules, 'processHostRules');
 
     beforeEach(() => {
       spyNpm.mockResolvedValue({});
@@ -390,33 +611,31 @@ describe('modules/manager/npm/post-update/index', () => {
     });
 
     it('works', async () => {
-      expect(
-        await getAdditionalFiles(
-          { ...updateConfig, updateLockFiles: true },
-          additionalFiles,
-        ),
-      ).toStrictEqual({
+      await expect(
+        getAdditionalFiles({ ...updateConfig }, additionalFiles),
+      ).resolves.toStrictEqual({
         artifactErrors: [],
+        artifactNotices: [],
         updatedArtifacts: [],
       });
     });
 
     it('works for npm', async () => {
       spyNpm.mockResolvedValueOnce({ error: false, lockFile: '{}' });
-      // TODO: fix types, jest is using wrong overload (#22198)
-      fs.readLocalFile.mockImplementation((f): Promise<any> => {
+      fs.readLocalFile.mockImplementation((f): Promise<string> => {
         if (f === '.npmrc') {
           return Promise.resolve('# dummy');
         }
         return Promise.resolve('');
       });
-      expect(
-        await getAdditionalFiles(
-          { ...updateConfig, updateLockFiles: true, reuseExistingBranch: true },
+      await expect(
+        getAdditionalFiles(
+          { ...updateConfig, reuseExistingBranch: true },
           additionalFiles,
         ),
-      ).toStrictEqual({
+      ).resolves.toStrictEqual({
         artifactErrors: [],
+        artifactNotices: [],
         updatedArtifacts: [
           {
             type: 'addition',
@@ -427,11 +646,176 @@ describe('modules/manager/npm/post-update/index', () => {
       });
 
       expect(fs.readLocalFile).toHaveBeenCalledWith('.npmrc', 'utf8');
+
       expect(fs.writeLocalFile).toHaveBeenCalledWith('.npmrc', '# dummy');
       expect(fs.deleteLocalFile.mock.calls).toMatchObject([
         ['randomFolder/.npmrc'],
         ['packages/pnpm/.npmrc'],
       ]);
+    });
+
+    it('restores a nested repository .npmrc after generating artifacts', async () => {
+      const npmrcFilename = 'packages/core/.npmrc';
+      const originalNpmrc = 'package-lock=false\r\nkeep = true';
+      const files = new Map<string, string>([[npmrcFilename, originalNpmrc]]);
+      fs.readLocalFile.mockImplementation((fileName): Promise<string | null> =>
+        Promise.resolve(files.get(fileName) ?? null),
+      );
+      fs.writeLocalFile.mockImplementation((fileName, content) => {
+        files.set(fileName, content.toString());
+        return Promise.resolve();
+      });
+      fs.deleteLocalFile.mockImplementation((fileName) => {
+        files.delete(fileName);
+        return Promise.resolve();
+      });
+
+      const packageFiles: AdditionalPackageFiles = {
+        npm: [
+          {
+            packageFile: 'packages/core/package.json',
+            npmrc: 'keep = true',
+            managerData: {
+              npmLock: 'packages/core/package-lock.json',
+              npmrcFileName: npmrcFilename,
+            },
+          },
+        ],
+      };
+      const config = partial<PostUpdateConfig>({
+        upgrades: [{}],
+        updatedPackageFiles: [
+          {
+            type: 'addition',
+            path: 'packages/core/package.json',
+            contents: '{}',
+          },
+        ],
+      });
+
+      await expect(getAdditionalFiles(config, packageFiles)).toResolve();
+
+      expect(files.get(npmrcFilename)).toBe(originalNpmrc);
+      expect(fs.writeLocalFile).toHaveBeenCalledWith(
+        npmrcFilename,
+        'keep = true\n',
+      );
+      expect(fs.writeLocalFile).toHaveBeenLastCalledWith(
+        npmrcFilename,
+        originalNpmrc,
+      );
+    });
+
+    it('restores a repository .npmrc when artifact generation throws', async () => {
+      const npmrcFilename = '.npmrc';
+      const originalNpmrc = 'package-lock=false';
+      let npmrcOnDisk = originalNpmrc;
+      fs.readLocalFile.mockImplementation((fileName): Promise<string | null> =>
+        Promise.resolve(fileName === npmrcFilename ? npmrcOnDisk : null),
+      );
+      fs.writeLocalFile.mockImplementation((fileName, content) => {
+        if (fileName === npmrcFilename) {
+          npmrcOnDisk = content.toString();
+        }
+        return Promise.resolve();
+      });
+      spyNpm.mockImplementationOnce(() => {
+        expect(npmrcOnDisk).toBe('\n');
+        return Promise.reject(new Error('artifact failure'));
+      });
+
+      const packageFiles: AdditionalPackageFiles = {
+        npm: [
+          {
+            packageFile: 'package.json',
+            npmrc: '',
+            managerData: {
+              npmLock: 'package-lock.json',
+              npmrcFileName: npmrcFilename,
+            },
+          },
+        ],
+      };
+      const config = partial<PostUpdateConfig>({
+        upgrades: [{}],
+        updatedPackageFiles: [
+          {
+            type: 'addition',
+            path: 'package.json',
+            contents: '{}',
+          },
+        ],
+      });
+
+      await expect(getAdditionalFiles(config, packageFiles)).rejects.toThrow(
+        'artifact failure',
+      );
+      expect(npmrcOnDisk).toBe(originalNpmrc);
+      expect(fs.writeLocalFile).toHaveBeenLastCalledWith(
+        npmrcFilename,
+        originalNpmrc,
+      );
+    });
+
+    it('logs and continues when restoring a repository .npmrc fails', async () => {
+      const npmrcFilename = '.npmrc';
+      const originalNpmrc = 'package-lock=false';
+      const err = new Error('restore failed');
+      fs.readLocalFile.mockResolvedValue(originalNpmrc);
+      fs.writeLocalFile.mockResolvedValueOnce().mockRejectedValueOnce(err);
+
+      await expect(
+        getAdditionalFiles(partial<PostUpdateConfig>({ upgrades: [] }), {
+          npm: [
+            {
+              packageFile: 'package.json',
+              npmrc: '',
+              managerData: { npmrcFileName: npmrcFilename },
+            },
+          ],
+        }),
+      ).toResolve();
+
+      expect(fs.writeLocalFile).toHaveBeenNthCalledWith(1, npmrcFilename, '\n');
+      expect(fs.writeLocalFile).toHaveBeenNthCalledWith(
+        2,
+        npmrcFilename,
+        originalNpmrc,
+      );
+      expect(logger.logger.warn).toHaveBeenCalledWith(
+        { npmrcFilename, err },
+        'Error restoring .npmrc',
+      );
+    });
+
+    it('adds artifact notice on beforeFallback', async () => {
+      spyNpm.mockResolvedValueOnce({
+        error: false,
+        lockFile: '{}',
+        beforeFallback: true,
+      });
+      fs.readLocalFile.mockImplementation((f): Promise<string> => {
+        if (f === '.npmrc') {
+          return Promise.resolve('# dummy');
+        }
+        return Promise.resolve('');
+      });
+      const res = await getAdditionalFiles(
+        { ...updateConfig, reuseExistingBranch: true },
+        additionalFiles,
+      );
+
+      expect(res.artifactNotices).toEqual([
+        {
+          file: 'package-lock.json',
+          message:
+            'npm `--before` could not be enforced because existing locked packages were published after the `minimumReleaseAge` cutoff. This will resolve after the next lock file maintenance run.',
+        },
+      ]);
+      expect(logger.logger.warn).toHaveBeenCalledWith(
+        { npmLock: 'package-lock.json' },
+        'npm `--before` could not be enforced because existing locked packages were published after the `minimumReleaseAge` cutoff. This will resolve after the next lock file maintenance run.',
+      );
     });
 
     it('detects if lock file contents are unchanged(reuseExistingBranch=true)', async () => {
@@ -453,7 +837,6 @@ describe('modules/manager/npm/post-update/index', () => {
           await getAdditionalFiles(
             {
               ...updateConfig,
-              updateLockFiles: true,
               reuseExistingBranch: true,
             },
             additionalFiles,
@@ -482,7 +865,6 @@ describe('modules/manager/npm/post-update/index', () => {
           await getAdditionalFiles(
             {
               ...updateConfig,
-              updateLockFiles: true,
               reuseExistingBranch: false,
               baseBranch: 'base',
             },
@@ -494,13 +876,14 @@ describe('modules/manager/npm/post-update/index', () => {
 
     it('works for yarn', async () => {
       spyYarn.mockResolvedValueOnce({ error: false, lockFile: '{}' });
-      expect(
-        await getAdditionalFiles(
-          { ...updateConfig, updateLockFiles: true, reuseExistingBranch: true },
+      await expect(
+        getAdditionalFiles(
+          { ...updateConfig, reuseExistingBranch: true },
           additionalFiles,
         ),
-      ).toStrictEqual({
+      ).resolves.toStrictEqual({
         artifactErrors: [],
+        artifactNotices: [],
         updatedArtifacts: [
           {
             type: 'addition',
@@ -517,11 +900,10 @@ describe('modules/manager/npm/post-update/index', () => {
         error: false,
         lockFile: 'some-contents:',
       });
-      expect(
-        await getAdditionalFiles(
+      await expect(
+        getAdditionalFiles(
           {
             ...updateConfig,
-            updateLockFiles: true,
             reuseExistingBranch: true,
             upgrades: [
               {
@@ -532,8 +914,9 @@ describe('modules/manager/npm/post-update/index', () => {
           },
           additionalFiles,
         ),
-      ).toStrictEqual({
+      ).resolves.toStrictEqual({
         artifactErrors: [],
+        artifactNotices: [],
         updatedArtifacts: [
           {
             type: 'addition',
@@ -546,34 +929,68 @@ describe('modules/manager/npm/post-update/index', () => {
     });
 
     it('no npm files', async () => {
-      expect(await getAdditionalFiles(baseConfig, {})).toStrictEqual({
+      await expect(getAdditionalFiles(baseConfig, {})).resolves.toStrictEqual({
         artifactErrors: [],
+        artifactNotices: [],
         updatedArtifacts: [],
       });
     });
 
     it('no lockfiles updates', async () => {
-      expect(
-        await getAdditionalFiles(baseConfig, additionalFiles),
-      ).toStrictEqual({
+      await expect(
+        getAdditionalFiles(baseConfig, additionalFiles),
+      ).resolves.toStrictEqual({
         artifactErrors: [],
+        artifactNotices: [],
         updatedArtifacts: [],
       });
     });
 
+    it('skip lock file updating', async () => {
+      await expect(
+        getAdditionalFiles(
+          {
+            ...updateConfig,
+            skipArtifactsUpdate: true,
+            reuseExistingBranch: true,
+            upgrades: [
+              {
+                depName: 'postcss',
+                isRemediation: true,
+                managerData: {
+                  npmLock: 'package-lock.json',
+                },
+                rangeStrategy: 'widen',
+              },
+            ],
+          },
+          additionalFiles,
+        ),
+      ).resolves.toStrictEqual({
+        artifactErrors: [],
+        artifactNotices: [],
+        updatedArtifacts: [],
+      });
+      expect(spyNpm).not.toHaveBeenCalled();
+
+      expect(logger.logger.debug).toHaveBeenCalledWith(
+        'Skipping lock file generation',
+      );
+    });
+
     it('reuse existing up-to-date', async () => {
-      expect(
-        await getAdditionalFiles(
+      await expect(
+        getAdditionalFiles(
           {
             ...baseConfig,
             reuseExistingBranch: true,
             upgrades: [{ isLockfileUpdate: true }],
-            updateLockFiles: true,
           },
           additionalFiles,
         ),
-      ).toStrictEqual({
+      ).resolves.toStrictEqual({
         artifactErrors: [],
+        artifactNotices: [],
         updatedArtifacts: [],
       });
     });
@@ -581,58 +998,56 @@ describe('modules/manager/npm/post-update/index', () => {
     it('lockfile maintenance branch exists', async () => {
       // TODO: can this really happen?
       scm.branchExists.mockResolvedValueOnce(true);
-      expect(
-        await getAdditionalFiles(
+      await expect(
+        getAdditionalFiles(
           {
             ...baseConfig,
             upgrades: [{ isLockfileUpdate: false }],
             reuseExistingBranch: true,
-            updateType: 'lockFileMaintenance',
-            updateLockFiles: true,
+            isLockFileMaintenance: true,
           },
           additionalFiles,
         ),
-      ).toStrictEqual({
+      ).resolves.toStrictEqual({
         artifactErrors: [],
+        artifactNotices: [],
         updatedArtifacts: [],
       });
     });
 
     it('fails for npm', async () => {
       spyNpm.mockResolvedValueOnce({ error: true, stderr: 'some-error' });
-      expect(
-        await getAdditionalFiles(
-          { ...updateConfig, updateLockFiles: true },
-          additionalFiles,
-        ),
-      ).toStrictEqual({
+      await expect(
+        getAdditionalFiles({ ...updateConfig }, additionalFiles),
+      ).resolves.toStrictEqual({
         artifactErrors: [
-          { lockFile: 'package-lock.json', stderr: 'some-error' },
+          { fileName: 'package-lock.json', stderr: 'some-error' },
         ],
+        artifactNotices: [],
         updatedArtifacts: [],
       });
     });
 
     it('fails for yarn', async () => {
       spyYarn.mockResolvedValueOnce({ error: true, stdout: 'some-error' });
-      expect(
-        await getAdditionalFiles(
-          { ...updateConfig, updateLockFiles: true, reuseExistingBranch: true },
+      await expect(
+        getAdditionalFiles(
+          { ...updateConfig, reuseExistingBranch: true },
           additionalFiles,
         ),
-      ).toStrictEqual({
-        artifactErrors: [{ lockFile: 'yarn.lock', stderr: 'some-error' }],
+      ).resolves.toStrictEqual({
+        artifactErrors: [{ fileName: 'yarn.lock', stderr: 'some-error' }],
+        artifactNotices: [],
         updatedArtifacts: [],
       });
     });
 
     it('fails for pnpm', async () => {
       spyPnpm.mockResolvedValueOnce({ error: true, stdout: 'some-error' });
-      expect(
-        await getAdditionalFiles(
+      await expect(
+        getAdditionalFiles(
           {
             ...updateConfig,
-            updateLockFiles: true,
             upgrades: [
               {
                 isRemediation: true,
@@ -642,10 +1057,11 @@ describe('modules/manager/npm/post-update/index', () => {
           },
           additionalFiles,
         ),
-      ).toStrictEqual({
+      ).resolves.toStrictEqual({
         artifactErrors: [
-          { lockFile: 'packages/pnpm/pnpm-lock.yaml', stderr: 'some-error' },
+          { fileName: 'packages/pnpm/pnpm-lock.yaml', stderr: 'some-error' },
         ],
+        artifactNotices: [],
         updatedArtifacts: [],
       });
     });
@@ -666,7 +1082,7 @@ describe('modules/manager/npm/post-update/index', () => {
       });
 
       it('should fuzzy merge the yarnrc Files', async () => {
-        (yarn.fuzzyMatchAdditionalYarnrcYml as jest.Mock).mockReturnValue({
+        vi.mocked(yarn.fuzzyMatchAdditionalYarnrcYml).mockReturnValue({
           npmRegistries: {
             'https://my-private-registry': { npmAuthToken: 'xxxxxx' },
           },
@@ -686,11 +1102,11 @@ describe('modules/manager/npm/post-update/index', () => {
         await getAdditionalFiles(
           {
             ...updateConfig,
-            updateLockFiles: true,
             reuseExistingBranch: true,
           },
           additionalFiles,
         );
+
         expect(fs.writeLocalFile).toHaveBeenCalledWith(
           '.yarnrc.yml',
           'npmRegistries:\n' +
@@ -719,14 +1135,15 @@ describe('modules/manager/npm/post-update/index', () => {
 
         spyYarn.mockResolvedValueOnce({ error: false, lockFile: '{}' });
 
-        await getAdditionalFiles(
-          {
-            ...updateConfig,
-            updateLockFiles: true,
-            reuseExistingBranch: true,
-          },
-          additionalFiles,
-        ).catch(() => {});
+        await expect(
+          getAdditionalFiles(
+            {
+              ...updateConfig,
+              reuseExistingBranch: true,
+            },
+            additionalFiles,
+          ),
+        ).rejects.toThrow(Error);
 
         expect(logger.logger.warn).toHaveBeenCalledWith(
           expect.anything(),

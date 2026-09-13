@@ -1,10 +1,14 @@
-import { z } from 'zod';
-import { Jsonc } from '../../../util/schema-utils';
+import { z } from 'zod/v4';
+import { Jsonc, LooseRecord } from '../../../util/schema-utils/index.ts';
 
 export const DevContainerFile = Jsonc.pipe(
   z.object({
     image: z.string().optional(),
-    features: z.record(z.unknown()).optional(),
+    features: LooseRecord(
+      z.object({
+        version: z.string().optional(),
+      }),
+    ).optional(),
   }),
 );
 

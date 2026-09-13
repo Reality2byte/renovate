@@ -1,51 +1,55 @@
 import { ERROR, WARN } from 'bunyan';
 import fs from 'fs-extra';
-import type { RenovateConfig } from '../../../test/util';
-import { logger, mocked } from '../../../test/util';
-import { GlobalConfig } from '../../config/global';
-import * as _presets from '../../config/presets';
-import { CONFIG_PRESETS_INVALID } from '../../constants/error-messages';
-import { DockerDatasource } from '../../modules/datasource/docker';
-import * as platform from '../../modules/platform';
-import * as secrets from '../../util/sanitize';
-import * as repositoryWorker from '../repository';
-import * as configParser from './config/parse';
-import * as limits from './limits';
-import * as globalWorker from '.';
+import type { RenovateConfig } from '~test/util.ts';
+import { logger, partial } from '~test/util.ts';
+import { GlobalConfig } from '../../config/global.ts';
+import { DockerDatasource } from '../../modules/datasource/docker/index.ts';
+import * as platform from '../../modules/platform/index.ts';
+import * as hostRules from '../../util/host-rules.ts';
+import * as secrets from '../../util/sanitize.ts';
+import * as repositoryWorker from '../repository/index.ts';
+import type { ProcessResult } from '../repository/result.ts';
+import * as configParser from './config/parse/index.ts';
+import * as globalWorker from './index.ts';
+import * as limits from './limits.ts';
 
-jest.mock('../repository');
-jest.mock('../../util/fs');
-jest.mock('../../config/presets');
+vi.mock('../repository/index.ts');
+vi.mock('../../util/fs/index.ts');
 
-jest.mock('fs-extra', () => {
-  const realFs = jest.requireActual<typeof fs>('fs-extra');
+vi.mock('fs-extra', async () => {
+  const realFs = await vi.importActual<typeof fs>('fs-extra');
   return {
-    ensureDir: jest.fn(),
-    remove: jest.fn(),
-    readFile: jest.fn((file: string, options: any) => {
-      if (file.endsWith('.wasm.gz')) {
-        return realFs.readFile(file, options);
-      }
-      return undefined;
-    }),
-    writeFile: jest.fn(),
-    outputFile: jest.fn(),
+    default: {
+      ensureDir: vi.fn(),
+      remove: vi.fn(),
+      readFile: vi.fn((file: string, options: any) => {
+        if (file.endsWith('.wasm.gz')) {
+          return realFs.readFile(file, options);
+        }
+        return undefined;
+      }),
+      writeFile: vi.fn(),
+      outputFile: vi.fn(),
+    },
   };
 });
 
-// imports are readonly
-const presets = mocked(_presets);
+// TODO: why do we need git here?
+vi.unmock('../../util/git/index.ts');
 
-const addSecretForSanitizing = jest.spyOn(secrets, 'addSecretForSanitizing');
-const parseConfigs = jest.spyOn(configParser, 'parseConfigs');
-const initPlatform = jest.spyOn(platform, 'initPlatform');
+const addSecretForSanitizing = vi.spyOn(secrets, 'addSecretForSanitizing');
+const parseConfigs = vi.spyOn(configParser, 'parseConfigs');
+const initPlatform = vi.spyOn(platform, 'initPlatform');
 
 describe('workers/global/index', () => {
   beforeEach(() => {
     logger.getProblems.mockImplementation(() => []);
+    logger.logLevel.mockImplementation(() => 'info');
     initPlatform.mockImplementation((input) => Promise.resolve(input));
-    delete process.env.AWS_SECRET_ACCESS_KEY;
-    delete process.env.AWS_SESSION_TOKEN;
+    vi.stubEnv('AWS_SECRET_ACCESS_KEY', undefined);
+    vi.stubEnv('AWS_SESSION_TOKEN', undefined);
+    vi.stubEnv('COREPACK_NPM_TOKEN', undefined);
+    vi.stubEnv('COREPACK_NPM_PASSWORD', undefined);
   });
 
   describe('getRepositoryConfig', () => {
@@ -74,43 +78,89 @@ describe('workers/global/index', () => {
       expect(repoConfig.parentOrg).toBe('a');
       expect(repoConfig.repository).toBe('a/b');
     });
+
+    it('stores repositoryEntryConfig for repositories[] object entries', async () => {
+      const repoConfig = await globalWorker.getRepositoryConfig(globalConfig, {
+        repository: 'test/repo',
+        extends: [':automergeAll'],
+        packageRules: [{ matchPackageNames: ['lodash'], enabled: false }],
+      });
+      expect(repoConfig.repositoryEntryConfig).toEqual({
+        extends: [':automergeAll'],
+        packageRules: [{ matchPackageNames: ['lodash'], enabled: false }],
+      });
+      expect(repoConfig.repository).toBe('test/repo');
+    });
+
+    it('extracts admin-level options from object entry to top level', async () => {
+      const repoConfig = await globalWorker.getRepositoryConfig(
+        { ...globalConfig, onboarding: true },
+        {
+          repository: 'test/repo',
+          onboarding: false,
+          requireConfig: 'optional',
+          allowedCommands: ['^hack/vendor$'],
+          dryRun: 'full',
+          extends: [':automergeAll'],
+          packageRules: [{ matchPackageNames: ['lodash'], enabled: false }],
+        },
+      );
+      // Admin options promoted to top level and override global config
+      expect(repoConfig.onboarding).toBe(false);
+      expect(repoConfig.requireConfig).toBe('optional');
+      expect(repoConfig.allowedCommands).toEqual(['^hack/vendor$']);
+      expect(repoConfig.dryRun).toBe('full');
+      // Repo-level options remain in repositoryEntryConfig
+      expect(repoConfig.repositoryEntryConfig).toEqual({
+        extends: [':automergeAll'],
+        packageRules: [{ matchPackageNames: ['lodash'], enabled: false }],
+      });
+    });
+
+    it('does not set repositoryEntryConfig when only admin-level options are present', async () => {
+      const repoConfig = await globalWorker.getRepositoryConfig(globalConfig, {
+        repository: 'test/repo',
+        onboarding: false,
+      });
+      expect(repoConfig.onboarding).toBe(false);
+      expect(repoConfig.repositoryEntryConfig).toBeUndefined();
+    });
+
+    it('GlobalConfig.set picks up per-repo onboarding override', async () => {
+      const repoConfig = await globalWorker.getRepositoryConfig(
+        { ...globalConfig, onboarding: true },
+        {
+          repository: 'test/repo',
+          onboarding: false,
+        },
+      );
+      GlobalConfig.set(repoConfig);
+      expect(GlobalConfig.get('onboarding')).toBe(false);
+    });
+
+    it('does not store repositoryEntryConfig for repositories[] string entries', async () => {
+      const repoConfig = await globalWorker.getRepositoryConfig(
+        globalConfig,
+        'test/repo',
+      );
+      expect(repoConfig.repositoryEntryConfig).toBeUndefined();
+      expect(repoConfig.repository).toBe('test/repo');
+    });
   });
 
   it('handles config warnings and errors', async () => {
     parseConfigs.mockResolvedValueOnce({
       repositories: [],
+      // @ts-expect-error -- testing
       maintainYarnLock: true,
       foo: 1,
     });
-    process.env.AWS_SECRET_ACCESS_KEY = 'key';
-    process.env.AWS_SESSION_TOKEN = 'token';
+    vi.stubEnv('AWS_SECRET_ACCESS_KEY', 'key');
+    vi.stubEnv('AWS_SESSION_TOKEN', 'token');
+    vi.stubEnv('COREPACK_NPM_TOKEN', 'corepack-token');
+    vi.stubEnv('COREPACK_NPM_PASSWORD', 'corepack-password');
     await expect(globalWorker.start()).resolves.toBe(0);
-    expect(addSecretForSanitizing).toHaveBeenCalledTimes(2);
-  });
-
-  it('resolves global presets immediately', async () => {
-    parseConfigs.mockResolvedValueOnce({
-      repositories: [],
-      globalExtends: [':pinVersions'],
-      hostRules: [{ matchHost: 'github.com', token: 'abc123' }],
-    });
-    presets.resolveConfigPresets.mockResolvedValueOnce({});
-    await expect(globalWorker.start()).resolves.toBe(0);
-    expect(presets.resolveConfigPresets).toHaveBeenCalledWith({
-      extends: [':pinVersions'],
-    });
-    expect(parseConfigs).toHaveBeenCalledTimes(1);
-  });
-
-  it('throws if global presets could not be resolved', async () => {
-    presets.resolveConfigPresets.mockImplementationOnce(() => {
-      throw new Error('some-error');
-    });
-    await expect(
-      globalWorker.resolveGlobalExtends(['some-preset']),
-    ).rejects.toThrow(CONFIG_PRESETS_INVALID);
-    expect(presets.resolveConfigPresets).toHaveBeenCalled();
-    expect(parseConfigs).not.toHaveBeenCalled();
+    expect(addSecretForSanitizing).toHaveBeenCalledTimes(4);
   });
 
   it('handles zero repos', async () => {
@@ -151,8 +201,115 @@ describe('workers/global/index', () => {
     expect(repositoryWorker.renovateRepository).toHaveBeenCalledTimes(2);
   });
 
+  it('returns the exit code of the first errored repository when exitCodeForErrors is enabled', async () => {
+    parseConfigs.mockResolvedValueOnce({
+      enabled: true,
+      exitCodeForErrors: true,
+      repositories: ['a', 'b', 'c'],
+    });
+    vi.mocked(repositoryWorker.renovateRepository)
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(partial<ProcessResult>({ exitCode: 5 }))
+      .mockResolvedValueOnce(partial<ProcessResult>({ exitCode: 6 }));
+
+    await expect(globalWorker.start()).resolves.toBe(5);
+    expect(repositoryWorker.renovateRepository).toHaveBeenCalledTimes(3);
+  });
+
+  it('ignores repository exit codes when exitCodeForErrors is disabled', async () => {
+    parseConfigs.mockResolvedValueOnce({
+      enabled: true,
+      repositories: ['a'],
+    });
+    vi.mocked(repositoryWorker.renovateRepository).mockResolvedValueOnce(
+      partial<ProcessResult>({ exitCode: 5 }),
+    );
+
+    await expect(globalWorker.start()).resolves.toBe(0);
+  });
+
+  it("filters the self-hosted admin's own hostRules headers against allowedHeaders", async () => {
+    // `allowedHeaders` has never exempted the self-hosted admin - `applyHostRule` filters by header name whoever set it - so we drop them here, with a WARN, rather than leave them to be discarded at request time
+    parseConfigs.mockResolvedValueOnce({
+      enabled: true,
+      repositories: ['a'],
+      allowedHeaders: ['X-*'],
+      hostRules: [
+        {
+          matchHost: 'registry.example.com',
+          headers: { 'X-Allowed': 'yes', Authorization: 'from-admin' },
+        },
+      ],
+    });
+
+    await expect(globalWorker.start()).resolves.toBe(0);
+
+    expect(hostRules.find({ url: 'https://registry.example.com' })).toEqual({
+      headers: { 'X-Allowed': 'yes' },
+      internalHostGrant: { implicit: true },
+    });
+    expect(logger.logger.warn).toHaveBeenCalledWith(
+      { denied: ['Authorization'] },
+      "Ignoring hostRules headers not permitted by this Renovate instance's `allowedHeaders`",
+    );
+  });
+
+  it("honors a repositories[] entry's allowedHeaders override when filtering the admin's own hostRules", async () => {
+    // `GlobalConfig` still reflects the previous repository (or the global config) when the admin's hostRules are re-registered per repo, so the filter must use this repository's own `allowedHeaders` - including any `repositories[]` entry override - and must not carry an override over to the next repository
+    const headersSeenPerRepo: (string | undefined)[] = [];
+    vi.mocked(repositoryWorker.renovateRepository).mockImplementation(() => {
+      headersSeenPerRepo.push(
+        hostRules.find({ url: 'https://registry.example.com' }).headers
+          ?.Authorization,
+      );
+      return Promise.resolve(undefined);
+    });
+    parseConfigs.mockResolvedValueOnce({
+      enabled: true,
+      allowedHeaders: ['X-*'],
+      repositories: [
+        { repository: 'a', allowedHeaders: ['Authorization'] },
+        'b',
+      ],
+      hostRules: [
+        {
+          matchHost: 'registry.example.com',
+          headers: { Authorization: 'from-admin' },
+        },
+      ],
+    });
+
+    await expect(globalWorker.start()).resolves.toBe(0);
+
+    expect(headersSeenPerRepo).toEqual(['from-admin', undefined]);
+  });
+
+  it('warns about disallowed admin hostRules headers once, not once per repository', async () => {
+    parseConfigs.mockResolvedValueOnce({
+      enabled: true,
+      allowedHeaders: ['X-*'],
+      repositories: ['a', 'b', 'c'],
+      hostRules: [
+        {
+          matchHost: 'registry.example.com',
+          headers: { Authorization: 'from-admin' },
+        },
+      ],
+    });
+
+    await expect(globalWorker.start()).resolves.toBe(0);
+
+    const denialWarnings = logger.logger.warn.mock.calls.filter(
+      ([, message]) =>
+        message ===
+        "Ignoring hostRules headers not permitted by this Renovate instance's `allowedHeaders`",
+    );
+    // once from `setGlobalHostRules` during initialization, and not again for its second registration nor for any repository in the loop
+    expect(denialWarnings).toHaveLength(1);
+  });
+
   it('processes repositories break', async () => {
-    const isLimitReached = jest.spyOn(limits, 'isLimitReached');
+    const isLimitReached = vi.spyOn(limits, 'isLimitReached');
     isLimitReached.mockReturnValue(true);
     parseConfigs.mockResolvedValueOnce({
       gitAuthor: 'a@b.com',
@@ -189,7 +346,7 @@ describe('workers/global/index', () => {
   });
 
   it('exits with zero when warnings are logged', async () => {
-    delete process.env.LOG_LEVEL;
+    vi.stubEnv('LOG_LEVEL', undefined);
     parseConfigs.mockResolvedValueOnce({
       baseDir: '/tmp/base',
       cacheDir: '/tmp/cache',
@@ -203,6 +360,19 @@ describe('workers/global/index', () => {
       },
     ]);
     await expect(globalWorker.start()).resolves.toBe(0);
+  });
+
+  it('does not log info message when log level is not info', async () => {
+    logger.logLevel.mockImplementation(() => 'debug');
+    parseConfigs.mockResolvedValueOnce({
+      baseDir: '/tmp/base',
+      cacheDir: '/tmp/cache',
+      repositories: [],
+    });
+    await expect(globalWorker.start()).resolves.toBe(0);
+    expect(logger.logger.info).not.toHaveBeenCalledExactlyOnceWith(
+      expect.stringContaining('Set LOG_LEVEL=debug'),
+    );
   });
 
   describe('processes platforms', () => {
@@ -238,9 +408,9 @@ describe('workers/global/index', () => {
         writeDiscoveredRepos: '/tmp/renovate-output.json',
       });
 
-      expect(await globalWorker.start()).toBe(0);
+      await expect(globalWorker.start()).resolves.toBe(0);
       expect(fs.writeFile).toHaveBeenCalledTimes(1);
-      expect(fs.writeFile).toHaveBeenCalledWith(
+      expect(fs.writeFile).toHaveBeenCalledExactlyOnceWith(
         '/tmp/renovate-output.json',
         '["myOrg/myRepo"]',
       );

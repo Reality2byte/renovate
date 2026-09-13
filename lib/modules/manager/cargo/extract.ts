@@ -1,30 +1,32 @@
-import { logger } from '../../../logger';
-import { coerceArray } from '../../../util/array';
-import { findLocalSiblingOrParent, readLocalFile } from '../../../util/fs';
-import { api as versioning } from '../../versioning/cargo';
+import { isObject, isString } from '@sindresorhus/is';
+import { logger } from '../../../logger/index.ts';
+import { coerceArray } from '../../../util/array.ts';
+import { getEnv } from '../../../util/env.ts';
+import {
+  findLocalSiblingOrParent,
+  readLocalFile,
+} from '../../../util/fs/index.ts';
+import { coerceObject } from '../../../util/object.ts';
+import { api as versioning } from '../../versioning/cargo/index.ts';
 import type {
   ExtractConfig,
   PackageDependency,
   PackageFileContent,
-} from '../types';
-import { extractLockFileVersions } from './locked-version';
-import {
-  type CargoConfig,
-  CargoConfigSchema,
-  CargoManifestSchema,
-} from './schema';
+} from '../types.ts';
+import { extractLockFileVersions } from './locked-version.ts';
+import { CargoConfig, CargoManifest } from './schema.ts';
 import type {
   CargoManagerData,
   CargoRegistries,
   CargoRegistryUrl,
-} from './types';
-import { DEFAULT_REGISTRY_URL } from './utils';
+} from './types.ts';
+import { DEFAULT_REGISTRY_URL } from './utils.ts';
 
 const DEFAULT_REGISTRY_ID = 'crates-io';
 
 function getCargoIndexEnv(registryName: string): string | null {
   const registry = registryName.toUpperCase().replaceAll('-', '_');
-  return process.env[`CARGO_REGISTRIES_${registry}_INDEX`] ?? null;
+  return getEnv()[`CARGO_REGISTRIES_${registry}_INDEX`] ?? null;
 }
 
 function extractFromSection(
@@ -84,15 +86,14 @@ async function readCargoConfig(): Promise<CargoConfig | null> {
     const path = `.cargo/${configName}`;
     const payload = await readLocalFile(path, 'utf8');
     if (payload) {
-      const parsedCargoConfig = CargoConfigSchema.safeParse(payload);
+      const parsedCargoConfig = CargoConfig.safeParse(payload);
       if (parsedCargoConfig.success) {
         return parsedCargoConfig.data;
-      } else {
-        logger.debug(
-          { err: parsedCargoConfig.error, path },
-          `Error parsing cargo config`,
-        );
       }
+      logger.debug(
+        { err: parsedCargoConfig.error, path },
+        `Error parsing cargo config`,
+      );
     }
   }
 
@@ -110,8 +111,8 @@ function extractCargoRegistries(config: CargoConfig): CargoRegistries {
   );
 
   const registryNames = new Set([
-    ...Object.keys(config.registries ?? {}),
-    ...Object.keys(config.source ?? {}),
+    ...Object.keys(coerceObject(config.registries)),
+    ...Object.keys(coerceObject(config.source)),
   ]);
   for (const registryName of registryNames) {
     result[registryName] = resolveRegistryIndex(registryName, config);
@@ -123,7 +124,7 @@ function extractCargoRegistries(config: CargoConfig): CargoRegistries {
 function resolveRegistryIndex(
   registryName: string,
   config: CargoConfig,
-  originalNames: Set<string> = new Set(),
+  originalNames = new Set<string>(),
 ): CargoRegistryUrl {
   // if we have a source replacement, follow that.
   // https://doc.rust-lang.org/cargo/reference/source-replacement.html
@@ -133,7 +134,7 @@ function resolveRegistryIndex(
       `Replacing index of cargo registry ${registryName} with ${replacementName}`,
     );
     if (originalNames.has(replacementName)) {
-      logger.warn(`${registryName} cargo registry resolves to itself`);
+      logger.warn({ registryName }, 'cargo registry resolves to itself');
       return null;
     }
     return resolveRegistryIndex(
@@ -154,15 +155,13 @@ function resolveRegistryIndex(
   const registryIndex = config.registries?.[registryName]?.index;
   if (registryIndex) {
     return registryIndex;
-  } else {
-    // we don't need an explicit index if we're using the default registry
-    if (registryName === DEFAULT_REGISTRY_ID) {
-      return DEFAULT_REGISTRY_URL;
-    } else {
-      logger.debug(`${registryName} cargo registry is missing index`);
-      return null;
-    }
   }
+  // we don't need an explicit index if we're using the default registry
+  if (registryName === DEFAULT_REGISTRY_ID) {
+    return DEFAULT_REGISTRY_URL;
+  }
+  logger.debug(`${registryName} cargo registry is missing index`);
+  return null;
 }
 
 export async function extractPackageFile(
@@ -172,10 +171,10 @@ export async function extractPackageFile(
 ): Promise<PackageFileContent<CargoManagerData> | null> {
   logger.trace(`cargo.extractPackageFile(${packageFile})`);
 
-  const cargoConfig = (await readCargoConfig()) ?? {};
+  const cargoConfig = coerceObject(await readCargoConfig());
   const cargoRegistries = extractCargoRegistries(cargoConfig);
 
-  const parsedCargoManifest = CargoManifestSchema.safeParse(content);
+  const parsedCargoManifest = CargoManifest.safeParse(content);
   if (!parsedCargoManifest.success) {
     logger.debug(
       { err: parsedCargoManifest.error, packageFile },
@@ -248,7 +247,15 @@ export async function extractPackageFile(
   const packageSection = cargoManifest.package;
   let version: string | undefined = undefined;
   if (packageSection) {
-    version = packageSection.version;
+    if (isString(packageSection.version)) {
+      version = packageSection.version;
+    } else if (
+      isObject(packageSection.version) &&
+      cargoManifest.workspace?.package?.version
+    ) {
+      // TODO: Support reading from parent workspace manifest?
+      version = cargoManifest.workspace.package.version;
+    }
   }
 
   const lockFileName = await findLocalSiblingOrParent(
@@ -274,10 +281,15 @@ export async function extractPackageFile(
     for (const dep of deps) {
       const packageName = dep.packageName ?? dep.depName!;
       const versions = coerceArray(versionsByPackage.get(packageName));
-      const lockedVersion = versioning.getSatisfyingVersion(
-        versions,
-        dep.currentValue!,
-      );
+
+      let lockedVersion: string | null = null;
+      if (dep.currentValue) {
+        lockedVersion = versioning.getSatisfyingVersion(
+          versions,
+          dep.currentValue,
+        );
+      }
+
       if (lockedVersion) {
         dep.lockedVersion = lockedVersion;
       } else {

@@ -1,16 +1,20 @@
-import is from '@sindresorhus/is';
+import { isEmptyArray, isString } from '@sindresorhus/is';
 import { quote } from 'shlex';
-import { TEMPORARY_ERROR } from '../../../constants/error-messages';
-import { logger } from '../../../logger';
-import { exec } from '../../../util/exec';
-import type { ExecOptions } from '../../../util/exec/types';
+import { TEMPORARY_ERROR } from '../../../constants/error-messages.ts';
+import { logger } from '../../../logger/index.ts';
+import { exec } from '../../../util/exec/index.ts';
+import type { ExecOptions } from '../../../util/exec/types.ts';
 import {
   getSiblingFileName,
   readLocalFile,
   writeLocalFile,
-} from '../../../util/fs';
-import type { UpdateArtifact, UpdateArtifactsResult, Upgrade } from '../types';
-import { parsePubspec, parsePubspecLock } from './utils';
+} from '../../../util/fs/index.ts';
+import type {
+  UpdateArtifact,
+  UpdateArtifactsResult,
+  Upgrade,
+} from '../types.ts';
+import { parsePubspec, parsePubspecLock } from './utils.ts';
 
 const SDK_NAMES = ['dart', 'flutter'];
 const PUB_GET_COMMAND = 'pub get --no-precompile';
@@ -22,9 +26,9 @@ export async function updateArtifacts({
   config,
 }: UpdateArtifact): Promise<UpdateArtifactsResult[] | null> {
   logger.debug(`pub.updateArtifacts(${packageFileName})`);
-  const isLockFileMaintenance = config.updateType === 'lockFileMaintenance';
+  const { isLockFileMaintenance } = config;
 
-  if (is.emptyArray(updatedDeps) && !isLockFileMaintenance) {
+  if (isEmptyArray(updatedDeps) && !isLockFileMaintenance) {
     logger.debug('No updated pub deps - returning null');
     return null;
   }
@@ -58,7 +62,6 @@ export async function updateArtifacts({
     const execOptions: ExecOptions = {
       cwdFile: packageFileName,
       docker: {},
-      userConfiguredEnv: config.env,
       toolConstraints: [
         {
           toolName,
@@ -90,7 +93,7 @@ export async function updateArtifacts({
     return [
       {
         artifactError: {
-          lockFile: lockFileName,
+          fileName: lockFileName,
           stderr: err.message,
         },
       },
@@ -101,28 +104,26 @@ export async function updateArtifacts({
 function getExecCommand(
   toolName: string,
   updatedDeps: Upgrade<Record<string, unknown>>[],
-  isLockFileMaintenance: boolean,
+  isLockFileMaintenance: boolean | undefined,
 ): string {
   if (isLockFileMaintenance) {
     return `${toolName} pub upgrade`;
-  } else {
-    const depNames = updatedDeps.map((dep) => dep.depName).filter(is.string);
-    if (depNames.length === 1 && SDK_NAMES.includes(depNames[0])) {
-      return `${toolName} ${PUB_GET_COMMAND}`;
-    }
-    // If there are two updated dependencies and both of them are SDK updates (Dart and Flutter),
-    // we use Flutter over Dart to run `pub get` as it is a Flutter project.
-    else if (
-      depNames.length === 2 &&
-      depNames.filter((depName) => SDK_NAMES.includes(depName)).length === 2
-    ) {
-      return `flutter ${PUB_GET_COMMAND}`;
-    } else {
-      const depNamesCmd = depNames
-        .filter((depName) => !SDK_NAMES.includes(depName))
-        .map(quote)
-        .join(' ');
-      return `${toolName} pub upgrade ${depNamesCmd}`;
-    }
   }
+  const depNames = updatedDeps.map((dep) => dep.depName).filter(isString);
+  if (depNames.length === 1 && SDK_NAMES.includes(depNames[0])) {
+    return `${toolName} ${PUB_GET_COMMAND}`;
+  }
+  // If there are two updated dependencies and both of them are SDK updates (Dart and Flutter),
+  // we use Flutter over Dart to run `pub get` as it is a Flutter project.
+  if (
+    depNames.length === 2 &&
+    depNames.filter((depName) => SDK_NAMES.includes(depName)).length === 2
+  ) {
+    return `flutter ${PUB_GET_COMMAND}`;
+  }
+  const depNamesCmd = depNames
+    .filter((depName) => !SDK_NAMES.includes(depName))
+    .map(quote)
+    .join(' ');
+  return `${toolName} pub upgrade ${depNamesCmd}`;
 }

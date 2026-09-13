@@ -1,4 +1,4 @@
-import { parseLine } from './line-parser';
+import { parseLine } from './line-parser.ts';
 
 describe('modules/manager/gomod/line-parser', () => {
   it('should return null for invalid input', () => {
@@ -6,14 +6,15 @@ describe('modules/manager/gomod/line-parser', () => {
   });
 
   it('should parse go version', () => {
-    const line = 'go 1.16';
+    const line = 'go 1.23';
     const res = parseLine(line);
     expect(res).toStrictEqual({
-      currentValue: '1.16',
+      currentValue: '1.23',
       datasource: 'golang-version',
       depName: 'go',
       depType: 'golang',
       versioning: 'go-mod-directive',
+      commitMessageTopic: 'go module directive',
     });
   });
 
@@ -27,18 +28,20 @@ describe('modules/manager/gomod/line-parser', () => {
       depType: 'golang',
       skipReason: 'invalid-version',
       versioning: 'go-mod-directive',
+      commitMessageTopic: 'go module directive',
     });
   });
 
   it('should parse toolchain version', () => {
-    const line = 'toolchain go1.16';
+    const line = 'toolchain go1.23';
     const res = parseLine(line);
     expect(res).toStrictEqual({
-      currentValue: '1.16',
+      currentValue: '1.23',
       datasource: 'golang-version',
       depName: 'go',
       depType: 'toolchain',
       skipReason: 'invalid-version',
+      commitMessageTopic: 'go toolchain directive',
     });
   });
 
@@ -51,6 +54,7 @@ describe('modules/manager/gomod/line-parser', () => {
       depName: 'go',
       depType: 'toolchain',
       skipReason: 'invalid-version',
+      commitMessageTopic: 'go toolchain directive',
     });
   });
 
@@ -76,6 +80,21 @@ describe('modules/manager/gomod/line-parser', () => {
       depName: 'foo/foo',
       depType: 'require',
       digestOneAndOnly: true,
+      versioning: 'loose',
+    });
+  });
+
+  it('should parse require definition with placeholder pseudo-version', () => {
+    const line = 'require foo/foo v0.0.0-00010101000000-000000000000';
+    const res = parseLine(line);
+    expect(res).toStrictEqual({
+      currentDigest: '000000000000',
+      currentValue: 'v0.0.0-00010101000000-000000000000',
+      datasource: 'go',
+      depName: 'foo/foo',
+      depType: 'require',
+      digestOneAndOnly: true,
+      skipReason: 'invalid-version',
       versioning: 'loose',
     });
   });
@@ -250,6 +269,22 @@ describe('modules/manager/gomod/line-parser', () => {
     });
   });
 
+  it('should parse replace definition with placeholder pseudo-version', () => {
+    const line =
+      'replace foo/foo => bar/bar v0.0.0-00010101000000-000000000000';
+    const res = parseLine(line);
+    expect(res).toStrictEqual({
+      currentDigest: '000000000000',
+      currentValue: 'v0.0.0-00010101000000-000000000000',
+      datasource: 'go',
+      depName: 'bar/bar',
+      depType: 'replace',
+      digestOneAndOnly: true,
+      skipReason: 'invalid-version',
+      versioning: 'loose',
+    });
+  });
+
   it('should parse replace indirect definition', () => {
     const line = 'replace foo/foo => bar/bar v1.2 // indirect';
     const res = parseLine(line);
@@ -297,6 +332,78 @@ describe('modules/manager/gomod/line-parser', () => {
       depName: '/bar',
       depType: 'replace',
       skipReason: 'local-dependency',
+    });
+  });
+
+  it('should parse tool definition', () => {
+    const line = 'tool foo/foo';
+    const res = parseLine(line);
+    expect(res).toStrictEqual({
+      datasource: 'go',
+      depName: 'foo/foo',
+      depType: 'tool',
+      skipReason: 'unversioned-reference',
+    });
+  });
+
+  it('should parse tool multi-line', () => {
+    const line = '        foo/foo';
+    const res = parseLine(line);
+    expect(res).toStrictEqual({
+      datasource: 'go',
+      depName: 'foo/foo',
+      depType: 'tool',
+      managerData: {
+        multiLine: true,
+      },
+      skipReason: 'unversioned-reference',
+    });
+  });
+
+  it('should parse tool definition with quotes', () => {
+    const line = 'tool "foo/foo"';
+    const res = parseLine(line);
+    expect(res).toStrictEqual({
+      datasource: 'go',
+      depName: 'foo/foo',
+      depType: 'tool',
+      skipReason: 'unversioned-reference',
+    });
+  });
+
+  it('should parse go tool without paths - 1', () => {
+    const line = 'tool tailscale.com';
+    const res = parseLine(line);
+    expect(res).toStrictEqual({
+      datasource: 'go',
+      depName: 'tailscale.com',
+      depType: 'tool',
+      skipReason: 'unversioned-reference',
+    });
+  });
+
+  it('should parse go tool without paths - 2', () => {
+    const line = 'tool foo.tailscale.com';
+    const res = parseLine(line);
+    expect(res).toStrictEqual({
+      datasource: 'go',
+      depName: 'foo.tailscale.com',
+      depType: 'tool',
+      skipReason: 'unversioned-reference',
+    });
+  });
+
+  it('should parse tool multi-line definition with quotes', () => {
+    const line = '        "foo/foo"';
+    const res = parseLine(line);
+    expect(res).toStrictEqual({
+      datasource: 'go',
+      depName: 'foo/foo',
+      depType: 'tool',
+      managerData: {
+        multiLine: true,
+      },
+      skipReason: 'unversioned-reference',
     });
   });
 });

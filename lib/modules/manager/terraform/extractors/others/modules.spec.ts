@@ -4,13 +4,14 @@ import {
   bitbucketRefMatchRegex,
   gitTagsRefMatchRegex,
   githubRefMatchRegex,
-} from './modules';
+  hostnameMatchRegex,
+} from './modules.ts';
 
 describe('modules/manager/terraform/extractors/others/modules', () => {
   const extractor = new ModuleExtractor();
 
   it('return empty array if no module is found', () => {
-    const res = extractor.extract({});
+    const res = extractor.extract({}, [], {});
     expect(res).toBeArrayOfSize(0);
   });
 
@@ -70,6 +71,9 @@ describe('modules/manager/terraform/extractors/others/modules', () => {
       const folder = gitTagsRefMatchRegex.exec(
         'git::ssh://git@git.example.com/modules/foo-module.git//bar?depth=1&ref=v1.0.0',
       )?.groups;
+      const folderColonStartedRepo = gitTagsRefMatchRegex.exec(
+        'git::ssh://git@git.example.com:modules/foo-module.git//bar?depth=1&ref=v1.0.0',
+      )?.groups;
 
       expect(http).toMatchObject({
         project: 'hashicorp/example',
@@ -92,7 +96,11 @@ describe('modules/manager/terraform/extractors/others/modules', () => {
         tag: 'v1.0.0',
       });
       expect(folder).toMatchObject({
-        project: '/bar',
+        project: 'modules/foo-module.git',
+        tag: 'v1.0.0',
+      });
+      expect(folderColonStartedRepo).toMatchObject({
+        project: 'modules/foo-module.git',
         tag: 'v1.0.0',
       });
     });
@@ -107,9 +115,14 @@ describe('modules/manager/terraform/extractors/others/modules', () => {
       const ssh = gitTagsRefMatchRegex.exec(
         'ssh://github.com/hashicorp/example.repo-123?ref=v1.0.0',
       )?.groups;
-
       const withoutSshHttpHttps = gitTagsRefMatchRegex.exec(
         'git@my-gitlab-instance.local:devops/terraform/instance.git?ref=v5.0.0',
+      )?.groups;
+      const folder = gitTagsRefMatchRegex.exec(
+        'git@my-gitlab-instance.local/devops/terraform/instance.git//submodule?ref=v5.0.0',
+      )?.groups;
+      const folderColonStartedRepo = gitTagsRefMatchRegex.exec(
+        'git@my-gitlab-instance.local:devops/terraform/instance.git//submodule?ref=v5.0.0',
       )?.groups;
 
       expect(http).toMatchObject({
@@ -125,7 +138,15 @@ describe('modules/manager/terraform/extractors/others/modules', () => {
         tag: 'v1.0.0',
       });
       expect(withoutSshHttpHttps).toMatchObject({
-        project: 'terraform/instance.git',
+        project: 'devops/terraform/instance.git',
+        tag: 'v5.0.0',
+      });
+      expect(folder).toMatchObject({
+        project: 'devops/terraform/instance.git',
+        tag: 'v5.0.0',
+      });
+      expect(folderColonStartedRepo).toMatchObject({
+        project: 'devops/terraform/instance.git',
         tag: 'v5.0.0',
       });
     });
@@ -297,6 +318,152 @@ describe('modules/manager/terraform/extractors/others/modules', () => {
         repository: 'MyRepository',
         tag: 'v1.0.0',
         url: 'git@ssh.dev.azure.com:v3/MyOrg/MyProject/MyRepository',
+      });
+    });
+  });
+
+  describe('hostnameMatchRegex', () => {
+    it('should extact hostname from source url', () => {
+      const host1 = hostnameMatchRegex.exec(
+        'git-lab.git-server.com/my/terraform/module',
+      )?.groups;
+      const host2 = hostnameMatchRegex.exec(
+        'example.com/my/terraform/module',
+      )?.groups;
+
+      expect(host1).toEqual({
+        hostname: 'git-lab.git-server.com',
+      });
+      expect(host2).toEqual({
+        hostname: 'example.com',
+      });
+    });
+  });
+
+  describe('extract git-tags modules with .git in domain or repo name', () => {
+    describe('SSH URL with .git in domain and standard path', () => {
+      const source =
+        'git::ssh://git@test.git.example.git.com/modules/foo-module.git//bar?ref=v1.0.0';
+
+      it('should extract the correct depName', () => {
+        const res = extractor.extract(
+          { module: { foo: [{ source }] } },
+          [],
+          {},
+        );
+        expect(res).toHaveLength(1);
+        expect(res[0]).toMatchObject({
+          depName: 'test.git.example.git.com/modules/foo-module',
+          currentValue: 'v1.0.0',
+          datasource: 'git-tags',
+        });
+      });
+
+      it('should extract the correct packageName', () => {
+        const res = extractor.extract(
+          { module: { foo: [{ source }] } },
+          [],
+          {},
+        );
+        expect(res).toHaveLength(1);
+        expect(res[0]).toMatchObject({
+          packageName: 'ssh://git@test.git.example.git.com/modules/foo-module',
+        });
+      });
+    });
+
+    describe('SSH URL with .git in domain and colon-separated path', () => {
+      const source =
+        'git::ssh://git@test.git.example.git.com:modules/foo-module.git//bar?ref=v2.0.0';
+
+      it('should extract the correct depName', () => {
+        const res = extractor.extract(
+          { module: { foo: [{ source }] } },
+          [],
+          {},
+        );
+        expect(res).toHaveLength(1);
+        expect(res[0]).toMatchObject({
+          depName: 'test.git.example.git.com:modules/foo-module',
+          currentValue: 'v2.0.0',
+          datasource: 'git-tags',
+        });
+      });
+
+      it('should extract the correct packageName', () => {
+        const res = extractor.extract(
+          { module: { foo: [{ source }] } },
+          [],
+          {},
+        );
+        expect(res).toHaveLength(1);
+        expect(res[0]).toMatchObject({
+          packageName: 'ssh://git@test.git.example.git.com:modules/foo-module',
+        });
+      });
+    });
+
+    describe('HTTPS URL with .git in domain and no trailing .git', () => {
+      const source =
+        'git::https://git@test.git.example.git.com/modules/foo-module?ref=v3.0.0';
+
+      it('should extract the correct depName', () => {
+        const res = extractor.extract(
+          { module: { foo: [{ source }] } },
+          [],
+          {},
+        );
+        expect(res).toHaveLength(1);
+        expect(res[0]).toMatchObject({
+          depName: 'test.git.example.git.com/modules/foo-module',
+          currentValue: 'v3.0.0',
+          datasource: 'git-tags',
+        });
+      });
+
+      it('should extract the correct packageName', () => {
+        const res = extractor.extract(
+          { module: { foo: [{ source }] } },
+          [],
+          {},
+        );
+        expect(res).toHaveLength(1);
+        expect(res[0]).toMatchObject({
+          packageName:
+            'https://git@test.git.example.git.com/modules/foo-module',
+        });
+      });
+    });
+
+    describe('HTTPS URL with .git in repo name', () => {
+      const source =
+        'git::https://git@test.example.com/modules.git-repo/foo-module?ref=v3.0.0';
+
+      it('should extract the correct depName', () => {
+        const res = extractor.extract(
+          { module: { foo: [{ source }] } },
+          [],
+          {},
+        );
+        expect(res).toHaveLength(1);
+        expect(res[0]).toMatchObject({
+          depName: 'test.example.com/modules.git-repo/foo-module',
+          currentValue: 'v3.0.0',
+          datasource: 'git-tags',
+        });
+      });
+
+      it('should extract the correct packageName', () => {
+        const res = extractor.extract(
+          { module: { foo: [{ source }] } },
+          [],
+          {},
+        );
+        expect(res).toHaveLength(1);
+        expect(res[0]).toMatchObject({
+          packageName:
+            'https://git@test.example.com/modules.git-repo/foo-module',
+        });
       });
     });
   });

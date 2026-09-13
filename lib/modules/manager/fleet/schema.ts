@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import { z } from 'zod/v4';
 
 const FleetHelmBlock = z.object({
   chart: z.string().optional(),
@@ -33,7 +33,7 @@ export const FleetFile = z.object({
   targetCustomizations: z
     .array(
       z.object({
-        name: z.string(),
+        name: z.string().optional(),
         helm: FleetHelmBlock.partial().optional(),
       }),
     )

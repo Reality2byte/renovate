@@ -1,14 +1,20 @@
-import type { Category } from '../../../constants';
-import { AzurePipelinesTasksDatasource } from '../../datasource/azure-pipelines-tasks';
-import { GitTagsDatasource } from '../../datasource/git-tags';
-export { extractPackageFile } from './extract';
+import type { Category } from '../../../constants/index.ts';
+import { AzurePipelinesTasksDatasource } from '../../datasource/azure-pipelines-tasks/index.ts';
+import { GitTagsDatasource } from '../../datasource/git-tags/index.ts';
+
+export { knownDepTypes } from './dep-types.ts';
+export { extractPackageFile } from './extract.ts';
+
+export const url = 'https://learn.microsoft.com/azure/devops/pipelines';
+export const categories: Category[] = ['ci'];
 
 export const defaultConfig = {
-  fileMatch: ['(^|/).azuredevops/.+\\.ya?ml$', 'azure.*pipelines?.*\\.ya?ml$'],
+  managerFilePatterns: [
+    '/(^|/).azuredevops/.+\\.ya?ml$/',
+    '/azure.*pipelines?.*\\.ya?ml$/',
+  ],
   enabled: false,
 };
-
-export const categories: Category[] = ['ci'];
 
 export const supportedDatasources = [
   AzurePipelinesTasksDatasource.id,

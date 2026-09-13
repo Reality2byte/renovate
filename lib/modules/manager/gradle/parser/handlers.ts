@@ -1,19 +1,24 @@
-import URL from 'node:url';
 import upath from 'upath';
-import { logger } from '../../../../logger';
-import { getSiblingFileName } from '../../../../util/fs';
-import { regEx } from '../../../../util/regex';
-import type { PackageDependency } from '../../types';
-import type { parseGradle as parseGradleCallback } from '../parser';
-import type { Ctx, GradleManagerData } from '../types';
-import { parseDependencyString } from '../utils';
+import { logger } from '../../../../logger/index.ts';
+import { getSiblingFileName } from '../../../../util/fs/index.ts';
+import { regEx } from '../../../../util/regex.ts';
+import { parseUrl } from '../../../../util/url.ts';
+import type { PackageDependency } from '../../types.ts';
+import type { parseGradle as parseGradleCallback } from '../parser.ts';
+import type {
+  ContentDescriptorMatcher,
+  ContentDescriptorSpec,
+  Ctx,
+  GradleManagerData,
+} from '../types.ts';
+import { isDependencyString, parseDependencyString } from '../utils.ts';
 import {
   GRADLE_PLUGINS,
-  REGISTRY_URLS,
+  GRADLE_TEST_SUITES,
   findVariable,
   interpolateString,
   loadFromTokenMap,
-} from './common';
+} from './common.ts';
 
 // needed to break circular dependency
 let parseGradle: typeof parseGradleCallback;
@@ -40,7 +45,7 @@ export function handleAssignment(ctx: Ctx): Ctx {
     // = string value
     const dep = parseDependencyString(valTokens[0].value);
     if (dep) {
-      dep.groupName = key;
+      dep.sharedVariableName = key;
       dep.managerData = {
         fileReplacePosition: valTokens[0].offset + dep.depName!.length + 1,
         packageFile: ctx.packageFile,
@@ -82,14 +87,14 @@ export function handleDepString(ctx: Ctx): Ctx {
         fileReplacePosition = varData.fileReplacePosition;
         if (varData.value === dep.currentValue) {
           dep.managerData = { fileReplacePosition, packageFile };
-          dep.groupName = varData.key;
+          dep.sharedVariableName = varData.key;
         }
       }
     }
   }
 
   if (!dep.managerData) {
-    const lastToken = stringTokens[stringTokens.length - 1];
+    const lastToken = stringTokens.at(-1);
     if (
       lastToken?.type === 'string-value' &&
       dep.currentValue &&
@@ -102,7 +107,7 @@ export function handleDepString(ctx: Ctx): Ctx {
         fileReplacePosition =
           lastToken.offset + lastToken.value.lastIndexOf(dep.currentValue);
       }
-      delete dep.groupName;
+      delete dep.sharedVariableName;
     } else {
       dep.skipReason = 'contains-variable';
     }
@@ -143,7 +148,7 @@ export function handleKotlinShortNotationDep(ctx: Ctx): Ctx {
   } else if (versionTokens[0].type === 'symbol') {
     const varData = findVariable(versionTokens[0].value, ctx);
     if (varData) {
-      dep.groupName = varData.key;
+      dep.sharedVariableName = varData.key;
       dep.currentValue = varData.value;
       dep.managerData = {
         fileReplacePosition: varData.fileReplacePosition,
@@ -169,6 +174,22 @@ export function handleLongFormDep(ctx: Ctx): Ctx {
     return ctx;
   }
 
+  // Special handling: 3 independent dependencies mismatched as groupId, artifactId, version
+  if (
+    isDependencyString(groupId) &&
+    isDependencyString(artifactId) &&
+    isDependencyString(version)
+  ) {
+    ctx.tokenMap.templateStringTokens = groupIdTokens;
+    handleDepString(ctx);
+    ctx.tokenMap.templateStringTokens = artifactIdTokens;
+    handleDepString(ctx);
+    ctx.tokenMap.templateStringTokens = versionTokens;
+    handleDepString(ctx);
+
+    return ctx;
+  }
+
   const dep = parseDependencyString([groupId, artifactId, version].join(':'));
   if (!dep) {
     return ctx;
@@ -181,7 +202,7 @@ export function handleLongFormDep(ctx: Ctx): Ctx {
   } else if (versionTokens[0].type === 'symbol') {
     const varData = findVariable(versionTokens[0].value, ctx);
     if (varData) {
-      dep.groupName = varData.key;
+      dep.sharedVariableName = varData.key;
       dep.managerData = {
         fileReplacePosition: varData.fileReplacePosition,
         packageFile: varData.packageFile,
@@ -190,7 +211,7 @@ export function handleLongFormDep(ctx: Ctx): Ctx {
   } else {
     // = string value
     if (methodName?.[0]?.value === 'dependencySet') {
-      dep.groupName = `${groupId}:${version}`;
+      dep.sharedVariableName = `${groupId}:${version}`;
     }
     dep.managerData = {
       fileReplacePosition: versionTokens[0].offset,
@@ -205,10 +226,14 @@ export function handleLongFormDep(ctx: Ctx): Ctx {
 
 export function handlePlugin(ctx: Ctx): Ctx {
   const methodName = loadFromTokenMap(ctx, 'methodName')[0];
-  const pluginName = loadFromTokenMap(ctx, 'pluginName')[0];
+  const pluginNameTokens = loadFromTokenMap(ctx, 'pluginName');
   const pluginVersion = loadFromTokenMap(ctx, 'version');
 
-  const plugin = pluginName.value;
+  const plugin = interpolateString(pluginNameTokens, ctx);
+  if (!plugin) {
+    return ctx;
+  }
+
   const depName =
     methodName.value === 'kotlin' ? `org.jetbrains.kotlin.${plugin}` : plugin;
   const packageName = `${depName}:${depName}.gradle.plugin`;
@@ -231,7 +256,7 @@ export function handlePlugin(ctx: Ctx): Ctx {
   } else if (pluginVersion[0].type === 'symbol') {
     const varData = findVariable(pluginVersion[0].value, ctx);
     if (varData) {
-      dep.groupName = varData.key;
+      dep.sharedVariableName = varData.key;
       dep.currentValue = varData.value;
       dep.managerData = {
         fileReplacePosition: varData.fileReplacePosition,
@@ -247,6 +272,65 @@ export function handlePlugin(ctx: Ctx): Ctx {
   return ctx;
 }
 
+function isValidContentDescriptorRegex(
+  fieldName: string,
+  pattern: string,
+): boolean {
+  try {
+    regEx(pattern);
+  } catch {
+    logger.debug(
+      `Skipping content descriptor with unsupported regExp pattern for ${fieldName}: ${pattern}`,
+    );
+    return false;
+  }
+
+  return true;
+}
+
+export function handleRegistryContent(ctx: Ctx): Ctx {
+  const methodName = loadFromTokenMap(ctx, 'methodName')[0].value;
+  let groupId = loadFromTokenMap(ctx, 'groupId')[0].value;
+
+  let matcher: ContentDescriptorMatcher = 'simple';
+  if (methodName.includes('Regex')) {
+    matcher = 'regex';
+    groupId = `^${groupId}$`.replaceAll('\\\\', '\\');
+    if (!isValidContentDescriptorRegex('group', groupId)) {
+      return ctx;
+    }
+  } else if (methodName.includes('AndSubgroups')) {
+    matcher = 'subgroup';
+  }
+
+  const mode = methodName.startsWith('include') ? 'include' : 'exclude';
+  const spec: ContentDescriptorSpec = { mode, matcher, groupId };
+
+  if (methodName.includes('Module') || methodName.includes('Version')) {
+    spec.artifactId = loadFromTokenMap(ctx, 'artifactId')[0].value;
+    if (matcher === 'regex') {
+      spec.artifactId = `^${spec.artifactId}$`.replaceAll('\\\\', '\\');
+      if (!isValidContentDescriptorRegex('module', spec.artifactId)) {
+        return ctx;
+      }
+    }
+  }
+
+  if (methodName.includes('Version')) {
+    spec.version = loadFromTokenMap(ctx, 'version')[0].value;
+    if (matcher === 'regex') {
+      spec.version = `^${spec.version}$`.replaceAll('\\\\', '\\');
+      if (!isValidContentDescriptorRegex('version', spec.version)) {
+        return ctx;
+      }
+    }
+  }
+
+  ctx.tmpRegistryContent.push(spec);
+
+  return ctx;
+}
+
 function isPluginRegistry(ctx: Ctx): boolean {
   if (ctx.tokenMap.registryScope) {
     const registryScope = loadFromTokenMap(ctx, 'registryScope')[0].value;
@@ -256,19 +340,21 @@ function isPluginRegistry(ctx: Ctx): boolean {
   return false;
 }
 
-export function handlePredefinedRegistryUrl(ctx: Ctx): Ctx {
-  const registryName = loadFromTokenMap(ctx, 'registryUrl')[0].value;
+function isExclusiveRegistry(ctx: Ctx): boolean {
+  if (ctx.tokenMap.registryType) {
+    const registryType = loadFromTokenMap(ctx, 'registryType')[0].value;
+    return registryType === 'exclusiveContent';
+  }
 
-  ctx.registryUrls.push({
-    registryUrl: REGISTRY_URLS[registryName as keyof typeof REGISTRY_URLS],
-    scope: isPluginRegistry(ctx) ? 'plugin' : 'dep',
-  });
-
-  return ctx;
+  return false;
 }
 
-export function handleCustomRegistryUrl(ctx: Ctx): Ctx {
+export function handleRegistryUrl(ctx: Ctx): Ctx {
   let localVariables = ctx.globalVars;
+
+  if (!ctx.tokenMap.registryUrl) {
+    return ctx;
+  }
 
   if (ctx.tokenMap.name) {
     const nameTokens = loadFromTokenMap(ctx, 'name');
@@ -291,23 +377,29 @@ export function handleCustomRegistryUrl(ctx: Ctx): Ctx {
   );
   if (registryUrl) {
     registryUrl = registryUrl.replace(regEx(/\\/g), '');
-    try {
-      const { host, protocol } = URL.parse(registryUrl);
-      if (host && protocol) {
-        ctx.registryUrls.push({
-          registryUrl,
-          scope: isPluginRegistry(ctx) ? 'plugin' : 'dep',
-        });
+    const url = parseUrl(registryUrl);
+    if (url?.host && url.protocol) {
+      const registryType = isExclusiveRegistry(ctx) ? 'exclusive' : 'regular';
+      if (registryType === 'exclusive' && !ctx.tmpRegistryContent.length) {
+        logger.debug(
+          `Skipping exclusive registry ${registryUrl} with unsupported content descriptors`,
+        );
+        return ctx;
       }
-    } catch {
-      // no-op
+
+      ctx.registryUrls.push({
+        registryUrl,
+        registryType,
+        scope: isPluginRegistry(ctx) ? 'plugin' : 'dep',
+        content: ctx.tmpRegistryContent,
+      });
     }
   }
 
   return ctx;
 }
 
-export function handleLibraryDep(ctx: Ctx): Ctx {
+export function handleCatalogLongFormDep(ctx: Ctx): Ctx {
   const groupIdTokens = loadFromTokenMap(ctx, 'groupId');
   const artifactIdTokens = loadFromTokenMap(ctx, 'artifactId');
 
@@ -337,6 +429,26 @@ export function handleLibraryDep(ctx: Ctx): Ctx {
   return ctx;
 }
 
+export function handleCatalogDepString(ctx: Ctx): Ctx {
+  const templateStringTokens = loadFromTokenMap(ctx, 'templateStringTokens');
+  const templateString = interpolateString(templateStringTokens, ctx);
+  if (!templateString) {
+    return ctx;
+  }
+
+  const aliasToken = loadFromTokenMap(ctx, 'alias')[0];
+  const key = `libs.${aliasToken.value.replace(regEx(/[-_]/g), '.')}`;
+
+  ctx.globalVars[key] = {
+    key,
+    value: templateString,
+    fileReplacePosition: aliasToken.offset,
+    packageFile: ctx.packageFile,
+  };
+
+  return handleDepString(ctx);
+}
+
 export function handleApplyFrom(ctx: Ctx): Ctx {
   let scriptFile = interpolateString(loadFromTokenMap(ctx, 'scriptFile'), ctx);
   if (!scriptFile) {
@@ -358,7 +470,7 @@ export function handleApplyFrom(ctx: Ctx): Ctx {
     return ctx;
   }
 
-  if (!regEx(/\.gradle(\.kts)?$/).test(scriptFile)) {
+  if (!regEx(/\.gradle(?:\.kts)?$/).test(scriptFile)) {
     logger.debug({ scriptFile }, `Only Gradle files can be included`);
     return ctx;
   }
@@ -385,22 +497,25 @@ export function handleApplyFrom(ctx: Ctx): Ctx {
   return ctx;
 }
 
-export function handleImplicitGradlePlugin(ctx: Ctx): Ctx {
-  const pluginName = loadFromTokenMap(ctx, 'pluginName')[0].value;
+export function handleImplicitDep(ctx: Ctx): Ctx {
+  const implicitDepName = loadFromTokenMap(ctx, 'implicitDepName')[0].value;
   const versionTokens = loadFromTokenMap(ctx, 'version');
   const versionValue = interpolateString(versionTokens, ctx);
   if (!versionValue) {
     return ctx;
   }
 
-  const groupIdArtifactId =
-    GRADLE_PLUGINS[pluginName as keyof typeof GRADLE_PLUGINS][1];
+  const isImplicitGradlePlugin = implicitDepName in GRADLE_PLUGINS;
+  const groupIdArtifactId = isImplicitGradlePlugin
+    ? GRADLE_PLUGINS[implicitDepName as keyof typeof GRADLE_PLUGINS][1]
+    : GRADLE_TEST_SUITES[implicitDepName as keyof typeof GRADLE_TEST_SUITES];
+
   const dep = parseDependencyString(`${groupIdArtifactId}:${versionValue}`);
   if (!dep) {
     return ctx;
   }
 
-  dep.depName = pluginName;
+  dep.depName = implicitDepName;
   dep.packageName = groupIdArtifactId;
   dep.managerData = {
     fileReplacePosition: versionTokens[0].offset,
@@ -413,7 +528,7 @@ export function handleImplicitGradlePlugin(ctx: Ctx): Ctx {
   } else if (versionTokens[0].type === 'symbol') {
     const varData = findVariable(versionTokens[0].value, ctx);
     if (varData) {
-      dep.groupName = varData.key;
+      dep.sharedVariableName = varData.key;
       dep.currentValue = varData.value;
       dep.managerData = {
         fileReplacePosition: varData.fileReplacePosition,

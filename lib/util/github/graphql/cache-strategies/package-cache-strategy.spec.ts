@@ -1,21 +1,27 @@
 import { DateTime, Settings } from 'luxon';
-import * as packageCache from '../../../cache/package';
-import { clone } from '../../../clone';
-import type { GithubDatasourceItem, GithubGraphqlCacheRecord } from '../types';
-import { GithubGraphqlPackageCacheStrategy } from './package-cache-strategy';
+import type { Timestamp } from '../../../../util/timestamp.ts';
+import * as packageCache from '../../../cache/package/index.ts';
+import { clone } from '../../../clone.ts';
+import type {
+  GithubDatasourceItem,
+  GithubGraphqlCacheRecord,
+} from '../types.ts';
+import { GithubGraphqlPackageCacheStrategy } from './package-cache-strategy.ts';
 
-const isoTs = (t: string) => t.replace(' ', 'T') + ':00.000Z';
+function isoTs(t: string) {
+  return `${t.replace(' ', 'T')}:00.000Z` as Timestamp;
+}
 
-const mockTime = (input: string): void => {
+function mockTime(input: string): void {
   const now = DateTime.fromISO(isoTs(input)).valueOf();
   Settings.now = () => now;
-};
+}
 
 type CacheRecord = GithubGraphqlCacheRecord<GithubDatasourceItem>;
 
 describe('util/github/graphql/cache-strategies/package-cache-strategy', () => {
-  const cacheGet = jest.spyOn(packageCache, 'get');
-  const cacheSet = jest.spyOn(packageCache, 'set');
+  const cacheGet = vi.spyOn(packageCache, 'get');
+  const cacheSet = vi.spyOn(packageCache, 'set');
 
   it('reconciles old cache record with new items', async () => {
     const item1 = { version: '1', releaseTimestamp: isoTs('2020-01-01 10:00') };

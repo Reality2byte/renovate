@@ -1,20 +1,22 @@
 import { codeBlock } from 'common-tags';
-import { mockDeep } from 'jest-mock-extended';
-import { join } from 'upath';
-import { envMock, mockExecAll } from '../../../../test/exec-util';
-import { env, fs, mocked } from '../../../../test/util';
-import { GlobalConfig } from '../../../config/global';
-import type { RepoGlobalConfig } from '../../../config/types';
-import * as docker from '../../../util/exec/docker';
-import * as _datasource from '../../datasource';
-import type { UpdateArtifact, UpdateArtifactsConfig } from '../types';
-import * as pub from '.';
+import upath from 'upath';
+import { mockDeep } from 'vitest-mock-extended';
+import { envMock, mockExecAll } from '~test/exec-util.ts';
+import { env, fs } from '~test/util.ts';
+import { GlobalConfig } from '../../../config/global.ts';
+import type {
+  InternalGlobalConfigOptions,
+  RepoGlobalConfig,
+} from '../../../config/types.ts';
+import * as docker from '../../../util/exec/docker/index.ts';
+import * as _datasource from '../../datasource/index.ts';
+import type { UpdateArtifact, UpdateArtifactsConfig } from '../types.ts';
+import * as pub from './index.ts';
 
-jest.mock('../../../util/exec/env');
-jest.mock('../../../util/fs');
-jest.mock('../../../util/git');
-jest.mock('../../../util/http');
-jest.mock('../../datasource', () => mockDeep());
+vi.mock('../../../util/exec/env.ts');
+vi.mock('../../../util/fs/index.ts');
+vi.mock('../../../util/http/index.ts');
+vi.mock('../../datasource/index.ts', () => mockDeep());
 
 process.env.CONTAINERBASE = 'true';
 
@@ -22,15 +24,16 @@ const lockFile = 'pubspec.lock';
 const oldLockFileContent = 'Old pubspec.lock';
 const newLockFileContent = 'New pubspec.lock';
 const depNames = ['dep1', 'dep2', 'dep3'];
-const depNamesWithSdks = [...depNames, ...['dart', 'flutter']];
+const depNamesWithSdks = [...depNames, 'dart', 'flutter'];
 const depNamesWithSpace = depNames.join(' ');
 
-const datasource = mocked(_datasource);
+const datasource = vi.mocked(_datasource);
 
-const adminConfig: RepoGlobalConfig = {
-  localDir: join('/tmp/github/some/repo'),
-  cacheDir: join('/tmp/cache'),
-  containerbaseDir: join('/tmp/cache/containerbase'),
+const adminConfig: RepoGlobalConfig & InternalGlobalConfigOptions = {
+  localDir: upath.join('/tmp/github/some/repo'),
+  cacheDir: upath.join('/tmp/cache'),
+  containerbaseDir: upath.join('/tmp/cache/containerbase'),
+  binarySource: 'global',
 };
 
 const config: UpdateArtifactsConfig = {};
@@ -60,13 +63,13 @@ describe('modules/manager/pub/artifacts', () => {
   });
 
   it('returns null if no pubspec.lock found', async () => {
-    expect(await pub.updateArtifacts(updateArtifact)).toBeNull();
+    await expect(pub.updateArtifacts(updateArtifact)).resolves.toBeNull();
   });
 
   it('returns null if updatedDeps is empty', async () => {
-    expect(
-      await pub.updateArtifacts({ ...updateArtifact, updatedDeps: [] }),
-    ).toBeNull();
+    await expect(
+      pub.updateArtifacts({ ...updateArtifact, updatedDeps: [] }),
+    ).resolves.toBeNull();
   });
 
   it(`runs flutter pub get if only dart and flutter sdks are updated`, async () => {
@@ -74,8 +77,8 @@ describe('modules/manager/pub/artifacts', () => {
     fs.getSiblingFileName.mockReturnValueOnce(lockFile);
     fs.readLocalFile.mockResolvedValueOnce(oldLockFileContent);
     fs.readLocalFile.mockResolvedValueOnce(newLockFileContent);
-    expect(
-      await pub.updateArtifacts({
+    await expect(
+      pub.updateArtifacts({
         ...updateArtifact,
         newPackageFileContent: codeBlock`
           environment:
@@ -84,7 +87,7 @@ describe('modules/manager/pub/artifacts', () => {
         `,
         updatedDeps: [{ depName: 'dart' }, { depName: 'flutter' }],
       }),
-    ).toEqual([
+    ).resolves.toEqual([
       {
         file: {
           type: 'addition',
@@ -108,12 +111,12 @@ describe('modules/manager/pub/artifacts', () => {
       const execSnapshots = mockExecAll();
       fs.readLocalFile.mockResolvedValueOnce(oldLockFileContent);
       fs.readLocalFile.mockResolvedValueOnce(oldLockFileContent);
-      expect(
-        await pub.updateArtifacts({
+      await expect(
+        pub.updateArtifacts({
           ...updateArtifact,
           newPackageFileContent: params.packageFileContent,
         }),
-      ).toBeNull();
+      ).resolves.toBeNull();
       expect(execSnapshots).toMatchObject([
         {
           cmd: `${params.sdk} pub upgrade ${depNamesWithSpace}`,
@@ -126,12 +129,12 @@ describe('modules/manager/pub/artifacts', () => {
       fs.getSiblingFileName.mockReturnValueOnce(lockFile);
       fs.readLocalFile.mockResolvedValueOnce(oldLockFileContent);
       fs.readLocalFile.mockResolvedValueOnce(newLockFileContent);
-      expect(
-        await pub.updateArtifacts({
+      await expect(
+        pub.updateArtifacts({
           ...updateArtifact,
           newPackageFileContent: params.packageFileContent,
         }),
-      ).toEqual([
+      ).resolves.toEqual([
         {
           file: {
             type: 'addition',
@@ -152,13 +155,13 @@ describe('modules/manager/pub/artifacts', () => {
       fs.getSiblingFileName.mockReturnValueOnce(lockFile);
       fs.readLocalFile.mockResolvedValueOnce(oldLockFileContent);
       fs.readLocalFile.mockResolvedValueOnce(newLockFileContent);
-      expect(
-        await pub.updateArtifacts({
+      await expect(
+        pub.updateArtifacts({
           ...updateArtifact,
           newPackageFileContent: params.packageFileContent,
           updatedDeps: [{ depName: params.sdk }],
         }),
-      ).toEqual([
+      ).resolves.toEqual([
         {
           file: {
             type: 'addition',
@@ -179,13 +182,13 @@ describe('modules/manager/pub/artifacts', () => {
       fs.getSiblingFileName.mockReturnValueOnce(lockFile);
       fs.readLocalFile.mockResolvedValueOnce(oldLockFileContent);
       fs.readLocalFile.mockResolvedValueOnce(newLockFileContent);
-      expect(
-        await pub.updateArtifacts({
+      await expect(
+        pub.updateArtifacts({
           ...updateArtifact,
           newPackageFileContent: params.packageFileContent,
-          config: { ...config, updateType: 'lockFileMaintenance' },
+          config: { ...config, isLockFileMaintenance: true },
         }),
-      ).toEqual([
+      ).resolves.toEqual([
         {
           file: {
             type: 'addition',
@@ -205,18 +208,18 @@ describe('modules/manager/pub/artifacts', () => {
       GlobalConfig.set({
         ...adminConfig,
         binarySource: 'docker',
-        dockerSidecarImage: 'ghcr.io/containerbase/sidecar',
+        dockerSidecarImage: 'ghcr.io/renovatebot/base-image',
       });
       const execSnapshots = mockExecAll();
       fs.getSiblingFileName.mockReturnValueOnce(lockFile);
       fs.readLocalFile.mockResolvedValueOnce(oldLockFileContent);
       fs.readLocalFile.mockResolvedValueOnce(newLockFileContent);
-      expect(
-        await pub.updateArtifacts({
+      await expect(
+        pub.updateArtifacts({
           ...updateArtifact,
           newPackageFileContent: params.packageFileContent,
         }),
-      ).toEqual([
+      ).resolves.toEqual([
         {
           file: {
             type: 'addition',
@@ -227,7 +230,7 @@ describe('modules/manager/pub/artifacts', () => {
       ]);
       expect(execSnapshots).toMatchObject([
         {
-          cmd: 'docker pull ghcr.io/containerbase/sidecar',
+          cmd: 'docker pull ghcr.io/renovatebot/base-image',
         },
         {
           cmd: 'docker ps --filter name=renovate_sidecar -aq',
@@ -237,14 +240,15 @@ describe('modules/manager/pub/artifacts', () => {
             'docker run --rm --name=renovate_sidecar --label=renovate_child ' +
             '-v "/tmp/github/some/repo":"/tmp/github/some/repo" ' +
             '-v "/tmp/cache":"/tmp/cache" ' +
+            '-e CI ' +
             '-e CONTAINERBASE_CACHE_DIR ' +
             '-w "/tmp/github/some/repo" ' +
-            'ghcr.io/containerbase/sidecar ' +
-            'bash -l -c "' +
+            'ghcr.io/renovatebot/base-image ' +
+            "bash -l -c '" +
             `install-tool ${params.sdk} 3.3.9` +
             ' && ' +
             `${params.sdk} pub upgrade ${depNamesWithSpace}` +
-            '"',
+            "'",
         },
       ]);
     });
@@ -255,13 +259,13 @@ describe('modules/manager/pub/artifacts', () => {
       fs.getSiblingFileName.mockReturnValueOnce(lockFile);
       fs.readLocalFile.mockResolvedValueOnce(oldLockFileContent);
       fs.readLocalFile.mockResolvedValueOnce(newLockFileContent);
-      expect(
-        await pub.updateArtifacts({
+      await expect(
+        pub.updateArtifacts({
           ...updateArtifact,
           newPackageFileContent: params.packageFileContent,
           config: { ...config, constraints: { dart: '3.3.9' } },
         }),
-      ).toEqual([
+      ).resolves.toEqual([
         {
           file: {
             type: 'addition',
@@ -284,12 +288,12 @@ describe('modules/manager/pub/artifacts', () => {
       fs.writeLocalFile.mockImplementationOnce(() => {
         throw new Error(stderr);
       });
-      expect(
-        await pub.updateArtifacts({
+      await expect(
+        pub.updateArtifacts({
           ...updateArtifact,
           newPackageFileContent: params.packageFileContent,
         }),
-      ).toEqual([{ artifactError: { lockFile, stderr } }]);
+      ).resolves.toEqual([{ artifactError: { fileName: lockFile, stderr } }]);
     });
   });
 
@@ -308,12 +312,12 @@ describe('modules/manager/pub/artifacts', () => {
     fs.getSiblingFileName.mockReturnValueOnce(lockFile);
     fs.readLocalFile.mockResolvedValueOnce(oldLockFileContent);
     fs.readLocalFile.mockResolvedValueOnce(newLockFileContent);
-    expect(
-      await pub.updateArtifacts({
+    await expect(
+      pub.updateArtifacts({
         ...updateArtifact,
         newPackageFileContent,
       }),
-    ).toEqual([
+    ).resolves.toEqual([
       {
         file: {
           type: 'addition',
@@ -339,12 +343,12 @@ describe('modules/manager/pub/artifacts', () => {
     fs.getSiblingFileName.mockReturnValueOnce(lockFile);
     fs.readLocalFile.mockResolvedValueOnce(oldLockFileContent);
     fs.readLocalFile.mockResolvedValueOnce(newLockFileContent);
-    expect(
-      await pub.updateArtifacts({
+    await expect(
+      pub.updateArtifacts({
         ...updateArtifact,
         newPackageFileContent,
       }),
-    ).toEqual([
+    ).resolves.toEqual([
       {
         file: {
           type: 'addition',

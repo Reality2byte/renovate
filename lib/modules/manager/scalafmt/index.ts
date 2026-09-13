@@ -1,12 +1,14 @@
-import type { Category } from '../../../constants';
-import { GithubReleasesDatasource } from '../../datasource/github-releases';
+import type { Category } from '../../../constants/index.ts';
+import { GithubReleasesDatasource } from '../../datasource/github-releases/index.ts';
 
-export { extractPackageFile } from './extract';
+export { extractPackageFile } from './extract.ts';
 
-export const supportedDatasources = [GithubReleasesDatasource.id];
+export const url =
+  'https://scalameta.org/scalafmt/docs/configuration.html#version';
+export const categories: Category[] = ['java'];
 
 export const defaultConfig = {
-  fileMatch: ['(^|/)\\.scalafmt.conf$'],
+  managerFilePatterns: ['/(^|/)\\.scalafmt.conf$/'],
 };
 
-export const categories: Category[] = ['java'];
+export const supportedDatasources = [GithubReleasesDatasource.id];

@@ -1,34 +1,12 @@
-import { z } from 'zod';
+import { z } from 'zod/v4';
 
-const invalidFieldsMsg =
-  'Cache object should have `etag` or `lastModified` fields';
-
-export const HttpCacheSchema = z
+export const HttpCache = z
   .object({
-    // TODO: remove this migration part during the Christmas eve 2024
-    timeStamp: z.string().optional(),
-    timestamp: z.string().optional(),
+    etag: z.string().optional(),
+    lastModified: z.string().optional(),
+    httpResponse: z.unknown(),
+    timestamp: z.string(),
   })
-  .passthrough()
-  .transform((data) => {
-    if (data.timeStamp) {
-      data.timestamp = data.timeStamp;
-      delete data.timeStamp;
-    }
-    return data;
-  })
-  .pipe(
-    z
-      .object({
-        etag: z.string().optional(),
-        lastModified: z.string().optional(),
-        httpResponse: z.unknown(),
-        timestamp: z.string(),
-      })
-      .refine(
-        ({ etag, lastModified }) => etag ?? lastModified,
-        invalidFieldsMsg,
-      ),
-  )
   .nullable()
   .catch(null);
+export type HttpCache = z.infer<typeof HttpCache>;

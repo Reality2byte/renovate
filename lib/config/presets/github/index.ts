@@ -1,10 +1,12 @@
-import is from '@sindresorhus/is';
-import { logger } from '../../../logger';
-import { ExternalHostError } from '../../../types/errors/external-host-error';
-import { GithubHttp } from '../../../util/http/github';
-import { fromBase64 } from '../../../util/string';
-import type { Preset, PresetConfig } from '../types';
-import { PRESET_DEP_NOT_FOUND, fetchPreset, parsePreset } from '../util';
+import { isNonEmptyString } from '@sindresorhus/is';
+import { logger } from '../../../logger/index.ts';
+import { ExternalHostError } from '../../../types/errors/external-host-error.ts';
+import type { Nullish } from '../../../types/index.ts';
+import { repoCacheProvider } from '../../../util/http/cache/repository-http-cache-provider.ts';
+import { GithubHttp } from '../../../util/http/github.ts';
+import { fromBase64 } from '../../../util/string.ts';
+import type { Preset, PresetConfig } from '../types.ts';
+import { PRESET_DEP_NOT_FOUND, fetchPreset, parsePreset } from '../util.ts';
 
 export const Endpoint = 'https://api.github.com/';
 
@@ -15,22 +17,25 @@ export async function fetchJSONFile(
   fileName: string,
   endpoint: string,
   tag?: string,
-): Promise<Preset> {
+): Promise<Nullish<Preset>> {
   let ref = '';
-  if (is.nonEmptyString(tag)) {
+  if (isNonEmptyString(tag)) {
     ref = `?ref=${tag}`;
   }
   const url = `${endpoint}repos/${repo}/contents/${fileName}${ref}`;
   logger.trace({ url }, `Preset URL`);
   let res: { body: { content: string } };
   try {
-    res = await http.getJson(url);
+    res = await http.getJsonUnchecked(url, {
+      cacheProvider: repoCacheProvider,
+    });
   } catch (err) {
-    // istanbul ignore if: not testable with nock
     if (err instanceof ExternalHostError) {
       throw err;
     }
-    logger.debug(`Preset file ${fileName} not found in ${repo}`);
+    logger.debug(
+      `Preset file ${fileName} not found in ${repo}: ${err.message}`,
+    );
     throw new Error(PRESET_DEP_NOT_FOUND);
   }
 
@@ -43,7 +48,7 @@ export function getPresetFromEndpoint(
   presetPath?: string,
   endpoint = Endpoint,
   tag?: string,
-): Promise<Preset | undefined> {
+): Promise<Nullish<Preset>> {
   return fetchPreset({
     repo,
     filePreset,
@@ -59,6 +64,6 @@ export function getPreset({
   presetName = 'default',
   presetPath,
   tag,
-}: PresetConfig): Promise<Preset | undefined> {
+}: PresetConfig): Promise<Nullish<Preset>> {
   return getPresetFromEndpoint(repo, presetName, presetPath, Endpoint, tag);
 }

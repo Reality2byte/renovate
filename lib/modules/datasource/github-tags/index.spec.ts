@@ -1,10 +1,11 @@
-import { getPkgReleases } from '..';
-import * as httpMock from '../../../../test/http-mock';
-import { partial } from '../../../../test/util';
-import * as githubGraphql from '../../../util/github/graphql';
-import type { GithubTagItem } from '../../../util/github/graphql/types';
-import * as hostRules from '../../../util/host-rules';
-import { GithubTagsDatasource } from '.';
+import * as httpMock from '~test/http-mock.ts';
+import { partial } from '~test/util.ts';
+import * as githubGraphql from '../../../util/github/graphql/index.ts';
+import type { GithubTagItem } from '../../../util/github/graphql/types.ts';
+import * as hostRules from '../../../util/host-rules.ts';
+import type { Timestamp } from '../../../util/timestamp.ts';
+import { getPkgReleases } from '../index.ts';
+import { GithubTagsDatasource } from './index.ts';
 
 const githubApiHost = 'https://api.github.com';
 
@@ -12,8 +13,8 @@ describe('modules/datasource/github-tags/index', () => {
   const github = new GithubTagsDatasource();
 
   beforeEach(() => {
-    jest.spyOn(hostRules, 'hosts').mockReturnValue([]);
-    jest.spyOn(hostRules, 'find').mockReturnValue({
+    vi.spyOn(hostRules, 'hosts').mockReturnValue([]);
+    vi.spyOn(hostRules, 'find').mockReturnValue({
       token: 'some-token',
     });
   });
@@ -51,17 +52,17 @@ describe('modules/datasource/github-tags/index', () => {
     });
 
     it('returns tagged commit digest', async () => {
-      jest.spyOn(githubGraphql, 'queryTags').mockResolvedValueOnce([
+      vi.spyOn(githubGraphql, 'queryTags').mockResolvedValueOnce([
         {
           version: 'v1.0.0',
           gitRef: 'v1.0.0',
-          releaseTimestamp: '2021-01-01',
+          releaseTimestamp: '2021-01-01' as Timestamp,
           hash: '123',
         },
         {
           version: 'v2.0.0',
           gitRef: 'v2.0.0',
-          releaseTimestamp: '2022-01-01',
+          releaseTimestamp: '2022-01-01' as Timestamp,
           hash: 'abc',
         },
       ]);
@@ -70,17 +71,17 @@ describe('modules/datasource/github-tags/index', () => {
     });
 
     it('returns null for missing hash', async () => {
-      jest.spyOn(githubGraphql, 'queryTags').mockResolvedValueOnce([
+      vi.spyOn(githubGraphql, 'queryTags').mockResolvedValueOnce([
         {
           version: 'v1.0.0',
           gitRef: 'v1.0.0',
-          releaseTimestamp: '2021-01-01',
+          releaseTimestamp: '2021-01-01' as Timestamp,
           hash: '123',
         },
         partial<GithubTagItem>({
           version: 'v2.0.0',
           gitRef: 'v2.0.0',
-          releaseTimestamp: '2022-01-01',
+          releaseTimestamp: '2022-01-01' as Timestamp,
         }),
       ]);
       const res = await github.getDigest({ packageName }, 'v2.0.0');
@@ -88,17 +89,17 @@ describe('modules/datasource/github-tags/index', () => {
     });
 
     it('returns null for missing tagged commit digest', async () => {
-      jest.spyOn(githubGraphql, 'queryTags').mockResolvedValueOnce([
+      vi.spyOn(githubGraphql, 'queryTags').mockResolvedValueOnce([
         {
           version: 'v1.0.0',
           gitRef: 'v1.0.0',
-          releaseTimestamp: '2021-01-01',
+          releaseTimestamp: '2021-01-01' as Timestamp,
           hash: '123',
         },
         {
           version: 'v2.0.0',
           gitRef: 'v2.0.0',
-          releaseTimestamp: '2022-01-01',
+          releaseTimestamp: '2022-01-01' as Timestamp,
           hash: 'abc',
         },
       ]);
@@ -107,7 +108,7 @@ describe('modules/datasource/github-tags/index', () => {
     });
 
     it('returns null for error', async () => {
-      jest.spyOn(githubGraphql, 'queryTags').mockRejectedValueOnce('error');
+      vi.spyOn(githubGraphql, 'queryTags').mockRejectedValueOnce('error');
       const res = await github.getDigest({ packageName }, 'v3.0.0');
       expect(res).toBeNull();
     });
@@ -117,25 +118,25 @@ describe('modules/datasource/github-tags/index', () => {
     const packageName = 'some/dep2';
 
     it('returns tags', async () => {
-      jest.spyOn(githubGraphql, 'queryTags').mockResolvedValueOnce([
+      vi.spyOn(githubGraphql, 'queryTags').mockResolvedValueOnce([
         {
           version: 'v1.0.0',
           gitRef: 'v1.0.0',
-          releaseTimestamp: '2021-01-01',
+          releaseTimestamp: '2021-01-01' as Timestamp,
           hash: '123',
         },
         {
           version: 'v2.0.0',
           gitRef: 'v2.0.0',
-          releaseTimestamp: '2022-01-01',
+          releaseTimestamp: '2022-01-01' as Timestamp,
           hash: 'abc',
         },
       ]);
-      jest.spyOn(githubGraphql, 'queryReleases').mockResolvedValueOnce([
+      vi.spyOn(githubGraphql, 'queryReleases').mockResolvedValueOnce([
         {
           id: 1,
           version: 'v1.0.0',
-          releaseTimestamp: '2021-01-01',
+          releaseTimestamp: '2021-01-01' as Timestamp,
           isStable: true,
           url: 'https://example.com',
           name: 'some/dep2',
@@ -144,7 +145,7 @@ describe('modules/datasource/github-tags/index', () => {
         {
           id: 2,
           version: 'v2.0.0',
-          releaseTimestamp: '2022-01-01',
+          releaseTimestamp: '2022-01-01' as Timestamp,
           isStable: false,
           url: 'https://example.com',
           name: 'some/dep2',
@@ -174,6 +175,118 @@ describe('modules/datasource/github-tags/index', () => {
         ],
 
         sourceUrl: 'https://github.com/some/dep2',
+      });
+    });
+
+    describe('releaseTimestamp takes precedence from GitHub Release', () => {
+      const packageName = 'some/dep3';
+
+      it('if it is newer than tag timestamp', async () => {
+        vi.spyOn(githubGraphql, 'queryTags').mockResolvedValueOnce([
+          {
+            version: 'v1.0.0',
+            gitRef: 'v1.0.0',
+            releaseTimestamp: '2021-01-01' as Timestamp,
+            hash: '123',
+          },
+        ]);
+        vi.spyOn(githubGraphql, 'queryReleases').mockResolvedValueOnce([
+          {
+            id: 1,
+            version: 'v1.0.0',
+            releaseTimestamp: '2021-06-15' as Timestamp,
+            url: 'https://example.com',
+            name: 'v1.0.0',
+          },
+        ]);
+
+        const res = await getPkgReleases({
+          datasource: github.id,
+          packageName,
+        });
+
+        expect(res?.releases[0].releaseTimestamp).toBe(
+          '2021-06-15T00:00:00.000Z',
+        );
+      });
+
+      it('keeps tag timestamp when release timestamp is older', async () => {
+        vi.spyOn(githubGraphql, 'queryTags').mockResolvedValueOnce([
+          {
+            version: 'v1.0.0',
+            gitRef: 'v1.0.0',
+            releaseTimestamp: '2021-06-15' as Timestamp,
+            hash: '123',
+          },
+        ]);
+        vi.spyOn(githubGraphql, 'queryReleases').mockResolvedValueOnce([
+          {
+            id: 1,
+            version: 'v1.0.0',
+            releaseTimestamp: '2021-01-01' as Timestamp,
+            url: 'https://example.com',
+            name: 'v1.0.0',
+          },
+        ]);
+
+        const res = await getPkgReleases({
+          datasource: github.id,
+          packageName,
+        });
+
+        expect(res?.releases[0].releaseTimestamp).toBe(
+          '2021-06-15T00:00:00.000Z',
+        );
+      });
+
+      it('keeps tag timestamp when release timestamp is equal', async () => {
+        vi.spyOn(githubGraphql, 'queryTags').mockResolvedValueOnce([
+          {
+            version: 'v1.0.0',
+            gitRef: 'v1.0.0',
+            releaseTimestamp: '2021-01-01' as Timestamp,
+            hash: '123',
+          },
+        ]);
+        vi.spyOn(githubGraphql, 'queryReleases').mockResolvedValueOnce([
+          {
+            id: 1,
+            version: 'v1.0.0',
+            releaseTimestamp: '2021-01-01' as Timestamp,
+            url: 'https://example.com',
+            name: 'v1.0.0',
+          },
+        ]);
+
+        const res = await getPkgReleases({
+          datasource: github.id,
+          packageName,
+        });
+
+        expect(res?.releases[0].releaseTimestamp).toBe(
+          '2021-01-01T00:00:00.000Z',
+        );
+      });
+
+      it('keeps tag timestamp when no corresponding release exists', async () => {
+        vi.spyOn(githubGraphql, 'queryTags').mockResolvedValueOnce([
+          {
+            version: 'v1.0.0',
+            gitRef: 'v1.0.0',
+            releaseTimestamp: '2021-01-01' as Timestamp,
+            hash: '123',
+          },
+        ]);
+        vi.spyOn(githubGraphql, 'queryReleases').mockResolvedValueOnce([]);
+
+        const res = await getPkgReleases({
+          datasource: github.id,
+          packageName,
+        });
+
+        expect(res?.releases[0].releaseTimestamp).toBe(
+          '2021-01-01T00:00:00.000Z',
+        );
       });
     });
   });

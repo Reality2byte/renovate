@@ -1,10 +1,10 @@
-/* eslint-disable @typescript-eslint/prefer-promise-reject-errors */
-/* eslint-disable @typescript-eslint/only-throw-error */
+/* oxlint-disable typescript/prefer-promise-reject-errors */
+/* oxlint-disable typescript/only-throw-error */
 // TODO: fix, should only allow `Error` type
 
-import { z } from 'zod';
-import { logger } from '../../test/util';
-import { AsyncResult, Result } from './result';
+import { z } from 'zod/v4';
+import { logger } from '~test/util.ts';
+import { AsyncResult, Result } from './result.ts';
 
 describe('util/result', () => {
   describe('Result', () => {
@@ -31,16 +31,27 @@ describe('util/result', () => {
     });
 
     describe('Wrapping', () => {
-      it('wraps callback', () => {
+      it('wraps callback returning value', () => {
         const res = Result.wrap(() => 42);
         expect(res).toEqual(Result.ok(42));
       });
 
-      it('handles callback error', () => {
+      it('handles throw in callback', () => {
         const res = Result.wrap(() => {
           throw 'oops';
         });
         expect(res).toEqual(Result.err('oops'));
+      });
+
+      it('wraps callback returning promise', () => {
+        const res = Result.wrap(() => Promise.resolve(42));
+        expect(res).toEqual(AsyncResult.ok(42));
+      });
+
+      it('wraps callback returning failed promise', () => {
+        const err = new Error('unknown');
+        const res = Result.wrap(() => Promise.reject(err));
+        expect(res).toEqual(AsyncResult.err(err));
       });
 
       it('wraps nullable callback', () => {
@@ -97,9 +108,7 @@ describe('util/result', () => {
         expect(Result.wrap(schema.safeParse('foo'))).toEqual(Result.ok('FOO'));
         expect(Result.wrap(schema.safeParse(42))).toMatchObject(
           Result.err({
-            issues: [
-              { code: 'invalid_type', expected: 'string', received: 'number' },
-            ],
+            issues: [{ code: 'invalid_type', expected: 'string' }],
           }),
         );
       });
@@ -124,22 +133,22 @@ describe('util/result', () => {
 
       it('skips fallback for successful value', () => {
         const res: Result<number> = Result.ok(42);
-        expect(res.unwrapOrElse(-1)).toBe(42);
+        expect(res.unwrapOr(-1)).toBe(42);
       });
 
       it('uses fallback for error value', () => {
         const res: Result<number, string> = Result.err('oops');
-        expect(res.unwrapOrElse(42)).toBe(42);
+        expect(res.unwrapOr(42)).toBe(42);
       });
 
-      it('unwrapOrElse throws uncaught transform error', () => {
+      it('unwrapOr throws uncaught transform error', () => {
         const res = Result.ok(42);
         expect(() =>
           res
             .transform(() => {
               throw 'oops';
             })
-            .unwrapOrElse(0),
+            .unwrapOr(0),
         ).toThrow('oops');
       });
 
@@ -201,7 +210,7 @@ describe('util/result', () => {
 
       it('skips transform for error Result', () => {
         const res: Result<number, string> = Result.err('oops');
-        const fn = jest.fn((x: number) => x + 1);
+        const fn = vi.fn((x: number) => x + 1);
         expect(res.transform(fn)).toEqual(Result.err('oops'));
         expect(fn).not.toHaveBeenCalled();
       });
@@ -211,6 +220,7 @@ describe('util/result', () => {
           throw 'oops';
         });
         expect(res).toEqual(Result._uncaught('oops'));
+
         expect(logger.logger.warn).toHaveBeenCalledWith(
           { err: 'oops' },
           'Result: unhandled transform error',
@@ -240,9 +250,8 @@ describe('util/result', () => {
       });
 
       it('converts error to Result', () => {
-        const result = Result.err<string>('oops').catch(() =>
-          Result.ok<number>(42),
-        );
+        const error: Result<number, string> = Result.err<string>('oops');
+        const result = error.catch((_err) => Result.ok<number>(42));
         expect(result).toEqual(Result.ok(42));
       });
 
@@ -264,7 +273,13 @@ describe('util/result', () => {
         expect(Result.parse('foo', schema)).toEqual(Result.ok('FOO'));
 
         expect(Result.parse(42, schema).unwrap()).toMatchObject({
-          err: { issues: [{ message: 'Expected string, received number' }] },
+          err: expect.objectContaining({
+            issues: expect.arrayContaining([
+              expect.objectContaining({
+                message: 'Invalid input: expected string, received number',
+              }),
+            ]),
+          }),
         });
 
         expect(Result.parse(undefined, schema).unwrap()).toMatchObject({
@@ -297,7 +312,13 @@ describe('util/result', () => {
         expect(Result.ok('foo').parse(schema)).toEqual(Result.ok('FOO'));
 
         expect(Result.ok(42).parse(schema).unwrap()).toMatchObject({
-          err: { issues: [{ message: 'Expected string, received number' }] },
+          err: expect.objectContaining({
+            issues: expect.arrayContaining([
+              expect.objectContaining({
+                message: 'Invalid input: expected string, received number',
+              }),
+            ]),
+          }),
         });
 
         expect(Result.err('oops').parse(schema)).toEqual(Result.err('oops'));
@@ -306,15 +327,15 @@ describe('util/result', () => {
 
     describe('Handlers', () => {
       it('supports value handlers', () => {
-        const cb = jest.fn();
+        const cb = vi.fn();
         Result.ok(42).onValue(cb);
-        expect(cb).toHaveBeenCalledWith(42);
+        expect(cb).toHaveBeenCalledExactlyOnceWith(42);
       });
 
       it('supports error handlers', () => {
-        const cb = jest.fn();
+        const cb = vi.fn();
         Result.err('oops').onError(cb);
-        expect(cb).toHaveBeenCalledWith('oops');
+        expect(cb).toHaveBeenCalledExactlyOnceWith('oops');
       });
 
       it('handles error thrown in value handler', () => {
@@ -409,12 +430,12 @@ describe('util/result', () => {
 
       it('skips fallback for successful AsyncResult', async () => {
         const res = Result.wrap(Promise.resolve(42));
-        await expect(res.unwrapOrElse(0)).resolves.toBe(42);
+        await expect(res.unwrapOr(0)).resolves.toBe(42);
       });
 
       it('uses fallback for error AsyncResult', async () => {
         const res = Result.wrap(Promise.reject('oops'));
-        await expect(res.unwrapOrElse(42)).resolves.toBe(42);
+        await expect(res.unwrapOr(42)).resolves.toBe(42);
       });
 
       it('returns ok-value for unwrapOrThrow', async () => {
@@ -469,7 +490,7 @@ describe('util/result', () => {
 
       it('skips transform for failed promises', async () => {
         const res = AsyncResult.err('oops');
-        const fn = jest.fn((x: number) => x + 1);
+        const fn = vi.fn((x: number) => x + 1);
         await expect(res.transform(fn)).resolves.toEqual(Result.err('oops'));
         expect(fn).not.toHaveBeenCalled();
       });
@@ -504,7 +525,7 @@ describe('util/result', () => {
 
       it('skips async transform for error Result', async () => {
         const input: Result<number, string> = Result.err('oops');
-        const fn = jest.fn((x: number) => Promise.resolve(x + 1));
+        const fn = vi.fn((x: number) => Promise.resolve(x + 1));
         const res = await input.transform(fn);
         expect(res).toEqual(Result.err('oops'));
         expect(fn).not.toHaveBeenCalled();
@@ -512,7 +533,7 @@ describe('util/result', () => {
 
       it('skips async transform for rejected promise', async () => {
         const res: AsyncResult<number, string> = AsyncResult.err('oops');
-        const fn = jest.fn((x: number) => Promise.resolve(x + 1));
+        const fn = vi.fn((x: number) => Promise.resolve(x + 1));
         await expect(res.transform(fn)).resolves.toEqual(Result.err('oops'));
         expect(fn).not.toHaveBeenCalled();
       });
@@ -532,6 +553,7 @@ describe('util/result', () => {
         await expect(
           res.transform((_) => Promise.reject('oops')),
         ).resolves.toEqual(Result._uncaught('oops'));
+
         expect(logger.logger.warn).toHaveBeenCalledWith(
           { err: 'oops' },
           'Result: unhandled async transform error',
@@ -545,6 +567,7 @@ describe('util/result', () => {
             throw 'bar';
           }),
         ).resolves.toEqual(Result._uncaught('bar'));
+
         expect(logger.logger.warn).toHaveBeenCalledWith(
           { err: 'bar' },
           'AsyncResult: unhandled transform error',
@@ -556,6 +579,7 @@ describe('util/result', () => {
         await expect(
           res.transform(() => Promise.reject('bar')),
         ).resolves.toEqual(Result._uncaught('bar'));
+
         expect(logger.logger.warn).toHaveBeenCalledWith(
           { err: 'bar' },
           'AsyncResult: unhandled async transform error',
@@ -563,14 +587,17 @@ describe('util/result', () => {
       });
 
       it('accumulates error types into union type during chained transform', async () => {
-        const fn1 = (x: string): Result<string, string> =>
-          Result.ok(x.toUpperCase());
+        function fn1(x: string): Result<string, string> {
+          return Result.ok(x.toUpperCase());
+        }
 
-        const fn2 = (x: string): Result<string[], number> =>
-          Result.ok(x.split(''));
+        function fn2(x: string): Result<string[], number> {
+          return Result.ok(x.split(''));
+        }
 
-        const fn3 = (x: string[]): Result<string, boolean> =>
-          Result.ok(x.join('-'));
+        function fn3(x: string[]): Result<string, boolean> {
+          return Result.ok(x.join('-'));
+        }
 
         type Res = Result<string, string | number | boolean>;
         const res: Res = await AsyncResult.ok('foo')
@@ -600,15 +627,15 @@ describe('util/result', () => {
 
     describe('Catch', () => {
       it('converts error to AsyncResult', async () => {
-        const result = await Result.err<string>('oops').catch(() =>
-          AsyncResult.ok(42),
-        );
+        const error: Result<number, string> = Result.err<string>('oops');
+        const result = await error.catch(() => AsyncResult.ok(42));
         expect(result).toEqual(Result.ok(42));
       });
 
       it('converts error to Promise', async () => {
         const fallback = Promise.resolve(Result.ok(42));
-        const result = await Result.err<string>('oops').catch(() => fallback);
+        const error: Result<number, string> = Result.err<string>('oops');
+        const result = await error.catch(() => fallback);
         expect(result).toEqual(Result.ok(42));
       });
 
@@ -619,9 +646,9 @@ describe('util/result', () => {
       });
 
       it('converts AsyncResult error to Result', async () => {
-        const result = await AsyncResult.err<string>('oops').catch(() =>
-          AsyncResult.ok<number>(42),
-        );
+        const error: AsyncResult<number, string> =
+          AsyncResult.err<string>('oops');
+        const result = await error.catch(() => AsyncResult.ok<number>(42));
         expect(result).toEqual(Result.ok(42));
       });
     });
@@ -634,12 +661,20 @@ describe('util/result', () => {
         .transform((x) => x.toUpperCase())
         .nullish();
 
-      expect(await AsyncResult.ok('foo').parse(schema)).toEqual(
+      await expect(AsyncResult.ok('foo').parse(schema)).resolves.toEqual(
         Result.ok('FOO'),
       );
 
-      expect(await AsyncResult.ok(42).parse(schema).unwrap()).toMatchObject({
-        err: { issues: [{ message: 'Expected string, received number' }] },
+      await expect(
+        AsyncResult.ok(42).parse(schema).unwrap(),
+      ).resolves.toMatchObject({
+        err: expect.objectContaining({
+          issues: expect.arrayContaining([
+            expect.objectContaining({
+              message: 'Invalid input: expected string, received number',
+            }),
+          ]),
+        }),
       });
     });
 
@@ -656,15 +691,15 @@ describe('util/result', () => {
 
   describe('Handlers', () => {
     it('supports value handlers', async () => {
-      const cb = jest.fn();
+      const cb = vi.fn();
       await AsyncResult.ok(42).onValue(cb);
-      expect(cb).toHaveBeenCalledWith(42);
+      expect(cb).toHaveBeenCalledExactlyOnceWith(42);
     });
 
     it('supports error handlers', async () => {
-      const cb = jest.fn();
+      const cb = vi.fn();
       await AsyncResult.err('oops').onError(cb);
-      expect(cb).toHaveBeenCalledWith('oops');
+      expect(cb).toHaveBeenCalledExactlyOnceWith('oops');
     });
 
     it('handles error thrown in value handler', async () => {

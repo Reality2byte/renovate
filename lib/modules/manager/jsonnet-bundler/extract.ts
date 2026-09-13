@@ -1,10 +1,11 @@
-import { join } from 'upath';
-import { logger } from '../../../logger';
-import { coerceArray } from '../../../util/array';
-import { coerceString } from '../../../util/string';
-import { parseUrl } from '../../../util/url';
-import type { PackageDependency, PackageFileContent } from '../types';
-import type { Dependency, JsonnetFile } from './types';
+import upath from 'upath';
+import { logger } from '../../../logger/index.ts';
+import { coerceArray } from '../../../util/array.ts';
+import { regEx } from '../../../util/regex.ts';
+import { coerceString } from '../../../util/string.ts';
+import { parseUrl } from '../../../util/url.ts';
+import type { PackageDependency, PackageFileContent } from '../types.ts';
+import type { Dependency, JsonnetFile } from './types.ts';
 
 export function extractPackageFile(
   content: string,
@@ -12,7 +13,7 @@ export function extractPackageFile(
 ): PackageFileContent | null {
   logger.trace({ packageFile }, 'jsonnet-bundler.extractPackageFile()');
 
-  if (packageFile.match(/vendor\//)) {
+  if (packageFile.includes('vendor/')) {
     return null;
   }
 
@@ -50,9 +51,9 @@ function extractDependency(dependency: Dependency): PackageDependency | null {
     return null;
   }
 
-  const depName = join(
+  const depName = upath.join(
     gitRemote.host,
-    gitRemote.pathname.replace(/\.git$/, ''),
+    gitRemote.pathname.replace(regEx(/\.git$/), ''),
     coerceString(dependency.source.git.subdir),
   );
 

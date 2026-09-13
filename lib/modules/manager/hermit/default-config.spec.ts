@@ -1,6 +1,6 @@
-import { regexMatches } from '../../../../test/util';
-import { minimatch } from '../../../util/minimatch';
-import { defaultConfig } from './default-config';
+import { minimatch } from '../../../util/minimatch.ts';
+import { matchRegexOrGlobList } from '../../../util/string-match.ts';
+import { defaultConfig } from './default-config.ts';
 
 describe('modules/manager/hermit/default-config', () => {
   describe('excludeCommitPaths', () => {
@@ -26,7 +26,7 @@ describe('modules/manager/hermit/default-config', () => {
     });
   });
 
-  describe('fileMatch', () => {
+  describe('managerFilePatterns', () => {
     it.each`
       path                          | expected
       ${'bin/hermit'}               | ${true}
@@ -36,8 +36,10 @@ describe('modules/manager/hermit/default-config', () => {
       ${'other'}                    | ${false}
       ${'nested/other'}             | ${false}
       ${'nested/module/other'}      | ${false}
-    `('regexMatches("$path") === $expected', ({ path, expected }) => {
-      expect(regexMatches(path, defaultConfig.fileMatch)).toBe(expected);
+    `('matchRegexOrGlobList("$path") === $expected', ({ path, expected }) => {
+      expect(
+        matchRegexOrGlobList(path, defaultConfig.managerFilePatterns),
+      ).toBe(expected);
     });
   });
 });

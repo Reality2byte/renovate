@@ -1,13 +1,13 @@
-import { getConfig } from './defaults';
+import { getConfig } from './defaults.ts';
 import {
   filterConfig,
   getManagerConfig,
   mergeChildConfig,
   removeGlobalConfig,
-} from './index';
+} from './index.ts';
 
-jest.mock('../modules/datasource/npm');
-jest.mock('../../config.js', () => ({}), { virtual: true });
+vi.mock('../modules/datasource/npm/index.ts');
+vi.mock('../../config.ts', () => ({ default: {} }));
 
 const defaultConfig = getConfig();
 
@@ -26,20 +26,33 @@ describe('config/index', () => {
       expect(config.foo).toBe('bar');
       expect(config.rangeStrategy).toBe('replace');
       expect(config.lockFileMaintenance.schedule).toEqual(['on monday']);
-      expect(config.lockFileMaintenance).toMatchSnapshot();
+      expect(config.lockFileMaintenance).toMatchObject({
+        branchTopic: 'lock-file-maintenance',
+        enabled: false,
+        schedule: ['on monday'],
+      });
     });
 
     it('merges packageRules', () => {
       const parentConfig = { ...defaultConfig };
       Object.assign(parentConfig, {
-        packageRules: [{ a: 1 }, { a: 2 }],
+        packageRules: [
+          { matchPackageNames: ['pkg1'] },
+          { matchPackageNames: ['pkg2'] },
+        ],
       });
       const childConfig = {
-        packageRules: [{ a: 3 }, { a: 4 }],
+        packageRules: [
+          { matchPackageNames: ['pkg3'] },
+          { matchPackageNames: ['pkg4'] },
+        ],
       };
       const config = mergeChildConfig(parentConfig, childConfig);
-      expect(config.packageRules.map((rule) => rule.a)).toMatchObject([
-        1, 2, 3, 4,
+      expect(config.packageRules).toMatchObject([
+        { matchPackageNames: ['pkg1'] },
+        { matchPackageNames: ['pkg2'] },
+        { matchPackageNames: ['pkg3'] },
+        { matchPackageNames: ['pkg4'] },
       ]);
     });
 
@@ -57,8 +70,10 @@ describe('config/index', () => {
         },
       };
       const config = mergeChildConfig(parentConfig, childConfig);
-      expect(config.constraints).toMatchSnapshot();
-      expect(config.constraints.node).toBe('<15');
+      expect(config.constraints).toEqual({
+        node: '<15',
+        npm: '^6.0.0',
+      });
     });
 
     it('merges forced options', () => {
@@ -88,16 +103,22 @@ describe('config/index', () => {
       const childConfig = {
         packageRules: [{ a: 3 }, { a: 4 }],
       };
-      const configParser = await import('./index');
+      const configParser = await import('./index.ts');
       const config = configParser.mergeChildConfig(parentConfig, childConfig);
       expect(config.packageRules).toHaveLength(2);
     });
 
     it('handles null child packageRules', () => {
       const parentConfig = { ...defaultConfig };
-      parentConfig.packageRules = [{ a: 3 }, { a: 4 }];
+      parentConfig.packageRules = [
+        { matchPackageNames: ['pkg1'] },
+        { matchPackageNames: ['pkg2'] },
+      ];
       const config = mergeChildConfig(parentConfig, {});
-      expect(config.packageRules).toHaveLength(2);
+      expect(config.packageRules).toMatchObject([
+        { matchPackageNames: ['pkg1'] },
+        { matchPackageNames: ['pkg2'] },
+      ]);
     });
 
     it('handles undefined childConfig', () => {
@@ -110,10 +131,17 @@ describe('config/index', () => {
       const parentConfig = { ...defaultConfig };
       const config = getManagerConfig(parentConfig, 'npm');
       expect(config).toContainEntries([
-        ['fileMatch', ['(^|/)package\\.json$']],
+        [
+          'managerFilePatterns',
+          [
+            '/(^|/)package\\.json$/',
+            '/(^|/)pnpm-workspace\\.yaml$/',
+            '/(^|/)\\.yarnrc\\.yml$/',
+          ],
+        ],
       ]);
       expect(getManagerConfig(parentConfig, 'html')).toContainEntries([
-        ['fileMatch', ['\\.html?$']],
+        ['managerFilePatterns', ['/\\.html?$/']],
       ]);
     });
 

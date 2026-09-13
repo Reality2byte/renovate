@@ -1,128 +1,34 @@
-import is from '@sindresorhus/is';
-import { logger } from '../../../logger';
-import { readLocalFile } from '../../../util/fs';
-import { regEx } from '../../../util/regex';
-import { trimLeadingSlash } from '../../../util/url';
-import { parseYaml } from '../../../util/yaml';
-import { GitlabTagsDatasource } from '../../datasource/gitlab-tags';
+import { logger } from '../../../logger/index.ts';
+import { readLocalFile } from '../../../util/fs/index.ts';
+import { regEx } from '../../../util/regex.ts';
+import { Result } from '../../../util/result.ts';
+import { parseYaml } from '../../../util/yaml.ts';
+import { GitlabTagsDatasource } from '../../datasource/gitlab-tags/index.ts';
+import { id as semverPartialId } from '../../versioning/semver-partial/index.ts';
 import type {
   ExtractConfig,
   PackageDependency,
   PackageFile,
   PackageFileContent,
-} from '../types';
+} from '../types.ts';
 import {
-  filterIncludeFromGitlabPipeline,
-  isGitlabIncludeComponent,
-  isGitlabIncludeLocal,
-  isNonEmptyObject,
-} from './common';
-import type {
-  GitlabInclude,
-  GitlabIncludeComponent,
-  GitlabPipeline,
-  Image,
+  GitlabDocument,
   Job,
-  Services,
-} from './types';
-import { getGitlabDep } from './utils';
+  Jobs,
+  MultiDocumentLocalIncludes,
+} from './schema.ts';
+import { getGitlabDep } from './utils.ts';
 
 // See https://docs.gitlab.com/ee/ci/components/index.html#use-a-component
 const componentReferenceRegex = regEx(
   /(?<fqdn>[^/]+)\/(?<projectPath>.+)\/(?:.+)@(?<specificVersion>.+)/,
 );
-const componentReferenceLatestVersion = '~latest';
-
-export function extractFromImage(
-  image: Image | undefined,
-  registryAliases?: Record<string, string>,
-): PackageDependency | null {
-  if (is.undefined(image)) {
-    return null;
-  }
-  let dep: PackageDependency | null = null;
-  if (is.string(image)) {
-    dep = getGitlabDep(image, registryAliases);
-    dep.depType = 'image';
-  } else if (is.string(image?.name)) {
-    dep = getGitlabDep(image.name, registryAliases);
-    dep.depType = 'image-name';
-  }
-  return dep;
-}
-
-export function extractFromServices(
-  services: Services | undefined,
-  registryAliases?: Record<string, string>,
-): PackageDependency[] {
-  if (is.undefined(services)) {
-    return [];
-  }
-  const deps: PackageDependency[] = [];
-  for (const service of services) {
-    if (is.string(service)) {
-      const dep = getGitlabDep(service, registryAliases);
-      dep.depType = 'service-image';
-      deps.push(dep);
-    } else if (is.string(service?.name)) {
-      const dep = getGitlabDep(service.name, registryAliases);
-      dep.depType = 'service-image';
-      deps.push(dep);
-    }
-  }
-  return deps;
-}
-
-export function extractFromJob(
-  job: Job | undefined,
-  registryAliases?: Record<string, string>,
-): PackageDependency[] {
-  if (is.undefined(job)) {
-    return [];
-  }
-  const deps: PackageDependency[] = [];
-  if (is.object(job)) {
-    const { image, services } = { ...job };
-    if (is.object(image) || is.string(image)) {
-      const dep = extractFromImage(image, registryAliases);
-      if (dep) {
-        deps.push(dep);
-      }
-    }
-    if (is.array(services)) {
-      deps.push(...extractFromServices(services, registryAliases));
-    }
-  }
-  return deps;
-}
-
-function getIncludeComponentsFromInclude(
-  includeValue: GitlabInclude[] | GitlabInclude,
-): GitlabIncludeComponent[] {
-  const includes = is.array(includeValue) ? includeValue : [includeValue];
-  return includes.filter(isGitlabIncludeComponent);
-}
-
-function getAllIncludeComponents(
-  data: GitlabPipeline,
-): GitlabIncludeComponent[] {
-  const childrenData = Object.values(filterIncludeFromGitlabPipeline(data))
-    .filter(isNonEmptyObject)
-    .map(getAllIncludeComponents)
-    .flat();
-
-  // Process include key.
-  if (data.include) {
-    childrenData.push(...getIncludeComponentsFromInclude(data.include));
-  }
-  return childrenData;
-}
 
 function extractDepFromIncludeComponent(
-  includeComponent: GitlabIncludeComponent,
+  component: string,
   registryAliases?: Record<string, string>,
 ): PackageDependency | null {
-  let componentUrl = includeComponent.component;
+  let componentUrl = component;
   if (registryAliases) {
     for (const key in registryAliases) {
       componentUrl = componentUrl.replace(key, registryAliases[key]);
@@ -151,14 +57,8 @@ function extractDepFromIncludeComponent(
     depType: 'repository',
     currentValue: componentReference.specificVersion,
     registryUrls: [`https://${componentReference.fqdn}`],
+    versioning: semverPartialId,
   };
-  if (dep.currentValue === componentReferenceLatestVersion) {
-    logger.debug(
-      { componentVersion: dep.currentValue },
-      'Ignoring component version',
-    );
-    dep.skipReason = 'unsupported-version';
-  }
   return dep;
 }
 
@@ -167,48 +67,31 @@ export function extractPackageFile(
   packageFile: string,
   config: ExtractConfig,
 ): PackageFileContent | null {
-  let deps: PackageDependency[] = [];
+  const deps: PackageDependency[] = [];
   try {
-    // TODO: use schema (#9610)
-    const docs = parseYaml<GitlabPipeline>(content, {
-      uniqueKeys: false,
-    });
+    const docs = parseYaml(content, { uniqueKeys: false });
+
     for (const doc of docs) {
-      if (is.object(doc)) {
-        for (const [property, value] of Object.entries(doc)) {
-          switch (property) {
-            case 'image':
-              {
-                const dep = extractFromImage(
-                  value as Image,
-                  config.registryAliases,
-                );
-                if (dep) {
-                  deps.push(dep);
-                }
-              }
-              break;
+      const topLevel = Job.parse(doc);
+      const jobs = Jobs.parse(doc);
 
-            case 'services':
-              deps.push(
-                ...extractFromServices(
-                  value as Services,
-                  config.registryAliases,
-                ),
-              );
-              break;
+      for (const job of [topLevel, ...jobs]) {
+        const { image, services } = job;
 
-            default:
-              deps.push(
-                ...extractFromJob(value as Job, config.registryAliases),
-              );
-              break;
-          }
+        if (image) {
+          const dep = getGitlabDep(image.value, config.registryAliases);
+          dep.depType = image.type;
+          deps.push(dep);
         }
-        deps = deps.filter(is.truthy);
+
+        for (const service of services) {
+          const dep = getGitlabDep(service, config.registryAliases);
+          dep.depType = 'service-image';
+          deps.push(dep);
+        }
       }
 
-      const includedComponents = getAllIncludeComponents(doc);
+      const includedComponents = GitlabDocument.parse(doc);
       for (const includedComponent of includedComponents) {
         const dep = extractDepFromIncludeComponent(
           includedComponent,
@@ -256,13 +139,12 @@ export async function extractAllPackageFiles(
       );
       continue;
     }
-    let docs: GitlabPipeline[];
-    try {
-      // TODO: use schema (#9610)
-      docs = parseYaml(content, {
-        uniqueKeys: false,
-      });
-    } catch (err) {
+
+    const { val: docs, err } = Result.wrap(() =>
+      parseYaml(content, { uniqueKeys: false }),
+    ).unwrap();
+
+    if (err) {
       logger.debug(
         { err, packageFile: file },
         'Error extracting GitLab CI dependencies',
@@ -270,21 +152,11 @@ export async function extractAllPackageFiles(
       continue;
     }
 
-    for (const doc of docs) {
-      if (is.array(doc?.include)) {
-        for (const includeObj of doc.include.filter(isGitlabIncludeLocal)) {
-          const fileObj = trimLeadingSlash(includeObj.local);
-          if (!seen.has(fileObj)) {
-            seen.add(fileObj);
-            filesToExamine.push(fileObj);
-          }
-        }
-      } else if (is.string(doc?.include)) {
-        const fileObj = trimLeadingSlash(doc.include);
-        if (!seen.has(fileObj)) {
-          seen.add(fileObj);
-          filesToExamine.push(fileObj);
-        }
+    const localIncludes = MultiDocumentLocalIncludes.parse(docs);
+    for (const file of localIncludes) {
+      if (!seen.has(file)) {
+        seen.add(file);
+        filesToExamine.push(file);
       }
     }
 

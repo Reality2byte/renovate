@@ -1,15 +1,19 @@
-import type { Category } from '../../../constants';
-import { GithubReleasesDatasource } from '../../datasource/github-releases';
+import type { Category } from '../../../constants/index.ts';
+import { GithubReleasesDatasource } from '../../datasource/github-releases/index.ts';
 
-export { extractPackageFile } from './extract';
+export { knownDepTypes } from './dep-types.ts';
+export { extractPackageFile } from './extract.ts';
 
+export const displayName = 'TFLint Plugins';
+export const url =
+  'https://github.com/terraform-linters/tflint/blob/master/docs/user-guide/plugins.md';
 export const categories: Category[] = ['terraform'];
-
-// Only from GitHub Releases: https://github.com/terraform-linters/tflint/blob/master/docs/developer-guide/plugins.md#4-creating-a-github-release
-export const supportedDatasources = [GithubReleasesDatasource.id];
 
 export const defaultConfig = {
   commitMessageTopic: 'TFLint plugin {{depName}}',
-  fileMatch: ['\\.tflint\\.hcl$'],
+  managerFilePatterns: ['/\\.tflint\\.hcl$/'],
   extractVersion: '^v(?<version>.*)$',
 };
+
+// Only from GitHub Releases: https://github.com/terraform-linters/tflint/blob/master/docs/developer-guide/plugins.md#4-creating-a-github-release
+export const supportedDatasources = [GithubReleasesDatasource.id];

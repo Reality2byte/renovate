@@ -1,12 +1,8 @@
 import { codeBlock } from 'common-tags';
-import { mocked } from '../../../../test/util';
-import { logger } from '../../../logger';
-import * as _fs from '../../../util/fs';
-import { extractLockFileVersions, parseLockFile } from './locked-version';
+import { fs } from '~test/util.ts';
+import { extractLockFileVersions, parseLockFile } from './locked-version.ts';
 
-jest.mock('../../../util/fs');
-
-const fs = mocked(_fs);
+vi.mock('../../../util/fs/index.ts');
 
 const lockFileContent = codeBlock`
   packages = [
@@ -21,22 +17,28 @@ const lockFileContent = codeBlock`
 describe('modules/manager/gleam/locked-version', () => {
   describe('extractLockFileVersions()', () => {
     it('returns null for missing lock file', async () => {
-      expect(await extractLockFileVersions('manifest.toml')).toBeNull();
+      await expect(
+        extractLockFileVersions('manifest.toml'),
+      ).resolves.toBeNull();
     });
 
     it('returns null for invalid lock file', async () => {
       fs.readLocalFile.mockResolvedValueOnce('foo');
-      expect(await extractLockFileVersions('manifest.toml')).toBeNull();
+      await expect(
+        extractLockFileVersions('manifest.toml'),
+      ).resolves.toBeNull();
     });
 
     it('returns empty map for lock file without packages', async () => {
       fs.readLocalFile.mockResolvedValueOnce('[requirements]');
-      expect(await extractLockFileVersions('manifest.toml')).toEqual(new Map());
+      await expect(extractLockFileVersions('manifest.toml')).resolves.toEqual(
+        new Map(),
+      );
     });
 
     it('returns a map of package versions', async () => {
       fs.readLocalFile.mockResolvedValueOnce(lockFileContent);
-      expect(await extractLockFileVersions('manifest.toml')).toEqual(
+      await expect(extractLockFileVersions('manifest.toml')).resolves.toEqual(
         new Map([
           ['foo', ['1.0.4']],
           ['bar', ['2.1.0']],
@@ -48,7 +50,6 @@ describe('modules/manager/gleam/locked-version', () => {
   describe('parseLockFile', () => {
     it('parses lockfile string into an object', () => {
       const parseLockFileResult = parseLockFile(lockFileContent);
-      logger.debug({ parseLockFileResult }, 'parseLockFile');
       expect(parseLockFileResult).toStrictEqual({
         packages: [
           {

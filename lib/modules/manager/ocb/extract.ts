@@ -1,14 +1,14 @@
-import is from '@sindresorhus/is';
-import { logger } from '../../../logger';
-import { regEx } from '../../../util/regex';
-import { parseSingleYaml } from '../../../util/yaml';
-import { GoDatasource } from '../../datasource/go';
+import { isNullOrUndefined } from '@sindresorhus/is';
+import { logger } from '../../../logger/index.ts';
+import { regEx } from '../../../util/regex.ts';
+import { parseSingleYaml } from '../../../util/yaml.ts';
+import { GoDatasource } from '../../datasource/go/index.ts';
 import type {
   ExtractConfig,
   PackageDependency,
   PackageFileContent,
-} from '../types';
-import { type Module, type OCBConfig, OCBConfigSchema } from './schema';
+} from '../types.ts';
+import { type Module, OCBConfig } from './schema.ts';
 
 export function extractPackageFile(
   content: string,
@@ -18,10 +18,10 @@ export function extractPackageFile(
   let definition: OCBConfig | null = null;
   try {
     const yaml = parseSingleYaml(content);
-    const parsed = OCBConfigSchema.safeParse(yaml);
+    const parsed = OCBConfig.safeParse(yaml);
     if (!parsed.success) {
       logger.trace(
-        { packageFile, error: parsed.error },
+        { packageFile, err: parsed.error },
         'Failed to parse OCB schema',
       );
       return null;
@@ -30,7 +30,7 @@ export function extractPackageFile(
     definition = parsed.data;
   } catch (error) {
     logger.debug(
-      { packageFile, error },
+      { packageFile, err: error },
       'OCB manager failed to parse file as YAML',
     );
     return null;
@@ -51,6 +51,7 @@ export function extractPackageFile(
   deps.push(...processModule(definition.exporters, 'exports'));
   deps.push(...processModule(definition.extensions, 'extensions'));
   deps.push(...processModule(definition.processors, 'processors'));
+  deps.push(...processModule(definition.providers, 'providers'));
   deps.push(...processModule(definition.receivers, 'receivers'));
 
   return {
@@ -64,7 +65,7 @@ export function processModule(
   depType: string,
 ): PackageDependency[] {
   const deps: PackageDependency[] = [];
-  if (is.nullOrUndefined(module)) {
+  if (isNullOrUndefined(module)) {
     return deps;
   }
 

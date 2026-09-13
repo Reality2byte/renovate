@@ -1,10 +1,10 @@
-import type { ChangeLogProject, ChangeLogRelease } from '..';
-import { Fixtures } from '../../../../../../../test/fixtures';
-import * as httpMock from '../../../../../../../test/http-mock';
-import { partial } from '../../../../../../../test/util';
-import type { BranchUpgradeConfig } from '../../../../../types';
-import { getReleaseList, getReleaseNotesMdFile } from '../release-notes';
-import { BitbucketChangeLogSource } from './source';
+import { Fixtures } from '~test/fixtures.ts';
+import * as httpMock from '~test/http-mock.ts';
+import { partial } from '~test/util.ts';
+import type { BranchUpgradeConfig } from '../../../../../types.ts';
+import type { ChangeLogProject, ChangeLogRelease } from '../index.ts';
+import { getReleaseList, getReleaseNotesMdFile } from '../release-notes.ts';
+import { BitbucketChangeLogSource } from './source.ts';
 
 const baseUrl = 'https://bitbucket.org/';
 const apiBaseUrl = 'https://api.bitbucket.org/';
@@ -79,7 +79,7 @@ describe('workers/repository/update/pr/changelog/bitbucket/index', () => {
   it('handles release notes', async () => {
     httpMock
       .scope(apiBaseUrl)
-      .get('/2.0/repositories/some-org/some-repo/src?pagelen=100')
+      .get('/2.0/repositories/some-org/some-repo/src/HEAD?pagelen=100')
       .reply(200, bitbucketTreeResponse)
       .get('/2.0/repositories/some-org/some-repo/src/abcd/CHANGELOG.md')
       .reply(200, changelogMd);
@@ -87,14 +87,14 @@ describe('workers/repository/update/pr/changelog/bitbucket/index', () => {
 
     expect(res).toMatchObject({
       changelogFile: 'CHANGELOG.md',
-      changelogMd: changelogMd + '\n#\n##',
+      changelogMd: `${changelogMd}\n#\n##`,
     });
   });
 
   it('handles missing release notes', async () => {
     httpMock
       .scope(apiBaseUrl)
-      .get('/2.0/repositories/some-org/some-repo/src?pagelen=100')
+      .get('/2.0/repositories/some-org/some-repo/src/HEAD?pagelen=100')
       .reply(200, bitbucketTreeResponseNoChangelogFiles);
     const res = await getReleaseNotesMdFile(bitbucketProject);
     expect(res).toBeNull();

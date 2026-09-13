@@ -1,53 +1,21 @@
-import is from '@sindresorhus/is';
-import { regEx } from '../../../util/regex';
-import type { GenericVersion } from '../generic';
-import { GenericVersioningApi } from '../generic';
-import type { VersioningApi } from '../types';
+import { isNumericString } from '@sindresorhus/is';
+import { coerceArray } from '../../../util/array.ts';
+import { regEx } from '../../../util/regex.ts';
+import { GenericVersioningApi } from '../generic.ts';
+import type { VersioningApi } from '../types.ts';
+import type { RpmVersion } from './types.ts';
 
 export const id = 'rpm';
 export const displayName = 'RPM version';
 export const urls = [
-  'https://docs.fedoraproject.org/en-US/packaging-guidelines/Versioning/',
-  'https://fedoraproject.org/wiki/Package_Versioning_Examples',
-  'https://fedoraproject.org/wiki/User:Tibbs/TildeCaretVersioning',
+  '[Fedora packaging guidelines - Versioning](https://docs.fedoraproject.org/en-US/packaging-guidelines/Versioning/)',
+  '[Fedora package versioning examples](https://fedoraproject.org/wiki/Package_Versioning_Examples)',
+  '[Fedora tilde and caret versioning](https://fedoraproject.org/wiki/User:Tibbs/TildeCaretVersioning)',
 ];
 export const supportsRanges = false;
 
-const alphaNumPattern = regEx(/([a-zA-Z]+)|(\d+)|(~)/g);
+const alphaNumPattern = regEx(/(?:[a-zA-Z]+)|(?:\d+)|(?:~)/g);
 const epochPattern = regEx(/^\d+$/);
-
-export interface RpmVersion extends GenericVersion {
-  /**
-   * epoch, defaults to 0 if not present, are used to leave version mistakes and previous
-   * versioning schemes behind.
-   */
-  epoch: number;
-  /**
-   * upstreamVersion is the main version part: it defines the version of origin software
-   * that was packaged.
-   */
-  upstreamVersion: string;
-  /**
-   * rpmRelease is used to distinguish between different versions of packaging for the
-   * same upstream version.
-   */
-  rpmRelease: string;
-
-  /**
-   * rpmPreRelease is used to distinguish versions of prerelease of the same upstream and release version
-   * Example: Python 3.12.0-1 > Python 3.12.0-1~a1
-   */
-  rpmPreRelease: string;
-
-  /**
-   * snapshot is an archive taken from upstream's source code control system which is not equivalent to any release version.
-   * This field must at minimum consist of the date in eight-digit "YYYYMMDD" format. The packager MAY
-   * include up to 17 characters of additional information after the date. The following formats are suggested:
-   * YYYYMMDD.<revision>
-   * YYYYMMDD<scm><revision>
-   */
-  snapshot: string;
-}
 
 class RpmVersioningApi extends GenericVersioningApi {
   /**
@@ -141,7 +109,8 @@ class RpmVersioningApi extends GenericVersioningApi {
 
       if (c1 > c2) {
         return 1;
-      } else if (c1 < c2) {
+      }
+      if (c1 < c2) {
         return -1;
       }
     }
@@ -158,8 +127,8 @@ class RpmVersioningApi extends GenericVersioningApi {
       return 0;
     }
 
-    const matchesv1 = v1.match(alphaNumPattern) ?? [];
-    const matchesv2 = v2.match(alphaNumPattern) ?? [];
+    const matchesv1 = coerceArray(v1.match(alphaNumPattern));
+    const matchesv2 = coerceArray(v2.match(alphaNumPattern));
     const matches = Math.min(matchesv1.length, matchesv2.length);
 
     for (let i = 0; i < matches; i++) {
@@ -167,19 +136,19 @@ class RpmVersioningApi extends GenericVersioningApi {
       const matchv2 = matchesv2[i];
 
       // compare tildes
-      if (matchv1?.[0] === '~' || matchv2?.[0] === '~') {
-        if (matchv1?.[0] !== '~') {
+      if (matchv1?.startsWith('~') || matchv2?.startsWith('~')) {
+        if (!matchv1?.startsWith('~')) {
           return 1;
         }
 
-        if (matchv2?.[0] !== '~') {
+        if (!matchv2?.startsWith('~')) {
           return -1;
         }
       }
 
-      if (is.numericString(matchv1?.[0])) {
+      if (isNumericString(matchv1?.[0])) {
         // numbers are greater than letters
-        if (!is.numericString(matchv2?.[0])) {
+        if (!isNumericString(matchv2?.[0])) {
           return 1;
         }
 
@@ -193,7 +162,8 @@ class RpmVersioningApi extends GenericVersioningApi {
         }
 
         return Math.sign(result);
-      } else if (is.numericString(matchv2?.[0])) {
+      }
+      if (isNumericString(matchv2?.[0])) {
         return -1;
       }
 
@@ -210,11 +180,11 @@ class RpmVersioningApi extends GenericVersioningApi {
     }
 
     // If there is a tilde in a segment past the minimum number of segments, find it
-    if (matchesv1.length > matches && matchesv1[matches][0] === '~') {
+    if (matchesv1.length > matches && matchesv1[matches].startsWith('~')) {
       return -1;
     }
 
-    if (matchesv2.length > matches && matchesv2[matches][0] === '~') {
+    if (matchesv2.length > matches && matchesv2[matches].startsWith('~')) {
       return 1;
     }
 
@@ -258,7 +228,8 @@ class RpmVersioningApi extends GenericVersioningApi {
     // No Prerelease wins
     if (parsed1.rpmPreRelease === '' && parsed2.rpmPreRelease !== '') {
       return 1;
-    } else if (parsed1.rpmPreRelease !== '' && parsed2.rpmPreRelease === '') {
+    }
+    if (parsed1.rpmPreRelease !== '' && parsed2.rpmPreRelease === '') {
       return -1;
     }
 

@@ -1,11 +1,12 @@
-import is from '@sindresorhus/is';
+import { isArray } from '@sindresorhus/is';
 import JSON5 from 'json5';
-import { getOptions } from '../../../../config/options';
-import type { AllConfig } from '../../../../config/types';
-import { logger } from '../../../../logger';
-import { coersions } from './coersions';
-import type { ParseConfigOptions } from './types';
-import { migrateAndValidateConfig } from './util';
+import { getEnvName } from '../../../../config/options/env.ts';
+import { getOptions } from '../../../../config/options/index.ts';
+import type { AllConfig } from '../../../../config/types.ts';
+import { logger } from '../../../../logger/index.ts';
+import { parseJson } from '../../../../util/common.ts';
+import { coersions } from './coersions.ts';
+import { migrateAndValidateConfig } from './util.ts';
 
 function normalizePrefixes(
   env: NodeJS.ProcessEnv,
@@ -24,23 +25,14 @@ function normalizePrefixes(
   return result;
 }
 
-export function getEnvName(option: ParseConfigOptions): string {
-  if (option.env === false) {
-    return '';
-  }
-  if (option.env) {
-    return option.env;
-  }
-  const nameWithUnderscores = option.name.replace(/([A-Z])/g, '_$1');
-  return `RENOVATE_${nameWithUnderscores.toUpperCase()}`;
-}
-
 const renameKeys = {
   aliases: 'registryAliases',
   azureAutoComplete: 'platformAutomerge', // migrate: azureAutoComplete
   gitLabAutomerge: 'platformAutomerge', // migrate: gitLabAutomerge
   mergeConfidenceApiBaseUrl: 'mergeConfidenceEndpoint',
   mergeConfidenceSupportedDatasources: 'mergeConfidenceDatasources',
+  allowedPostUpgradeCommands: 'allowedCommands',
+  baseBranches: 'baseBranchPatterns',
 };
 
 function renameEnvKeys(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
@@ -75,27 +67,52 @@ function massageEnvKeyValues(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const result = { ...env };
   for (const { oldName, newName, from, to } of migratedKeysWithValues) {
     const key = getEnvName({ name: oldName });
-    if (env[key] !== undefined) {
-      if (result[key] === from) {
-        delete result[key];
-        result[getEnvName({ name: newName })] = to;
-      }
+    if (env[key] !== undefined && result[key] === from) {
+      delete result[key];
+      result[getEnvName({ name: newName })] = to;
     }
   }
   return result;
 }
 
-// these experimental env vars have been converted into self-hosted config options
-const convertedExperimentalEnvVars = [
-  'RENOVATE_X_AUTODISCOVER_REPO_SORT',
-  'RENOVATE_X_AUTODISCOVER_REPO_ORDER',
-  'RENOVATE_X_DOCKER_MAX_PAGES',
-  'RENOVATE_X_DELETE_CONFIG_FILE',
-  'RENOVATE_X_S3_ENDPOINT',
-  'RENOVATE_X_S3_PATH_STYLE',
-  'RENOVATE_X_MERGE_CONFIDENCE_API_BASE_URL',
-  'RENOVATE_X_MERGE_CONFIDENCE_SUPPORTED_DATASOURCES',
-];
+interface ConvertedExperimentalEnvVar {
+  optionName: string;
+  // Normalize the raw env var value before passing it through, if needed.
+  normalizeValue?: (value: string) => string;
+}
+
+// Maps RENOVATE_X_ env vars that have been promoted to regular config options
+// to the option name they now correspond to.
+export const convertedExperimentalEnvVars: ReadonlyMap<
+  string,
+  ConvertedExperimentalEnvVar
+> = new Map([
+  ['RENOVATE_X_AUTODISCOVER_REPO_SORT', { optionName: 'autodiscoverRepoSort' }],
+  [
+    'RENOVATE_X_AUTODISCOVER_REPO_ORDER',
+    { optionName: 'autodiscoverRepoOrder' },
+  ],
+  ['RENOVATE_X_DOCKER_MAX_PAGES', { optionName: 'dockerMaxPages' }],
+  ['RENOVATE_X_DELETE_CONFIG_FILE', { optionName: 'deleteConfigFile' }],
+  ['RENOVATE_X_S3_ENDPOINT', { optionName: 's3Endpoint' }],
+  ['RENOVATE_X_S3_PATH_STYLE', { optionName: 's3PathStyle' }],
+  [
+    'RENOVATE_X_MERGE_CONFIDENCE_API_BASE_URL',
+    { optionName: 'mergeConfidenceEndpoint' },
+  ],
+  [
+    'RENOVATE_X_MERGE_CONFIDENCE_SUPPORTED_DATASOURCES',
+    { optionName: 'mergeConfidenceDatasources' },
+  ],
+  [
+    'RENOVATE_X_REPO_CACHE_FORCE_LOCAL',
+    {
+      optionName: 'repositoryCacheForceLocal',
+      // The old env var was treated as a flag: any non-empty value meant true.
+      normalizeValue: (v: string) => (v ? 'true' : v),
+    },
+  ],
+]);
 
 /**
  * Massages the experimental env vars which have been converted to config options
@@ -106,11 +123,16 @@ function massageConvertedExperimentalVars(
   env: NodeJS.ProcessEnv,
 ): NodeJS.ProcessEnv {
   const result = { ...env };
-  for (const key of convertedExperimentalEnvVars) {
-    if (env[key] !== undefined) {
-      const newKey = key.replace('RENOVATE_X_', 'RENOVATE_');
-      result[newKey] = env[key];
-      delete result[key];
+  for (const [
+    oldKey,
+    { optionName, normalizeValue },
+  ] of convertedExperimentalEnvVars) {
+    if (env[oldKey] !== undefined) {
+      const newKey = getEnvName({ name: optionName });
+      result[newKey] = normalizeValue
+        ? normalizeValue(env[oldKey])
+        : env[oldKey];
+      delete result[oldKey];
     }
   }
   return result;
@@ -118,109 +140,101 @@ function massageConvertedExperimentalVars(
 
 export async function getConfig(
   inputEnv: NodeJS.ProcessEnv,
+  configEnvKey = 'RENOVATE_CONFIG',
 ): Promise<AllConfig> {
-  let env = inputEnv;
-  env = normalizePrefixes(inputEnv, inputEnv.ENV_PREFIX);
-  env = massageConvertedExperimentalVars(env);
-  env = renameEnvKeys(env);
-  // massage the values of migrated configuration keys
-  env = massageEnvKeyValues(env);
+  const env = prepareEnv(inputEnv);
+  const config = await parseAndValidateOrExit(env, configEnvKey);
 
   const options = getOptions();
+  config.hostRules ??= [];
 
-  let config: AllConfig = {};
-
-  if (env.RENOVATE_CONFIG) {
-    try {
-      config = JSON5.parse(env.RENOVATE_CONFIG);
-      logger.debug({ config }, 'Detected config in env RENOVATE_CONFIG');
-
-      config = await migrateAndValidateConfig(config, 'RENOVATE_CONFIG');
-    } catch (err) {
-      logger.fatal({ err }, 'Could not parse RENOVATE_CONFIG');
-      process.exit(1);
+  for (const option of options) {
+    if (option.env === false) {
+      continue;
     }
-  }
 
-  config.hostRules ||= [];
+    const envName = getEnvName(option);
+    const envVal = env[envName];
+    if (!envVal) {
+      continue;
+    }
 
-  options.forEach((option) => {
-    if (option.env !== false) {
-      const envName = getEnvName(option);
-      const envVal = env[envName];
-      if (envVal) {
-        if (option.type === 'array' && option.subType === 'object') {
-          try {
-            const parsed = JSON5.parse(envVal);
-            if (is.array(parsed)) {
-              config[option.name] = parsed;
-            } else {
-              logger.debug(
-                { val: envVal, envName },
-                'Could not parse object array',
-              );
-            }
-          } catch {
-            logger.debug(
-              { val: envVal, envName },
-              'Could not parse environment variable',
-            );
-          }
+    if (option.type === 'array' && option.subType === 'object') {
+      try {
+        const parsed = JSON5.parse(envVal);
+        if (isArray(parsed)) {
+          // @ts-expect-error -- type can't be narrowed
+          config[option.name] = parsed;
         } else {
-          const coerce = coersions[option.type];
-          config[option.name] = coerce(envVal);
-          if (option.name === 'dryRun') {
-            if ((config[option.name] as string) === 'true') {
-              logger.warn(
-                'env config dryRun property has been changed to full',
-              );
-              config[option.name] = 'full';
-            } else if ((config[option.name] as string) === 'false') {
-              logger.warn(
-                'env config dryRun property has been changed to null',
-              );
-              delete config[option.name];
-            } else if ((config[option.name] as string) === 'null') {
-              delete config[option.name];
-            }
-          }
-          if (option.name === 'requireConfig') {
-            if ((config[option.name] as string) === 'true') {
-              logger.warn(
-                'env config requireConfig property has been changed to required',
-              );
-              config[option.name] = 'required';
-            } else if ((config[option.name] as string) === 'false') {
-              logger.warn(
-                'env config requireConfig property has been changed to optional',
-              );
-              config[option.name] = 'optional';
-            }
-          }
-          if (option.name === 'platformCommit') {
-            if ((config[option.name] as string) === 'true') {
-              logger.warn(
-                'env config platformCommit property has been changed to enabled',
-              );
-              config[option.name] = 'enabled';
-            } else if ((config[option.name] as string) === 'false') {
-              logger.warn(
-                'env config platformCommit property has been changed to disabled',
-              );
-              config[option.name] = 'disabled';
-            }
-          }
+          logger.debug(
+            { val: envVal, envName },
+            'Could not parse object array',
+          );
+        }
+      } catch {
+        logger.debug(
+          { val: envVal, envName },
+          'Could not parse environment variable',
+        );
+      }
+    } else {
+      const coerce = coersions[option.type];
+      try {
+        // @ts-expect-error -- type can't be narrowed
+        config[option.name] = coerce(envVal);
+      } catch (e) {
+        throw new Error(`${envName} was invalid: ${e}`);
+      }
+
+      if (option.name === 'dryRun') {
+        if ((config[option.name] as string) === 'true') {
+          logger.warn('env config dryRun property has been changed to full');
+          config[option.name] = 'full';
+        } else if ((config[option.name] as string) === 'false') {
+          logger.warn('env config dryRun property has been changed to null');
+          delete config[option.name];
+        } else if ((config[option.name] as string) === 'null') {
+          delete config[option.name];
+        }
+      }
+
+      if (option.name === 'requireConfig') {
+        if ((config[option.name] as string) === 'true') {
+          logger.warn(
+            'env config requireConfig property has been changed to required',
+          );
+          config[option.name] = 'required';
+        } else if ((config[option.name] as string) === 'false') {
+          logger.warn(
+            'env config requireConfig property has been changed to optional',
+          );
+          config[option.name] = 'optional';
+        }
+      }
+
+      if (option.name === 'platformCommit') {
+        if ((config[option.name] as string) === 'true') {
+          logger.warn(
+            'env config platformCommit property has been changed to enabled',
+          );
+          config[option.name] = 'enabled';
+        } else if ((config[option.name] as string) === 'false') {
+          logger.warn(
+            'env config platformCommit property has been changed to disabled',
+          );
+          config[option.name] = 'disabled';
         }
       }
     }
-  });
+  }
 
-  if (env.GITHUB_COM_TOKEN) {
+  const githubComToken = env.GITHUB_COM_TOKEN ?? env.RENOVATE_GITHUB_COM_TOKEN;
+  if (githubComToken) {
     logger.debug(`Converting GITHUB_COM_TOKEN into a global host rule`);
     config.hostRules.push({
       hostType: 'github',
       matchHost: 'github.com',
-      token: env.GITHUB_COM_TOKEN,
+      token: githubComToken,
     });
   }
 
@@ -237,7 +251,42 @@ export async function getConfig(
     'VSTS_TOKEN',
   ];
 
-  unsupportedEnv.forEach((val) => delete env[val]);
+  for (const val of unsupportedEnv) {
+    delete env[val];
+  }
 
   return config;
+}
+
+export function prepareEnv(inputEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  let env = normalizePrefixes(inputEnv, inputEnv.ENV_PREFIX);
+  env = massageConvertedExperimentalVars(env);
+  env = renameEnvKeys(env);
+  // massage the values of migrated configuration keys
+  return massageEnvKeyValues(env);
+}
+
+export async function parseAndValidateOrExit(
+  env: NodeJS.ProcessEnv,
+  configEnvKey: string,
+): Promise<AllConfig> {
+  if (!env[configEnvKey]) {
+    return {};
+  }
+
+  try {
+    const config = parseJson(
+      env[configEnvKey],
+      `${configEnvKey}.env.json5`,
+    ) as AllConfig;
+    logger.debug({ config }, `Detected config in env ${configEnvKey}`);
+
+    return await migrateAndValidateConfig(config, `${configEnvKey}`);
+  } catch (err) {
+    logger.fatal(
+      { err, configEnvKey },
+      'Could not parse config environment variable',
+    );
+    process.exit(1);
+  }
 }

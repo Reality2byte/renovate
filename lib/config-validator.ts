@@ -1,20 +1,53 @@
 #!/usr/bin/env node
-// istanbul ignore file
-import 'source-map-support/register';
+import 'source-map-support/register.js';
+import './punycode.cjs';
+
+import { styleText } from 'node:util';
+import { isNonEmptyStringAndNotWhitespace } from '@sindresorhus/is';
+import { Command, CommanderError } from 'commander';
 import { dequal } from 'dequal';
-import { pathExists, readFile } from 'fs-extra';
-import { configFileNames } from './config/app-strings';
-import { massageConfig } from './config/massage';
-import { migrateConfig } from './config/migration';
-import type { RenovateConfig } from './config/types';
-import { validateConfig } from './config/validation';
-import { logger } from './logger';
-import {
-  getConfig as getFileConfig,
-  getParsedContent,
-} from './workers/global/config/parse/file';
+import { diffLines } from 'diff';
+import fs from 'fs-extra';
+import { getConfigFileNames } from './config/app-strings.ts';
+import { GlobalConfig } from './config/global.ts';
+import { massageConfig } from './config/massage.ts';
+import { migrateConfig } from './config/migration.ts';
+import type { AllConfig, RenovateConfig } from './config/types.ts';
+import { validateConfig } from './config/validation.ts';
+import { pkg } from './expose.ts';
+import { init, logger } from './logger/index.ts';
+import { getEnv } from './util/env.ts';
+import { add as addHostRule } from './util/host-rules.ts';
+import { regEx, regexEngineStatus } from './util/regex.ts';
+import { getConfig as getFileConfig } from './workers/global/config/parse/file.ts';
+import { parseConfigs } from './workers/global/config/parse/index.ts';
+import { getParsedContent } from './workers/global/config/parse/util.ts';
+
+await init();
+
+const { pathExists, readFile } = fs;
 
 let returnVal = 0;
+
+/**
+ * Make sure that we've resolved configuration from the different places that Renovate users would expect them to be specified
+ *
+ * This then allows a `configType=repo` config to i.e. be validated alongside a `config.js` or `env RENOVATE_ALLOWED_COMMANDS=...`
+ *
+ * Note that we intentionally don't fully initialize Renovate and its modules, as we're not fully running, and it would require a Platform to be configured
+ * */
+async function partiallyGlobalInitialize(): Promise<void> {
+  // NOTE that this doesn't allow command-line arguments
+  const globalConfig = await parseConfigs(getEnv(), []);
+  GlobalConfig.set(globalConfig);
+
+  if (globalConfig.hostRules) {
+    // the self-hosted admin's own headers get no exemption from `allowedHeaders` either, as `applyHostRule` filters the rule it matches by header name alone whoever set it - so `addHostRule` drops them here too, with a WARN, rather than leave them to be silently discarded at request time
+    for (const hostRule of globalConfig.hostRules) {
+      addHostRule(hostRule);
+    }
+  }
+}
 
 async function validate(
   configType: 'global' | 'repo',
@@ -23,6 +56,18 @@ async function validate(
   strict: boolean,
   isPreset = false,
 ): Promise<void> {
+  if (config.hostRules) {
+    // `allowedHeaders` enforces the checks regardless of whether it's global self-hosted administrator config, or repo config
+    // a global config file being validated brings its own `allowedHeaders`, and should be validated against it, like a real run would after parsing it
+    const allowedHeaders =
+      configType === 'global'
+        ? ((config as AllConfig).allowedHeaders ??
+          GlobalConfig.get('allowedHeaders'))
+        : GlobalConfig.get('allowedHeaders');
+    for (const hostRule of config.hostRules) {
+      addHostRule(hostRule, { allowedHeaders });
+    }
+  }
   const { isMigrated, migratedConfig } = migrateConfig(config);
   if (isMigrated) {
     logger.warn(
@@ -32,6 +77,33 @@ async function validate(
       },
       'Config migration necessary',
     );
+    const changedObjects = diffLines(
+      JSON.stringify(config, null, 2),
+      JSON.stringify(migratedConfig, null, 2),
+      { ignoreWhitespace: false, newlineIsToken: false },
+    );
+    const added = styleText('green', '+ ');
+    const removed = styleText('red', '- ');
+    const msg = changedObjects
+      .flatMap((part) => {
+        let linePrefix: string;
+        if (part.added) {
+          linePrefix = added;
+        } else if (part.removed) {
+          linePrefix = removed;
+        } else {
+          linePrefix = '  ';
+        }
+        return part.value
+          .split('\n')
+          .filter(isNonEmptyStringAndNotWhitespace)
+          .map((line) =>
+            line.replace(regEx(/^(?<ws> *)/), `${linePrefix}$<ws>`),
+          );
+      })
+      .join('\n');
+    // oxlint-disable-next-line renovate/logger-static-message -- the multi-line, colorized diff must be interpolated to stay readable; as a metadata field it is JSON-escaped onto one line
+    logger.warn(`Config migration diff:\n${msg}`);
     if (strict) {
       returnVal = 1;
     }
@@ -54,109 +126,199 @@ async function validate(
   }
 }
 
-type PackageJson = {
+interface PackageJson {
   renovate?: RenovateConfig;
   'renovate-config'?: Record<string, RenovateConfig>;
-};
+}
 
 (async () => {
-  const strictArgIndex = process.argv.indexOf('--strict');
-  const strict = strictArgIndex >= 0;
-  if (strict) {
-    process.argv.splice(strictArgIndex, 1);
-  }
-  if (process.argv.length > 2) {
-    for (const file of process.argv.slice(2)) {
-      try {
-        if (!(await pathExists(file))) {
-          returnVal = 1;
-          logger.error({ file }, 'File does not exist');
-          break;
-        }
-        const parsedContent = await getParsedContent(file);
-        try {
-          logger.info(`Validating ${file}`);
-          await validate('global', file, parsedContent, strict);
-        } catch (err) {
-          logger.warn({ file, err }, 'File is not valid Renovate config');
-          returnVal = 1;
-        }
-      } catch (err) {
-        logger.warn({ file, err }, 'File could not be parsed');
-        returnVal = 1;
-      }
+  await partiallyGlobalInitialize();
+
+  const program = new Command('renovate-config-validator')
+    .summary('Validate Renovate configuration files')
+    .description(
+      `Validate your Renovate configuration (repo config, shared presets or global configuration) files\n` +
+        // oxlint-disable-next-line renovate/no-hardcoded-docs-url -- CLI help text, no config available
+        'If no [config-files...] are given, renovate-config-validator will look at the default config file locations (https://docs.renovatebot.com/configuration-options/)',
+    )
+    .addHelpText(
+      'after',
+      // oxlint-disable-next-line renovate/no-hardcoded-docs-url -- CLI help text, no config available
+      `
+When specifying [config-files...], Renovate will treat them as global self-hosted configuration files. You can disable this behaviour with --no-global
+
+Examples:
+
+  $ renovate-config-validator
+  $ renovate-config-validator --strict
+  $ renovate-config-validator first_config.json
+  $ renovate-config-validator --strict config.js
+  $ renovate-config-validator --no-global renovate.json5
+  $ env RENOVATE_CONFIG_FILE=obscure-name.json renovate-config-validator
+
+Global configuration:
+
+If you have specified global self-hosted configuration (https://docs.renovatebot.com/self-hosted-configuration/) in environment variables or in a \`config.js\`, this will be detected:
+
+  $ env RENOVATE_ALLOWED_ENV='["GO*"]' renovate-config-validator
+  # if passing the filename, make sure it's not validating as a global config
+  $ env RENOVATE_ALLOWED_ENV='["GO*"]' renovate-config-validator --no-global renovate.json`,
+    )
+    .argument('[config-files...]')
+    .version(pkg.version, '-v, --version')
+    .option(
+      '--strict',
+      'Fail command if any configuration warnings, errors, or a migration is needed',
+    )
+    .option(
+      '--no-global',
+      'When specifying [config-files], do not treat them as global self-hosted configuration file(s)',
+      true,
+    )
+    // allow us to manage the exit code
+    .exitOverride();
+
+  program.action(async (files, opts) => {
+    const strict = opts.strict ?? false;
+    let filesValidated = 0;
+
+    // without RE2, patterns are checked by RegExp, which accepts syntax RE2 rejects (e.g. lookahead)
+    if (regexEngineStatus.type === 'unavailable') {
+      logger.warn(
+        { err: regexEngineStatus.err },
+        'RE2 not usable, falling back to RegExp: regex validation may be inaccurate',
+      );
+    } else if (regexEngineStatus.type === 'ignored') {
+      logger.debug(
+        'RE2 ignored via RENOVATE_X_IGNORE_RE2: regex validation may be inaccurate',
+      );
     }
-  } else {
-    for (const file of configFileNames.filter(
-      (name) => name !== 'package.json',
-    )) {
-      try {
-        if (!(await pathExists(file))) {
-          continue;
-        }
-        const parsedContent = await getParsedContent(file);
+
+    if (files.length) {
+      let isGlobalConfig = true;
+      if (opts.global === false) {
+        isGlobalConfig = false;
+      }
+      const configType = isGlobalConfig ? 'global' : 'repo';
+      for (const file of files) {
         try {
-          logger.info(`Validating ${file}`);
-          await validate('repo', file, parsedContent, strict);
+          if (!(await pathExists(file))) {
+            returnVal = 1;
+            logger.error({ file }, 'File does not exist');
+            break;
+          }
+          const parsedContent = await getParsedContent(file);
+          try {
+            logger.info(`Validating ${file} as ${configType} config`);
+            await validate(configType, file, parsedContent, strict);
+          } catch (err) {
+            logger.warn({ file, err }, 'File is not valid Renovate config');
+            returnVal = 1;
+          }
         } catch (err) {
-          logger.warn({ file, err }, 'File is not valid Renovate config');
+          logger.warn({ file, err }, 'File could not be parsed');
           returnVal = 1;
         }
-      } catch (err) {
-        logger.warn({ file, err }, 'File could not be parsed');
-        returnVal = 1;
+
+        filesValidated++;
       }
-    }
-    try {
-      const pkgJson = JSON.parse(
-        await readFile('package.json', 'utf8'),
-      ) as PackageJson;
-      if (pkgJson.renovate) {
-        logger.info(`Validating package.json > renovate`);
-        await validate(
-          'repo',
-          'package.json > renovate',
-          pkgJson.renovate,
-          strict,
-        );
+    } else {
+      for (const file of getConfigFileNames().filter(
+        (name) => name !== 'package.json',
+      )) {
+        try {
+          if (!(await pathExists(file))) {
+            continue;
+          }
+          const parsedContent = await getParsedContent(file);
+          try {
+            logger.info(`Validating ${file}`);
+            await validate('repo', file, parsedContent, strict);
+          } catch (err) {
+            logger.warn({ file, err }, 'File is not valid Renovate config');
+            returnVal = 1;
+          }
+        } catch (err) {
+          logger.warn({ file, err }, 'File could not be parsed');
+          returnVal = 1;
+        }
+
+        filesValidated++;
       }
-      if (pkgJson['renovate-config']) {
-        logger.info(`Validating package.json > renovate-config`);
-        for (const presetConfig of Object.values(pkgJson['renovate-config'])) {
+      try {
+        const pkgJson = JSON.parse(
+          await readFile('package.json', 'utf8'),
+        ) as PackageJson;
+        if (pkgJson.renovate) {
+          logger.info(`Validating package.json > renovate`);
           await validate(
             'repo',
-            'package.json > renovate-config',
-            presetConfig,
+            'package.json > renovate',
+            pkgJson.renovate,
             strict,
-            true,
           );
+
+          filesValidated++;
         }
-      }
-    } catch {
-      // ignore
-    }
-    try {
-      const fileConfig = await getFileConfig(process.env);
-      if (!dequal(fileConfig, {})) {
-        const file = process.env.RENOVATE_CONFIG_FILE ?? 'config.js';
-        logger.info(`Validating ${file}`);
-        try {
-          await validate('global', file, fileConfig, strict);
-        } catch (err) {
-          logger.error({ file, err }, 'File is not valid Renovate config');
-          returnVal = 1;
+        if (pkgJson['renovate-config']) {
+          logger.info(`Validating package.json > renovate-config`);
+          for (const presetConfig of Object.values(
+            pkgJson['renovate-config'],
+          )) {
+            await validate(
+              'repo',
+              'package.json > renovate-config',
+              presetConfig,
+              strict,
+              true,
+            );
+
+            filesValidated++;
+          }
         }
+      } catch {
+        // ignore
       }
-    } catch {
-      // ignore
+      try {
+        const env = getEnv();
+        const fileConfig = await getFileConfig(env);
+        if (!dequal(fileConfig, {})) {
+          const file = env.RENOVATE_CONFIG_FILE ?? 'config.js';
+          logger.info(`Validating ${file}`);
+          try {
+            await validate('global', file, fileConfig, strict);
+          } catch (err) {
+            logger.error({ file, err }, 'File is not valid Renovate config');
+            returnVal = 1;
+          }
+          filesValidated++;
+        }
+      } catch {
+        // ignore
+      }
     }
-  }
-  if (returnVal !== 0) {
-    process.exit(returnVal);
-  }
-  logger.info('Config validated successfully');
+    if (returnVal === 0 && filesValidated) {
+      logger.info(
+        `Config validated successfully against ${filesValidated} file(s)`,
+      );
+    } else if (!filesValidated) {
+      logger.warn(`No files to perform configuration validation against`);
+    }
+    // Use exitCode (not process.exit) so async log streams can flush
+    process.exitCode = returnVal;
+  });
+
+  await program.parseAsync();
 })().catch((e) => {
-  // eslint-disable-next-line no-console
+  // Commander throws an error at the end of Action execution i.e. as part of the `help` and `version` commands, and so we don't want to return an error code in this case
+  if (
+    e instanceof CommanderError &&
+    (e.code === 'commander.helpDisplayed' || e.code === 'commander.version')
+  ) {
+    return;
+  }
+
+  // oxlint-disable-next-line no-console -- intentional: display critical error on CLI
   console.error(e);
   process.exit(99);
 });

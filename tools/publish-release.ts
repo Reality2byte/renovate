@@ -1,7 +1,9 @@
 import { Command } from 'commander';
-import { logger } from '../lib/logger';
-import { parseVersion } from './utils';
-import { bake, sign } from './utils/docker';
+import { init, logger } from '../lib/logger/index.ts';
+import { bake, sign } from './utils/docker.ts';
+import { parseVersion } from './utils/index.ts';
+
+await init();
 
 process.on('unhandledRejection', (err) => {
   // Will print "unhandledRejection err is not defined"
@@ -13,6 +15,7 @@ const program = new Command('pnpm release:prepare')
   .description('Build docker images')
   .option('--platform <type>', 'docker platforms to build')
   .option('--version <version>', 'version to use as tag', parseVersion)
+  .option('--channel <channel>', 'channel to use as tag')
   .option('--sha <type>', 'git sha')
   .option('--exit-on-error <boolean>', 'exit on docker error', (s) =>
     s ? s !== 'false' : undefined,
@@ -21,15 +24,18 @@ const program = new Command('pnpm release:prepare')
 void (async () => {
   await program.parseAsync();
   const opts = program.opts();
-  logger.info(`Publishing v${opts.version}...`);
+  if (!opts.version) {
+    throw new Error('--version is required');
+  }
+  logger.info(`Publishing v${opts.version.toString()}...`);
   const meta = await bake('push', opts);
 
   if (meta?.['push-slim']?.['containerimage.digest']) {
-    sign(
+    await sign(
       `ghcr.io/renovatebot/renovate@${meta['push-slim']['containerimage.digest']}`,
       opts,
     );
-    sign(
+    await sign(
       `renovate/renovate@${meta['push-slim']['containerimage.digest']}`,
       opts,
     );
@@ -38,11 +44,11 @@ void (async () => {
   }
 
   if (meta?.['push-full']?.['containerimage.digest']) {
-    sign(
+    await sign(
       `ghcr.io/renovatebot/renovate@${meta['push-full']['containerimage.digest']}`,
       opts,
     );
-    sign(
+    await sign(
       `renovate/renovate@${meta['push-full']['containerimage.digest']}`,
       opts,
     );

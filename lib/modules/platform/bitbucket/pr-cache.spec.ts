@@ -1,13 +1,13 @@
-import * as httpMock from '../../../../test/http-mock';
-import { reset as memCacheReset } from '../../../util/cache/memory';
+import * as httpMock from '~test/http-mock.ts';
+import { reset as memCacheReset } from '../../../util/cache/memory/index.ts';
 import {
   getCache,
   resetCache as repoCacheReset,
-} from '../../../util/cache/repository';
-import { BitbucketHttp } from '../../../util/http/bitbucket';
-import { BitbucketPrCache } from './pr-cache';
-import type { PrResponse } from './types';
-import { prInfo } from './utils';
+} from '../../../util/cache/repository/index.ts';
+import { BitbucketHttp } from '../../../util/http/bitbucket.ts';
+import { BitbucketPrCache } from './pr-cache.ts';
+import type { PrResponse } from './types.ts';
+import { prInfo } from './utils.ts';
 
 const http = new BitbucketHttp();
 
@@ -74,7 +74,7 @@ describe('modules/platform/bitbucket/pr-cache', () => {
       },
     ]);
     expect(cache).toEqual({
-      httpCache: {},
+      httpCache: expect.toBeNonEmptyObject(),
       platform: {
         bitbucket: {
           pullRequestsCache: {
@@ -123,7 +123,7 @@ describe('modules/platform/bitbucket/pr-cache', () => {
       },
     ]);
     expect(cache).toEqual({
-      httpCache: {},
+      httpCache: expect.toBeNonEmptyObject(),
       platform: {
         bitbucket: {
           pullRequestsCache: {
@@ -166,11 +166,11 @@ describe('modules/platform/bitbucket/pr-cache', () => {
     );
 
     expect(res).toMatchObject([
-      { number: 1, title: 'title' },
       { number: 2, title: 'title' },
+      { number: 1, title: 'title' },
     ]);
     expect(cache).toEqual({
-      httpCache: {},
+      httpCache: expect.toBeNonEmptyObject(),
       platform: {
         bitbucket: {
           pullRequestsCache: {

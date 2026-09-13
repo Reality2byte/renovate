@@ -1,18 +1,19 @@
-import { regEx } from '../../../util/regex';
-import { coerceString } from '../../../util/string';
-import { DistroInfo } from '../distro';
-import type { NewValueConfig, VersioningApi } from '../types';
+import { regEx } from '../../../util/regex.ts';
+import { coerceString } from '../../../util/string.ts';
+import { DistroInfo } from '../distro.ts';
+import type { NewValueConfig, VersioningApi } from '../types.ts';
 import {
   getDatedContainerImageCodename,
+  getDatedContainerImageSuffix,
   getDatedContainerImageVersion,
   isDatedCodeName,
-} from './common';
+} from './common.ts';
 
 export const id = 'ubuntu';
 export const displayName = 'Ubuntu';
 export const urls = [
-  'https://changelogs.ubuntu.com/meta-release',
-  'https://debian.pages.debian.net/distro-info-data/ubuntu.csv',
+  '[Ubuntu meta-release](https://changelogs.ubuntu.com/meta-release)',
+  '[Ubuntu distro info data](https://debian.pages.debian.net/distro-info-data/ubuntu.csv)',
 ];
 export const supportsRanges = false;
 
@@ -22,7 +23,9 @@ const di = new DistroInfo('data/ubuntu-distro-info.json');
 
 function isValid(input: string): boolean {
   if (
-    regEx(/^(0[4-5]|[6-9]|[1-9][0-9])\.[0-9][0-9](\.[0-9]{1,2})?$/).test(input)
+    regEx(/^(?:0[4-5]|[6-9]|[1-9][0-9])\.[0-9][0-9](?:\.[0-9]{1,2})?$/).test(
+      input,
+    )
   ) {
     return true;
   }
@@ -65,7 +68,7 @@ function isStable(version: string): boolean {
 
 function getVersionByCodename(version: string): string {
   const datedImgVersion = getDatedContainerImageCodename(version);
-  const getVersion = datedImgVersion ? datedImgVersion : version;
+  const getVersion = datedImgVersion ?? version;
   return di.getVersionByCodename(getVersion);
 }
 
@@ -105,6 +108,12 @@ function equals(version: string, other: string): boolean {
     return false;
   }
 
+  const verSuffix = getDatedContainerImageSuffix(version);
+  const otherSuffix = getDatedContainerImageSuffix(other);
+  if (verSuffix !== otherSuffix) {
+    return false;
+  }
+
   const ver = getVersionByCodename(version);
   const otherVer = getVersionByCodename(other);
   return isVersion(ver) && isVersion(otherVer) && ver === otherVer;
@@ -135,6 +144,15 @@ function isGreaterThan(version: string, other: string): boolean {
     return true;
   }
   if (xImageVersion < yImageVersion) {
+    return false;
+  }
+
+  const xSuffixVersion = getDatedContainerImageSuffix(version) ?? 0;
+  const ySuffixVersion = getDatedContainerImageSuffix(other) ?? 0;
+  if (xSuffixVersion > ySuffixVersion) {
+    return true;
+  }
+  if (xSuffixVersion < ySuffixVersion) {
     return false;
   }
 

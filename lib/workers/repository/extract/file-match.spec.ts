@@ -1,7 +1,5 @@
-import type { RenovateConfig } from '../../../../test/util';
-import * as fileMatch from './file-match';
-
-jest.mock('../../../util/git');
+import type { RenovateConfig } from '~test/util.ts';
+import * as fileMatch from './file-match.ts';
 
 describe('workers/repository/extract/file-match', () => {
   const fileList = ['package.json', 'frontend/package.json'];
@@ -15,15 +13,13 @@ describe('workers/repository/extract/file-match', () => {
     it('returns exact matches', () => {
       const includePaths = ['frontend/package.json'];
       const res = fileMatch.getIncludedFiles(fileList, includePaths);
-      expect(res).toMatchSnapshot();
-      expect(res).toHaveLength(1);
+      expect(res).toEqual(['frontend/package.json']);
     });
 
     it('returns minimatch matches', () => {
       const includePaths = ['frontend/**'];
       const res = fileMatch.getIncludedFiles(fileList, includePaths);
-      expect(res).toMatchSnapshot();
-      expect(res).toHaveLength(1);
+      expect(res).toEqual(['frontend/package.json']);
     });
   });
 
@@ -36,15 +32,13 @@ describe('workers/repository/extract/file-match', () => {
     it('ignores partial matches', () => {
       const ignoredPaths = ['frontend'];
       const res = fileMatch.filterIgnoredFiles(fileList, ignoredPaths);
-      expect(res).toMatchSnapshot();
-      expect(res).toHaveLength(1);
+      expect(res).toEqual(['package.json']);
     });
 
     it('returns minimatch matches', () => {
       const ignoredPaths = ['frontend/**'];
       const res = fileMatch.filterIgnoredFiles(fileList, ignoredPaths);
-      expect(res).toMatchSnapshot();
-      expect(res).toHaveLength(1);
+      expect(res).toEqual(['package.json']);
     });
   });
 
@@ -53,21 +47,19 @@ describe('workers/repository/extract/file-match', () => {
       includePaths: [],
       ignorePaths: [],
       manager: 'npm',
-      fileMatch: ['(^|/)package\\.json$'],
+      managerFilePatterns: ['/(^|/)package\\.json$/'],
     };
 
     it('returns npm files', () => {
       fileList.push('Dockerfile');
       const res = fileMatch.getMatchingFiles(config, fileList);
-      expect(res).toMatchSnapshot();
-      expect(res).toHaveLength(2);
+      expect(res).toEqual(['frontend/package.json', 'package.json']);
     });
 
     it('deduplicates', () => {
-      config.fileMatch?.push('package.json');
+      config.managerFilePatterns?.push('package.json');
       const res = fileMatch.getMatchingFiles(config, fileList);
-      expect(res).toMatchSnapshot();
-      expect(res).toHaveLength(2);
+      expect(res).toEqual(['frontend/package.json', 'package.json']);
     });
   });
 });

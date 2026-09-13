@@ -1,21 +1,20 @@
-import is from '@sindresorhus/is';
-import { GlobalConfig } from '../../../../config/global';
-import type { RenovateConfig } from '../../../../config/types';
-import { logger } from '../../../../logger';
-import type { Pr } from '../../../../modules/platform';
-import { platform } from '../../../../modules/platform';
-import { hashBody } from '../../../../modules/platform/pr-body';
-import { scm } from '../../../../modules/platform/scm';
-import { emojify } from '../../../../util/emoji';
-import { coerceString } from '../../../../util/string';
-import * as template from '../../../../util/template';
-import { joinUrlParts } from '../../../../util/url';
-import { getPlatformPrOptions } from '../../update/pr';
-import { prepareLabels } from '../../update/pr/labels';
-import { addParticipants } from '../../update/pr/participants';
-import { ConfigMigrationCommitMessageFactory } from '../branch/commit-message';
-import type { MigratedData } from '../branch/migrated-data';
-import { getMigrationBranchName } from '../common';
+import { isString } from '@sindresorhus/is';
+import { GlobalConfig } from '../../../../config/global.ts';
+import type { RenovateConfig } from '../../../../config/types.ts';
+import { logger } from '../../../../logger/index.ts';
+import type { Pr } from '../../../../modules/platform/index.ts';
+import { platform } from '../../../../modules/platform/index.ts';
+import { hashBody } from '../../../../modules/platform/pr-body.ts';
+import { scm } from '../../../../modules/platform/scm.ts';
+import { emojify } from '../../../../util/emoji.ts';
+import * as template from '../../../../util/template/index.ts';
+import { joinUrlParts } from '../../../../util/url.ts';
+import { getPlatformPrOptions } from '../../update/pr/index.ts';
+import { prepareLabels } from '../../update/pr/labels.ts';
+import { addParticipants } from '../../update/pr/participants.ts';
+import { ConfigMigrationCommitMessageFactory } from '../branch/commit-message.ts';
+import type { MigratedData } from '../branch/migrated-data.ts';
+import { getMigrationBranchName } from '../common.ts';
 
 export async function ensureConfigMigrationPr(
   config: RenovateConfig,
@@ -23,7 +22,7 @@ export async function ensureConfigMigrationPr(
 ): Promise<Pr | null> {
   logger.debug('ensureConfigMigrationPr()');
   const docsLink = joinUrlParts(
-    coerceString(config.productLinks?.documentation),
+    GlobalConfig.get('productLinks').documentation,
     'configuration-options/#configmigration',
   );
   const branchName = getMigrationBranchName(config);
@@ -52,19 +51,19 @@ ${
 :no_bell: **Ignore**: Close this PR and you won't be reminded about config migration again, but one day your current config may no longer be valid.
 
 :question: Got questions? Does something look wrong to you? Please don't hesitate to [request help here](${
-      config.productLinks?.help
+      GlobalConfig.get('productLinks').help
     }).\n\n`,
   );
 
-  if (is.string(config.prHeader)) {
+  if (isString(config.prHeader)) {
     prBody = `${template.compile(config.prHeader, config)}\n\n${prBody}`;
   }
-  if (is.string(config.prFooter)) {
+  if (isString(config.prFooter)) {
     prBody = `${prBody}\n---\n\n${template.compile(config.prFooter, config)}\n`;
   }
   logger.trace({ prBody }, 'prBody');
 
-  prBody = platform.massageMarkdown(prBody);
+  prBody = platform.massageMarkdown(prBody, config.rebaseLabel);
 
   if (existingPr) {
     logger.debug('Found open migration PR');

@@ -1,8 +1,9 @@
-import is from '@sindresorhus/is';
-import type { CustomDatasourceConfig } from '../../../config/types';
-import { logger } from '../../../logger';
-import * as template from '../../../util/template';
-import type { GetReleasesConfig } from '../types';
+import { isNonEmptyString, isNullOrUndefined } from '@sindresorhus/is';
+import type { CustomDatasourceConfig } from '../../../config/types.ts';
+import { logger } from '../../../logger/index.ts';
+import { coerceArray } from '../../../util/array.ts';
+import * as template from '../../../util/template/index.ts';
+import type { GetReleasesConfig } from '../types.ts';
 
 export function massageCustomDatasourceConfig(
   customDatasourceName: string,
@@ -14,7 +15,7 @@ export function massageCustomDatasourceConfig(
   }: GetReleasesConfig,
 ): Required<CustomDatasourceConfig> | null {
   const customDatasource = customDatasources?.[customDatasourceName];
-  if (is.nullOrUndefined(customDatasource)) {
+  if (isNullOrUndefined(customDatasource)) {
     logger.debug(
       `No custom datasource config provided while ${packageName} has been requested`,
     );
@@ -24,7 +25,7 @@ export function massageCustomDatasourceConfig(
 
   const registryUrlTemplate =
     defaultRegistryUrl ?? customDatasource.defaultRegistryUrlTemplate;
-  if (is.nullOrUndefined(registryUrlTemplate)) {
+  if (isNullOrUndefined(registryUrlTemplate)) {
     logger.debug(
       'No registry url provided by extraction nor datasource configuration',
     );
@@ -32,12 +33,14 @@ export function massageCustomDatasourceConfig(
   }
   const registryUrl = template.compile(registryUrlTemplate, templateInput);
 
-  const transformTemplates = customDatasource.transformTemplates ?? [];
+  const transformTemplates = coerceArray(customDatasource.transformTemplates);
   const transform: string[] = [];
   for (const transformTemplate of transformTemplates) {
     const templated = template.compile(transformTemplate, templateInput);
     transform.push(templated);
   }
+
+  logger.trace({ transform }, `Custom datasource compiled data.`);
 
   return {
     format: customDatasource.format ?? 'json',
@@ -54,7 +57,7 @@ export function getCustomConfig(
     '',
   );
 
-  if (!is.nonEmptyString(customDatasourceName)) {
+  if (!isNonEmptyString(customDatasourceName)) {
     logger.debug(
       `No datasource has been supplied while looking up ${getReleasesConfig.packageName}`,
     );

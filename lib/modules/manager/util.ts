@@ -1,10 +1,11 @@
-import { detectPlatform } from '../../util/common';
-import { parseGitUrl } from '../../util/git/url';
-import { GitRefsDatasource } from '../datasource/git-refs';
-import { GitTagsDatasource } from '../datasource/git-tags';
-import { GithubTagsDatasource } from '../datasource/github-tags';
-import { GitlabTagsDatasource } from '../datasource/gitlab-tags';
-import type { PackageDependency } from './types';
+import { detectPlatform } from '../../util/common.ts';
+import type { ExecError } from '../../util/exec/exec-error.ts';
+import { parseGitUrl } from '../../util/git/url.ts';
+import { GitRefsDatasource } from '../datasource/git-refs/index.ts';
+import { GitTagsDatasource } from '../datasource/git-tags/index.ts';
+import { GithubTagsDatasource } from '../datasource/github-tags/index.ts';
+import { GitlabTagsDatasource } from '../datasource/gitlab-tags/index.ts';
+import type { PackageDependency } from './types.ts';
 
 export function applyGitSource(
   dep: PackageDependency,
@@ -20,8 +21,10 @@ export function applyGitSource(
         platform === 'github'
           ? GithubTagsDatasource.id
           : GitlabTagsDatasource.id;
-      const { protocol, source, full_name } = parseGitUrl(git);
-      dep.registryUrls = [`${protocol}://${source}`];
+      const { host, full_name } = parseGitUrl(git);
+
+      // Always use HTTPS for GitHub/GitLab API endpoints, even if the git URL protocol is SSH.
+      dep.registryUrls = [`https://${host}`];
       dep.packageName = full_name;
     } else {
       dep.datasource = GitTagsDatasource.id;
@@ -41,4 +44,25 @@ export function applyGitSource(
     dep.currentValue = branch;
     dep.skipReason = branch ? 'git-dependency' : 'unspecified-version';
   }
+}
+
+/**
+ * Given an {@link ExecError}, retrieve the message which will be used for an {@link ArtifactError}.
+ *
+ * An `ExecError` always carries a `stderr` property, so nullish coalescing would keep an empty string and render an artifact error with no message at all.
+ *
+ */
+export function artifactErrorMessageFromExecError(
+  err: Partial<ExecError>,
+  message: string,
+): string {
+  if (err.stderr?.trim()) {
+    return err.stderr;
+  }
+
+  if (err.stdout?.trim()) {
+    return err.stdout;
+  }
+
+  return message;
 }

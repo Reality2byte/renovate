@@ -1,14 +1,15 @@
-import { git, mocked } from '../../../../test/util';
-import type { CommitFilesConfig, LongCommitSha } from '../../../util/git/types';
-import { GithubScm } from './scm';
-import * as _github from '.';
+import { fakeSha, git } from '~test/util.ts';
+import { PR_ALREADY_IN_MERGE_QUEUE } from '../../../constants/error-messages.ts';
+import type { CommitFilesConfig } from '../../../util/git/types.ts';
+import * as _github from './index.ts';
+import { GithubScm } from './scm.ts';
 
-jest.mock('.');
-const github = mocked(_github);
+vi.mock('./index.ts');
+const github = vi.mocked(_github);
 
 describe('modules/platform/github/scm', () => {
   beforeEach(() => {
-    jest.spyOn(git, 'commitFiles').mockResolvedValue('sha' as LongCommitSha);
+    git.commitFiles.mockResolvedValue(fakeSha('sha'));
   });
 
   const githubScm = new GithubScm();
@@ -26,7 +27,7 @@ describe('modules/platform/github/scm', () => {
       platformCommit: 'disabled',
     });
 
-    expect(git.commitFiles).toHaveBeenCalledWith({
+    expect(git.commitFiles).toHaveBeenCalledExactlyOnceWith({
       ...commitObj,
       platformCommit: 'disabled',
     });
@@ -40,7 +41,7 @@ describe('modules/platform/github/scm', () => {
     });
 
     expect(git.commitFiles).not.toHaveBeenCalled();
-    expect(github.commitFiles).toHaveBeenCalledWith({
+    expect(github.commitFiles).toHaveBeenCalledExactlyOnceWith({
       ...commitObj,
       platformCommit: 'enabled',
     });
@@ -52,7 +53,7 @@ describe('modules/platform/github/scm', () => {
       platformCommit: 'auto',
     });
 
-    expect(git.commitFiles).toHaveBeenCalledWith({
+    expect(git.commitFiles).toHaveBeenCalledExactlyOnceWith({
       ...commitObj,
       platformCommit: 'auto',
     });
@@ -68,9 +69,31 @@ describe('modules/platform/github/scm', () => {
     });
 
     expect(git.commitFiles).not.toHaveBeenCalled();
-    expect(github.commitFiles).toHaveBeenCalledWith({
+    expect(github.commitFiles).toHaveBeenCalledExactlyOnceWith({
       ...commitObj,
       platformCommit: 'auto',
     });
+  });
+
+  it('checks the merge queue before committing', async () => {
+    await githubScm.commitAndPush(commitObj);
+
+    expect(github.assertPrNotInMergeQueue).toHaveBeenCalledExactlyOnceWith(
+      'branch',
+      'main',
+    );
+  });
+
+  it('does not commit if the branch PR is in the merge queue', async () => {
+    github.assertPrNotInMergeQueue.mockRejectedValueOnce(
+      new Error(PR_ALREADY_IN_MERGE_QUEUE),
+    );
+
+    await expect(githubScm.commitAndPush(commitObj)).rejects.toThrow(
+      PR_ALREADY_IN_MERGE_QUEUE,
+    );
+
+    expect(git.commitFiles).not.toHaveBeenCalled();
+    expect(github.commitFiles).not.toHaveBeenCalled();
   });
 });

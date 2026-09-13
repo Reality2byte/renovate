@@ -1,31 +1,65 @@
 import type { WriteStream } from 'node:fs';
+import bunyan from 'bunyan';
 import fs from 'fs-extra';
-import { partial } from '../../test/util';
-import { add } from '../util/host-rules';
-import { addSecretForSanitizing as addSecret } from '../util/sanitize';
+import { DateTime } from 'luxon';
+import { partial } from '~test/util.ts';
+import { add } from '../util/host-rules.ts';
+import { addSecretForSanitizing as addSecret } from '../util/sanitize.ts';
+import { createDefaultStreams } from './bunyan.ts';
 import {
   addMeta,
   addStream,
   clearProblems,
   getContext,
   getProblems,
+  init,
   levels,
+  logLevel,
   logger,
   removeMeta,
   setContext,
   setMeta,
-} from '.';
+  withMeta,
+} from './index.ts';
+import { ProblemStream } from './problem-stream.ts';
+import type { RenovateLogger } from './renovate-logger.ts';
 
-jest.unmock('.');
+const logContext = 'initial_context';
+
+vi.unmock('./index.ts');
+vi.mock('node:crypto', () => ({
+  randomUUID: vi.fn(() => 'initial_context'),
+}));
+
+const bunyanDebugSpy = vi.spyOn(bunyan.prototype, 'debug');
+
+// init logger
+await init();
 
 describe('logger/index', () => {
+  beforeEach(() => {
+    vi.stubEnv('LOG_FILE_LEVEL', undefined);
+  });
+
   it('inits', () => {
     expect(logger).toBeDefined();
   });
 
+  it('uses an auto-generated log context', () => {
+    logger.debug('');
+
+    expect(bunyanDebugSpy).toHaveBeenCalledExactlyOnceWith({ logContext }, '');
+  });
+
   it('sets and gets context', () => {
-    setContext('123test');
-    expect(getContext()).toBe('123test');
+    const logContext = '123test';
+    const msg = 'test';
+    setContext(logContext);
+
+    logger.debug(msg);
+
+    expect(getContext()).toBe(logContext);
+    expect(bunyanDebugSpy).toHaveBeenCalledExactlyOnceWith({ logContext }, msg);
   });
 
   it('supports logging with metadata', () => {
@@ -40,31 +74,274 @@ describe('logger/index', () => {
     expect(() => logger.debug('some meta')).not.toThrow();
   });
 
-  it('sets meta', () => {
-    expect(() => setMeta({ any: 'test' })).not.toThrow();
+  describe('meta functions', () => {
+    beforeEach(() => {
+      setContext(logContext);
+      setMeta({});
+    });
+
+    it('sets meta', () => {
+      setMeta({ foo: 'foo' });
+      setMeta({ bar: 'bar' });
+
+      logger.debug({ baz: 'baz' }, 'message');
+
+      expect(bunyanDebugSpy).toHaveBeenCalledExactlyOnceWith(
+        {
+          logContext,
+          // `foo` key was rewritten
+          bar: 'bar',
+          baz: 'baz',
+        },
+        'message',
+      );
+      expect(bunyanDebugSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('adds meta', () => {
+      setMeta({ foo: 'foo' });
+      addMeta({ bar: 'bar' });
+
+      logger.debug({ baz: 'baz' }, 'message');
+
+      expect(bunyanDebugSpy).toHaveBeenCalledExactlyOnceWith(
+        {
+          logContext,
+          foo: 'foo',
+          bar: 'bar',
+          baz: 'baz',
+        },
+        'message',
+      );
+      expect(bunyanDebugSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('removes meta', () => {
+      setMeta({
+        foo: 'foo',
+        bar: 'bar',
+      });
+
+      logger.debug({ baz: 'baz' }, 'message');
+
+      expect(bunyanDebugSpy).toHaveBeenCalledExactlyOnceWith(
+        {
+          logContext,
+          foo: 'foo',
+          bar: 'bar',
+          baz: 'baz',
+        },
+        'message',
+      );
+      expect(bunyanDebugSpy).toHaveBeenCalledTimes(1);
+
+      removeMeta(['bar']);
+
+      logger.debug({ baz: 'baz' }, 'message');
+
+      expect(bunyanDebugSpy).toHaveBeenLastCalledWith(
+        {
+          logContext,
+          foo: 'foo',
+          baz: 'baz',
+        },
+        'message',
+      );
+      expect(bunyanDebugSpy).toHaveBeenCalledTimes(2);
+    });
+
+    it('withMeta adds and removes metadata correctly', () => {
+      setMeta({ foo: 'foo' });
+
+      withMeta({ bar: 'bar' }, () => {
+        logger.debug({ baz: 'baz' }, 'message');
+        expect(bunyanDebugSpy).toHaveBeenNthCalledWith(
+          1,
+          {
+            logContext,
+            foo: 'foo',
+            bar: 'bar',
+            baz: 'baz',
+          },
+          'message',
+        );
+      });
+
+      logger.debug({ baz: 'baz' }, 'message');
+      expect(bunyanDebugSpy).toHaveBeenNthCalledWith(
+        2,
+        {
+          logContext,
+          foo: 'foo',
+          baz: 'baz',
+        },
+        'message',
+      );
+    });
+
+    it('withMeta handles cleanup when callback throws', () => {
+      setMeta({ foo: 'foo' });
+
+      expect(() =>
+        withMeta({ bar: 'bar' }, () => {
+          logger.debug({ baz: 'baz' }, 'message');
+          throw new Error('test error');
+        }),
+      ).toThrow('test error');
+
+      logger.debug({ baz: 'baz' }, 'message');
+      expect(bunyanDebugSpy).toHaveBeenNthCalledWith(
+        2,
+        {
+          logContext,
+          foo: 'foo',
+          baz: 'baz',
+        },
+        'message',
+      );
+    });
   });
 
-  it('adds meta', () => {
-    expect(() => addMeta({ new: 'test' })).not.toThrow();
-  });
+  describe('createDefaultStreams', () => {
+    beforeEach(() => {
+      vi.stubEnv('LOG_FILE_FORMAT', undefined);
+    });
 
-  it('removes meta', () => {
-    expect(() => removeMeta(['new'])).not.toThrow();
+    it('creates log file stream', () => {
+      expect(
+        createDefaultStreams('info', new ProblemStream(), 'file.log'),
+      ).toMatchObject([
+        { name: 'stdout', type: 'raw' },
+        { name: 'problems', type: 'raw' },
+        { name: 'logfile' },
+      ]);
+    });
+
+    it.each([
+      {
+        logFileLevel: null,
+        expectedLogLevel: 'debug',
+      },
+      {
+        logFileLevel: 'warn',
+        expectedLogLevel: 'warn',
+      },
+    ])(
+      'handles log file stream $logFileLevel level',
+      ({ logFileLevel, expectedLogLevel }) => {
+        if (logFileLevel !== null) {
+          vi.stubEnv('LOG_FILE_LEVEL', logFileLevel?.toString());
+        }
+
+        const streams = createDefaultStreams(
+          'info',
+          new ProblemStream(),
+          'file.log',
+        );
+
+        const logFileStream = streams[2];
+
+        expect(logFileStream.level).toBe(expectedLogLevel);
+      },
+    );
+
+    it.each([
+      {
+        logFileFormat: 'json',
+        expectedType: undefined,
+      },
+      {
+        logFileFormat: 'pretty',
+        expectedType: 'raw',
+      },
+    ])(
+      'handles log file stream $logFileFormat format',
+      ({ logFileFormat, expectedType }) => {
+        vi.stubEnv('LOG_FILE_FORMAT', logFileFormat);
+
+        const streams = createDefaultStreams(
+          'info',
+          new ProblemStream(),
+          'file.log',
+        );
+
+        const logFileStream = streams[2];
+
+        expect(logFileStream.type).toBe(expectedType);
+      },
+    );
+
+    it('writes pretty formatted data synchronously to log file', async () => {
+      vi.stubEnv('LOG_FILE_FORMAT', 'pretty');
+
+      const streams = createDefaultStreams(
+        'info',
+        new ProblemStream(),
+        'file.log',
+      );
+
+      const logFileStream = streams[2];
+      const stream = logFileStream.stream as {
+        write: (...args: unknown[]) => void;
+      };
+
+      stream.write({ level: 30, msg: 'test message' });
+
+      await expect(fs.readFile('file.log', 'utf8')).resolves.toContain(
+        'test message',
+      );
+    });
+
+    it('writes json data synchronously to log file', async () => {
+      const streams = createDefaultStreams(
+        'info',
+        new ProblemStream(),
+        'file.log',
+      );
+
+      const logFileStream = streams[2];
+      const stream = logFileStream.stream as {
+        write: (...args: unknown[]) => void;
+      };
+
+      stream.write('{"level":30,"msg":"json message"}\n');
+
+      await expect(fs.readFile('file.log', 'utf8')).resolves.toContain(
+        'json message',
+      );
+    });
   });
 
   it('sets level', () => {
+    expect(logLevel()).toBeDefined(); // depends on passed env
     expect(() => levels('stdout', 'debug')).not.toThrow();
+    expect(logLevel()).toBe('debug');
+  });
+
+  it('should create a child logger', () => {
+    const childLogger = (logger as RenovateLogger).childLogger();
+    const loggerSpy = vi.spyOn(logger, 'debug');
+    const childLoggerSpy = vi.spyOn(childLogger, 'debug');
+
+    childLogger.debug('test');
+
+    expect(loggerSpy).toHaveBeenCalledTimes(0);
+    expect(childLoggerSpy).toHaveBeenCalledTimes(1);
+    expect(childLoggerSpy).toHaveBeenCalledExactlyOnceWith('test');
   });
 
   it('saves problems', () => {
     addSecret('p4$$w0rd');
     levels('stdout', 'fatal');
+    logger.fatal('fatal error');
     logger.error('some meta');
     logger.error({ some: 'meta', password: 'super secret' });
     logger.error({ some: 'meta' }, 'message');
     logger.warn('a warning with a p4$$w0rd');
+    logger.trace('ignored');
     logger.info('ignored');
     expect(getProblems()).toMatchObject([
+      { msg: 'fatal error' },
       { msg: 'some meta' },
       { some: 'meta', password: '***********' },
       { some: 'meta', msg: 'message' },
@@ -96,7 +373,7 @@ describe('logger/index', () => {
 
   it('supports file-based logging', () => {
     let chunk = '';
-    jest.spyOn(fs, 'createWriteStream').mockReturnValueOnce(
+    vi.spyOn(fs, 'createWriteStream').mockReturnValueOnce(
       partial<WriteStream>({
         writable: true,
         write(x: string): boolean {
@@ -119,7 +396,7 @@ describe('logger/index', () => {
 
   it('handles cycles', () => {
     let logged: Record<string, any> = {};
-    jest.spyOn(fs, 'createWriteStream').mockReturnValueOnce(
+    vi.spyOn(fs, 'createWriteStream').mockReturnValueOnce(
       partial<WriteStream>({
         writable: true,
         write(x: string): boolean {
@@ -142,12 +419,17 @@ describe('logger/index', () => {
     expect(logged.msg).toBe('foo');
     expect(logged.foo.foo).toBe('[Circular]');
     expect(logged.foo.bar).toEqual(['[Circular]']);
-    expect(logged.bar).toBe('[Circular]');
+    expect(logged.bar).toEqual([
+      {
+        bar: '[Circular]',
+        foo: '[Circular]',
+      },
+    ]);
   });
 
   it('sanitizes secrets', () => {
     let logged: Record<string, any> = {};
-    jest.spyOn(fs, 'createWriteStream').mockReturnValueOnce(
+    vi.spyOn(fs, 'createWriteStream').mockReturnValueOnce(
       partial<WriteStream>({
         writable: true,
         write(x: string): boolean {
@@ -165,7 +447,10 @@ describe('logger/index', () => {
     add({ password: 'secret"password' });
 
     class SomeClass {
-      constructor(public field: string) {}
+      public field: string;
+      constructor(field: string) {
+        this.field = field;
+      }
     }
 
     const prBody = 'test';
@@ -194,5 +479,114 @@ describe('logger/index', () => {
     expect(logged.secrets.foo).toBe('***********');
     expect(logged.someFn).toBe('[function]');
     expect(logged.someObject.field).toBe('**redacted**');
+  });
+
+  it('applies custom serializer while keeping default sanitizers', () => {
+    let logged: Record<string, any> = {};
+    vi.spyOn(fs, 'createWriteStream').mockReturnValueOnce(
+      partial<WriteStream>({
+        writable: true,
+        write(x: string): boolean {
+          logged = JSON.parse(x);
+          return true;
+        },
+      }),
+    );
+
+    addStream({
+      name: 'logfile',
+      path: 'file.log',
+      level: 'error',
+    });
+    add({ password: 'secret"password' });
+
+    class SomeClass {
+      public field: string;
+      constructor(field: string) {
+        this.field = field;
+      }
+    }
+
+    const childLogger = (logger as RenovateLogger).childLogger();
+    childLogger.addSerializers({
+      baz: (baz: string): any => {
+        return `baz custom serializer: ${baz}`;
+      },
+    });
+
+    const prBody = 'test';
+    childLogger.error({
+      foo: 'secret"password',
+      bar: ['somethingelse', 'secret"password'],
+      baz: 'baz',
+      npmToken: 'token',
+      buffer: Buffer.from('test'),
+      content: 'test',
+      prBody,
+      secrets: {
+        foo: 'barsecret',
+      },
+      someDate: new Date('2021-04-05T06:07Z'),
+      someFn: () => 'secret"password',
+      someLuxonDate: DateTime.fromISO('2020-02-29'),
+      someLuxonDateTime: DateTime.fromISO('2020-02-29T01:40:21.345+00:00'),
+      someObject: new SomeClass('secret"password'),
+    });
+
+    expect(logged.baz).toContain('baz custom serializer: baz');
+
+    expect(logged.foo).not.toBe('secret"password');
+    expect(logged.bar[0]).toBe('somethingelse');
+    expect(logged.foo).toContain('redacted');
+    expect(logged.bar[1]).toContain('redacted');
+    expect(logged.npmToken).not.toBe('token');
+    expect(logged.buffer).toBe('[content]');
+    expect(logged.content).toBe('[content]');
+    expect(logged.prBody).toBe(prBody);
+    expect(logged.secrets.foo).toBe('***********');
+    expect(logged.someDate).toBe('2021-04-05T06:07:00.000Z');
+    expect(logged.someFn).toBe('[function]');
+    expect(logged.someLuxonDate).toBe('2020-02-29T00:00:00.000+00:00');
+    expect(logged.someLuxonDateTime).toBe('2020-02-29T01:40:21.345+00:00');
+    expect(logged.someObject.field).toBe('**redacted**');
+  });
+
+  it('sanitizes secrets in object keys', () => {
+    let logged: Record<string, any> = {};
+    vi.spyOn(fs, 'createWriteStream').mockReturnValueOnce(
+      partial<WriteStream>({
+        writable: true,
+        write(x: string): boolean {
+          logged = JSON.parse(x);
+          return true;
+        },
+      }),
+    );
+
+    addStream({
+      name: 'logfile',
+      path: 'file.log',
+      level: 'debug',
+    });
+
+    const secret = 'https://secret@example.com';
+    const data: Record<string, any> = {
+      [secret]: { nested: secret },
+    };
+
+    logger.debug(
+      {
+        data,
+        secret,
+      },
+      'logs secrets in keys',
+    );
+
+    expect(logged.data).toStrictEqual({
+      'https://**redacted**@example.com': {
+        nested: 'https://**redacted**@example.com',
+      },
+    });
+    expect(logged.secret).toBe('https://**redacted**@example.com');
   });
 });

@@ -1,39 +1,55 @@
 import upath from 'upath';
-import { mocked } from '../../../../../test/util';
-import { getParentDir, readSystemFile } from '../../../../util/fs';
-import getArgv from './__fixtures__/argv';
-import * as _hostRulesFromEnv from './host-rules-from-env';
+import * as httpMock from '~test/http-mock.ts';
+import { getConfigFileNames } from '../../../../config/app-strings.ts';
+import * as _decrypt from '../../../../config/decrypt.ts';
+import { CONFIG_PRESETS_INVALID } from '../../../../constants/error-messages.ts';
+import { logger } from '../../../../logger/index.ts';
+import { getCustomEnv } from '../../../../util/env.ts';
+import { getParentDir, readSystemFile } from '../../../../util/fs/index.ts';
+import getArgv from './__fixtures__/argv.ts';
+import * as _fileConfigParser from './file.ts';
+import * as _hostRulesFromEnv from './host-rules-from-env.ts';
 
-jest.mock('../../../../modules/datasource/npm');
-jest.mock('../../../../util/fs');
-jest.mock('./host-rules-from-env');
+vi.mock('../../../../modules/datasource/npm.ts');
+vi.mock('../../../../modules/manager/index.ts', () => ({
+  detectAllGlobalConfig: vi.fn().mockResolvedValue({}),
+}));
+vi.mock('../../../../util/fs/index.ts');
+vi.mock('../../../../config/decrypt.ts');
+vi.mock('./host-rules-from-env.ts');
+vi.mock('./file.ts');
 
-const { hostRulesFromEnv } = mocked(_hostRulesFromEnv);
+const decrypt = vi.mocked(_decrypt);
+const fileConfigParser = vi.mocked(_fileConfigParser);
+
+const { hostRulesFromEnv } = vi.mocked(_hostRulesFromEnv);
 
 describe('workers/global/config/parse/index', () => {
   describe('.parseConfigs(env, defaultArgv)', () => {
-    let configParser: typeof import('.');
+    let configParser: typeof import('./index.ts');
     let defaultArgv: string[];
     let defaultEnv: NodeJS.ProcessEnv;
 
     beforeEach(async () => {
-      configParser = await import('./index');
+      configParser = await vi.importActual('./index.ts');
       defaultArgv = getArgv();
       defaultEnv = {
         RENOVATE_CONFIG_FILE: upath.resolve(
-          __dirname,
+          import.meta.dirname,
           './__fixtures__/default.js',
         ),
       };
     });
 
     it('supports token in env', async () => {
+      fileConfigParser.getConfig.mockResolvedValue({});
       const env: NodeJS.ProcessEnv = { ...defaultEnv, RENOVATE_TOKEN: 'abc' };
       const parsedConfig = await configParser.parseConfigs(env, defaultArgv);
       expect(parsedConfig).toContainEntries([['token', 'abc']]);
     });
 
     it('supports token in CLI options', async () => {
+      fileConfigParser.getConfig.mockResolvedValue({});
       defaultArgv = defaultArgv.concat([
         '--token=abc',
         '--pr-footer=custom',
@@ -51,6 +67,7 @@ describe('workers/global/config/parse/index', () => {
     });
 
     it('supports forceCli', async () => {
+      fileConfigParser.getConfig.mockResolvedValue({});
       defaultArgv = defaultArgv.concat(['--force-cli=false']);
       const env: NodeJS.ProcessEnv = {
         ...defaultEnv,
@@ -64,28 +81,50 @@ describe('workers/global/config/parse/index', () => {
       expect(parsedConfig).not.toContainKey('configFile');
     });
 
-    it('supports config.force', async () => {
-      const configPath = upath.join(__dirname, '__fixtures__/with-force.js');
+    it('sets customEnvVariables', async () => {
+      fileConfigParser.getConfig.mockResolvedValue({});
       const env: NodeJS.ProcessEnv = {
         ...defaultEnv,
-        RENOVATE_CONFIG_FILE: configPath,
+        RENOVATE_TOKEN: 'abc',
+        RENOVATE_CUSTOM_ENV_VARIABLES: '{"customKey": "customValue"}',
       };
-      const parsedConfig = await configParser.parseConfigs(env, defaultArgv);
+      await configParser.parseConfigs(env, defaultArgv);
+      const customEnvVars = getCustomEnv();
+      expect(customEnvVars).toEqual({
+        customKey: 'customValue',
+      });
+    });
+
+    it('supports config.force', async () => {
+      fileConfigParser.getConfig.mockResolvedValueOnce({
+        token: 'abcdefg',
+        force: {
+          schedule: ['* * * * 0.6'],
+        },
+      });
+      const parsedConfig = await configParser.parseConfigs(
+        defaultEnv,
+        defaultArgv,
+      );
       expect(parsedConfig).toContainEntries([
         ['token', 'abcdefg'],
         [
           'force',
           {
-            schedule: null,
+            schedule: ['* * * * 0.6'],
           },
         ],
       ]);
     });
 
     it('reads private key from file', async () => {
-      const privateKeyPath = upath.join(__dirname, '__fixtures__/private.pem');
+      fileConfigParser.getConfig.mockResolvedValue({});
+      const privateKeyPath = upath.join(
+        import.meta.dirname,
+        '__fixtures__/private.pem',
+      );
       const privateKeyPathOld = upath.join(
-        __dirname,
+        import.meta.dirname,
         '__fixtures__/private.pem',
       );
       const env: NodeJS.ProcessEnv = {
@@ -96,10 +135,15 @@ describe('workers/global/config/parse/index', () => {
       const expected = await readSystemFile(privateKeyPath, 'utf8');
       const parsedConfig = await configParser.parseConfigs(env, defaultArgv);
 
-      expect(parsedConfig).toContainEntries([['privateKey', expected]]);
+      expect(parsedConfig.privateKey).toBeUndefined();
+      expect(decrypt.setPrivateKeys).toHaveBeenCalledExactlyOnceWith(
+        expected,
+        undefined,
+      );
     });
 
     it('supports Bitbucket username/password', async () => {
+      fileConfigParser.getConfig.mockResolvedValue({});
       defaultArgv = defaultArgv.concat([
         '--platform=bitbucket',
         '--username=user',
@@ -117,6 +161,7 @@ describe('workers/global/config/parse/index', () => {
     });
 
     it('massages trailing slash into endpoint', async () => {
+      fileConfigParser.getConfig.mockResolvedValue({});
       defaultArgv = defaultArgv.concat([
         '--endpoint=https://github.renovatebot.com/api/v3',
       ]);
@@ -125,12 +170,14 @@ describe('workers/global/config/parse/index', () => {
     });
 
     it('parses global manager config', async () => {
+      fileConfigParser.getConfig.mockResolvedValue({});
       defaultArgv = defaultArgv.concat(['--detect-global-manager-config=true']);
       const parsed = await configParser.parseConfigs(defaultEnv, defaultArgv);
       expect(parsed.npmrc).toBeNull();
     });
 
     it('parses host rules from env', async () => {
+      fileConfigParser.getConfig.mockResolvedValue({});
       defaultArgv = defaultArgv.concat(['--detect-host-rules-from-env=true']);
       hostRulesFromEnv.mockReturnValueOnce([{ matchHost: 'example.org' }]);
       const parsed = await configParser.parseConfigs(defaultEnv, defaultArgv);
@@ -138,6 +185,7 @@ describe('workers/global/config/parse/index', () => {
     });
 
     it('env dryRun = true replaced to full', async () => {
+      fileConfigParser.getConfig.mockResolvedValue({});
       const env: NodeJS.ProcessEnv = {
         ...defaultEnv,
         RENOVATE_DRY_RUN: 'true',
@@ -147,18 +195,64 @@ describe('workers/global/config/parse/index', () => {
     });
 
     it('cli dryRun = true replaced to full', async () => {
+      fileConfigParser.getConfig.mockResolvedValue({});
       defaultArgv = defaultArgv.concat(['--dry-run=true']);
       const parsed = await configParser.parseConfigs(defaultEnv, defaultArgv);
       expect(parsed).toContainEntries([['dryRun', 'full']]);
     });
 
+    it('resolves global presets', async () => {
+      fileConfigParser.getConfig.mockResolvedValue({
+        globalExtends: ['http://example.com/config.json', ':pinVersions'],
+        dryRun: 'extract',
+      });
+      // The remote preset defined in globalExtends of the config file
+      httpMock
+        .scope('http://example.com/')
+        .get('/config.json')
+        .reply(200, { repositories: ['g/r1', 'g/r2'], dryRun: 'full' });
+
+      const parsedConfig = await configParser.parseConfigs(
+        defaultEnv,
+        defaultArgv,
+      );
+
+      // Remote preset in globalExtends should be resolved
+      expect(parsedConfig).toContainEntries([
+        ['repositories', ['g/r1', 'g/r2']],
+      ]);
+      // :pinVersion in globalExtends should be resolved
+      expect(parsedConfig).toContainEntries([['rangeStrategy', 'pin']]);
+      // `globalExtends` should be an empty array after merging
+      expect(parsedConfig).toContainEntries([['globalExtends', []]]);
+      // `dryRun` from globalExtends should be overwritten with value defined in config file
+      expect(parsedConfig).toContainEntries([['dryRun', 'extract']]);
+    });
+
+    it('throws exception if global presets cannot be resolved', async () => {
+      fileConfigParser.getConfig.mockResolvedValue({});
+      httpMock
+        .scope('http://example.com/')
+        .get('/config.json')
+        .reply(404, 'Not Found');
+
+      await expect(
+        configParser.resolveGlobalExtends([
+          'http://example.com/config.json',
+          ':pinVersions',
+        ]),
+      ).rejects.toThrow(CONFIG_PRESETS_INVALID);
+    });
+
     it('cli dryRun replaced to full', async () => {
+      fileConfigParser.getConfig.mockResolvedValue({});
       defaultArgv = defaultArgv.concat(['--dry-run']);
       const parsed = await configParser.parseConfigs(defaultEnv, defaultArgv);
       expect(parsed).toContainEntries([['dryRun', 'full']]);
     });
 
     it('env dryRun = false replaced to null', async () => {
+      fileConfigParser.getConfig.mockResolvedValue({});
       const env: NodeJS.ProcessEnv = {
         ...defaultEnv,
         RENOVATE_DRY_RUN: 'false',
@@ -168,32 +262,242 @@ describe('workers/global/config/parse/index', () => {
     });
 
     it('cli dryRun = false replaced to null', async () => {
+      fileConfigParser.getConfig.mockResolvedValue({});
       defaultArgv = defaultArgv.concat(['--dry-run=false']);
       const parsed = await configParser.parseConfigs(defaultEnv, defaultArgv);
       expect(parsed).toContainEntries([['dryRun', null]]);
     });
 
     it('only initializes the file when the env var LOG_FILE is properly set', async () => {
-      jest.doMock('../../../../../config.js', () => ({}), {
-        virtual: true,
-      });
-      const env: NodeJS.ProcessEnv = {};
-      const parsedConfig = await configParser.parseConfigs(env, defaultArgv);
+      fileConfigParser.getConfig.mockResolvedValue({});
+      const parsedConfig = await configParser.parseConfigs({}, defaultArgv);
       expect(parsedConfig).not.toContain([['logFile', 'someFile']]);
       expect(getParentDir).not.toHaveBeenCalled();
     });
 
     it('massage onboardingNoDeps when autodiscover is false', async () => {
-      jest.doMock(
-        '../../../../../config.js',
-        () => ({ onboardingNoDeps: 'auto', autodiscover: false }),
-        {
-          virtual: true,
-        },
-      );
+      fileConfigParser.getConfig.mockResolvedValueOnce({
+        onboardingNoDeps: 'auto',
+        autodiscover: false,
+      });
       const env: NodeJS.ProcessEnv = {};
       const parsedConfig = await configParser.parseConfigs(env, defaultArgv);
       expect(parsedConfig).toContainEntries([['onboardingNoDeps', 'enabled']]);
+    });
+
+    // added to ensure fileConfigParser works properly
+    it('does not massage onboardingNoDeps when autodiscover is true', async () => {
+      fileConfigParser.getConfig.mockResolvedValueOnce({
+        onboardingNoDeps: 'auto',
+        autodiscover: true,
+      });
+      const env: NodeJS.ProcessEnv = {};
+      const parsedConfig = await configParser.parseConfigs(env, defaultArgv);
+      expect(parsedConfig).toContainEntries([['onboardingNoDeps', 'auto']]);
+    });
+
+    it('apply secrets to global config', async () => {
+      fileConfigParser.getConfig.mockResolvedValue({});
+      const env: NodeJS.ProcessEnv = {
+        ...defaultEnv,
+        RENOVATE_SECRETS: '{"SECRET_TOKEN": "secret_token"}',
+        RENOVATE_CUSTOM_ENV_VARIABLES:
+          '{"TOKEN": "{{ secrets.SECRET_TOKEN }}"}',
+      };
+      const parsedConfig = await configParser.parseConfigs(env, defaultArgv);
+      expect(parsedConfig).toMatchObject({
+        secrets: {
+          SECRET_TOKEN: 'secret_token',
+        },
+
+        customEnvVariables: {
+          TOKEN: 'secret_token',
+        },
+      });
+    });
+
+    it('overrides file config with additional file config', async () => {
+      const additionalConfigPath = upath.join(
+        import.meta.dirname,
+        '__fixtures__/additional-config.js',
+      );
+      fileConfigParser.getConfig.mockResolvedValueOnce({
+        labels: ['file-config'],
+      });
+      const env: NodeJS.ProcessEnv = {
+        RENOVATE_ADDITIONAL_CONFIG_FILE: additionalConfigPath,
+      };
+      const parsedConfig = await configParser.parseConfigs(env, defaultArgv);
+      expect(parsedConfig.labels).toMatchObject(['additional-file-config']);
+    });
+
+    it('merges extends from file config with additional file config', async () => {
+      const additionalConfigPath = upath.join(
+        import.meta.dirname,
+        '__fixtures__/additional-config.js',
+      );
+      fileConfigParser.getConfig.mockResolvedValueOnce({
+        extends: [':pinDigests'],
+      });
+      const env: NodeJS.ProcessEnv = {
+        RENOVATE_ADDITIONAL_CONFIG_FILE: additionalConfigPath,
+      };
+      const parsedConfig = await configParser.parseConfigs(env, defaultArgv);
+      expect(parsedConfig.extends).toMatchObject([
+        ':pinDigests',
+        'customManagers:azurePipelinesVersions',
+      ]);
+    });
+
+    it('adds extends from fileConfig only', async () => {
+      fileConfigParser.getConfig.mockResolvedValueOnce({
+        extends: [':pinDigests'],
+      });
+      const parsedConfig = await configParser.parseConfigs(
+        defaultEnv,
+        defaultArgv,
+      );
+      expect(parsedConfig.extends).toMatchObject([':pinDigests']);
+    });
+
+    it('appends files from configFileNames to config filenames list', async () => {
+      // Capture the length we add our custom filenames.
+      const lengthBefore = getConfigFileNames().length;
+      fileConfigParser.getConfig.mockResolvedValue({
+        configFileNames: ['myrenovate.json', '.github/myrenovate.json'],
+      });
+      const parsedConfig = await configParser.parseConfigs(
+        defaultEnv,
+        defaultArgv,
+      );
+      expect(parsedConfig.configFileNames).toBeUndefined();
+      expect(getConfigFileNames()[0]).toBe('myrenovate.json');
+      expect(getConfigFileNames()[1]).toBe('.github/myrenovate.json');
+      // Ensure we added exactly two filenames.
+      expect(getConfigFileNames().length).toBe(lengthBefore + 2);
+    });
+
+    it('supports setting configFileNames through cli', async () => {
+      fileConfigParser.getConfig.mockResolvedValue({});
+      defaultArgv = defaultArgv.concat([
+        '--config-file-names=myrenovate.json,.github/myrenovate.json',
+      ]);
+      const parsed = await configParser.parseConfigs(defaultEnv, defaultArgv);
+      expect(parsed.configFileNames).toBeUndefined();
+      expect(getConfigFileNames()[0]).toBe('myrenovate.json');
+      expect(getConfigFileNames()[1]).toBe('.github/myrenovate.json');
+    });
+
+    it('supports setting configFileNames through env', async () => {
+      fileConfigParser.getConfig.mockResolvedValue({});
+      const env: NodeJS.ProcessEnv = {
+        RENOVATE_CONFIG_FILE_NAMES:
+          '["myrenovate.json", ".github/myrenovate.json"]',
+      };
+      const parsedConfig = await configParser.parseConfigs(env, defaultArgv);
+      expect(parsedConfig.configFileNames).toBeUndefined();
+      expect(getConfigFileNames()[0]).toBe('myrenovate.json');
+      expect(getConfigFileNames()[1]).toBe('.github/myrenovate.json');
+    });
+
+    // TODO #41551
+    describe('when `repositories` is being overridden', () => {
+      it('warns when CLI config overrides repositories from file config', async () => {
+        fileConfigParser.getConfig.mockResolvedValue({
+          repositories: ['org/repo1', 'org/repo2'],
+        });
+        defaultArgv = defaultArgv.concat(['org/repo3']);
+        await configParser.parseConfigs(defaultEnv, defaultArgv);
+        expect(logger.warn).toHaveBeenCalledWith(
+          'CLI config is overridding the `repositories` config previously set',
+        );
+      });
+
+      it('warns when CLI config overrides repositories from env config', async () => {
+        fileConfigParser.getConfig.mockResolvedValue({});
+        const env: NodeJS.ProcessEnv = {
+          ...defaultEnv,
+          RENOVATE_REPOSITORIES: '["org/repo1"]',
+        };
+        defaultArgv = defaultArgv.concat(['org/repo3']);
+        await configParser.parseConfigs(env, defaultArgv);
+        expect(logger.warn).toHaveBeenCalledWith(
+          'CLI config is overridding the `repositories` config previously set',
+        );
+      });
+
+      it('does not warn when CLI config sets repositories without override', async () => {
+        fileConfigParser.getConfig.mockResolvedValue({});
+        defaultArgv = defaultArgv.concat(['org/repo1']);
+        await configParser.parseConfigs(defaultEnv, defaultArgv);
+        expect(logger.warn).not.toHaveBeenCalledWith(
+          'CLI config is overridding the `repositories` config previously set',
+        );
+      });
+
+      it('does not warn when CLI config has no repositories', async () => {
+        fileConfigParser.getConfig.mockResolvedValue({
+          repositories: ['org/repo1'],
+        });
+        await configParser.parseConfigs(defaultEnv, defaultArgv);
+        expect(logger.warn).not.toHaveBeenCalledWith(
+          'CLI config is overridding the `repositories` config previously set',
+        );
+      });
+
+      it('does not warn when CLI config has same repositories as file config', async () => {
+        fileConfigParser.getConfig.mockResolvedValue({
+          repositories: ['org/repo1'],
+        });
+        defaultArgv = defaultArgv.concat(['org/repo1']);
+        await configParser.parseConfigs(defaultEnv, defaultArgv);
+        expect(logger.warn).not.toHaveBeenCalledWith(
+          'CLI config is overridding the `repositories` config previously set',
+        );
+      });
+
+      it('warns when CLI overrides repositories with repo-specific configuration', async () => {
+        fileConfigParser.getConfig.mockResolvedValue({
+          repositories: [
+            {
+              repository: 'org/simple-repo',
+              repositoryCache: 'disabled',
+            },
+          ],
+        });
+        defaultArgv = defaultArgv.concat(['org/simple-repo']);
+        await configParser.parseConfigs(defaultEnv, defaultArgv);
+        expect(logger.warn).toHaveBeenCalledWith(
+          'CLI config is overridding the `repositories` config previously set',
+        );
+      });
+
+      it('does not warn when both values are the same', async () => {
+        fileConfigParser.getConfig.mockResolvedValue({
+          repositories: ['org/simple-repo'],
+        });
+        defaultArgv = defaultArgv.concat(['org/simple-repo']);
+        await configParser.parseConfigs(defaultEnv, defaultArgv);
+        expect(logger.warn).not.toHaveBeenCalledWith(
+          'CLI config is overridding the `repositories` config previously set',
+        );
+      });
+
+      // TODO
+      it('warns when both values are effectively the same', async () => {
+        fileConfigParser.getConfig.mockResolvedValue({
+          repositories: [
+            {
+              repository: 'org/simple-repo',
+            },
+          ],
+        });
+        defaultArgv = defaultArgv.concat(['org/simple-repo']);
+        await configParser.parseConfigs(defaultEnv, defaultArgv);
+        expect(logger.warn).toHaveBeenCalledWith(
+          'CLI config is overridding the `repositories` config previously set',
+        );
+      });
     });
   });
 });

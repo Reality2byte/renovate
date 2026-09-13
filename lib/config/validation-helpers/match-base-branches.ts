@@ -1,6 +1,6 @@
-import is from '@sindresorhus/is';
-import type { ValidationMessage } from '../types';
-import type { CheckBaseBranchesArgs } from './types';
+import { isNonEmptyArray } from '@sindresorhus/is';
+import type { ValidationMessage } from '../types.ts';
+import { type CheckBaseBranchesArgs, ConfigValidationTopic } from './types.ts';
 
 /**
  * Only if type condition or context condition violated then errors array will be mutated to store metadata
@@ -8,16 +8,17 @@ import type { CheckBaseBranchesArgs } from './types';
 export function check({
   resolvedRule,
   currentPath,
-  baseBranches,
+  baseBranchPatterns,
 }: CheckBaseBranchesArgs): ValidationMessage[] {
   const warnings: ValidationMessage[] = [];
-  if (Array.isArray(resolvedRule.matchBaseBranches)) {
-    if (!is.nonEmptyArray(baseBranches)) {
-      warnings.push({
-        topic: 'Configuration Error',
-        message: `${currentPath}: You must configure baseBranches inorder to use them inside matchBaseBranches.`,
-      });
-    }
+  if (
+    Array.isArray(resolvedRule.matchBaseBranches) &&
+    !isNonEmptyArray(baseBranchPatterns)
+  ) {
+    warnings.push({
+      topic: ConfigValidationTopic.Error,
+      message: `${currentPath}: You must configure baseBranchPatterns in order to use them inside matchBaseBranches.`,
+    });
   }
 
   return warnings;

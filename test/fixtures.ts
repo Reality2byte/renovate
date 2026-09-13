@@ -1,12 +1,15 @@
-import fs from 'node:fs';
 import type { PathLike, Stats } from 'node:fs';
 import callsite from 'callsite';
+import { parse as parseJsonc } from 'jsonc-weaver';
 import type { DirectoryJSON } from 'memfs';
 import { fs as memfs, vol } from 'memfs';
-import type { TDataOut } from 'memfs/lib/encoding';
+
+type TDataOut = string | Buffer;
+
 import upath from 'upath';
 
-const realFs = fs; //jest.requireActual<typeof fs>('fs');
+// oxlint-disable-next-line typescript/no-require-imports
+const realFs: typeof import('node:fs') = require('node:fs'); // used to bypass vitest mock
 
 /**
  * Class to work with in-memory file-system
@@ -67,6 +70,23 @@ export class Fixtures {
   }
 
   /**
+   * Returns content from fixture file from __fixtures__ folder and parses as JSONC
+   * @param name name of the fixture file
+   * @param [fixturesRoot] - Where to find the fixtures, uses the current test folder by default
+   * @returns
+   */
+  static getJsonc<T = any>(name: string, fixturesRoot = '.'): T {
+    return parseJsonc(
+      realFs.readFileSync(
+        upath.resolve(Fixtures.getPathToFixtures(fixturesRoot), name),
+        {
+          encoding: 'utf-8',
+        },
+      ),
+    ) as T;
+  }
+
+  /**
    * Adds files from a flat json object to the file-system
    * @param json flat object
    * @param cwd is an optional string used to compute absolute file paths, if a file path is given in a relative form
@@ -95,14 +115,15 @@ export class Fixtures {
    */
   static reset(): void {
     vol.reset();
-    fsExtraMock.pathExists.mockImplementation(pathExists);
-    fsExtraMock.remove.mockImplementation(memfs.promises.rm);
-    fsExtraMock.removeSync.mockImplementation(memfs.rmSync);
-    fsExtraMock.readFile.mockImplementation(readFile);
-    fsExtraMock.writeFile.mockImplementation(memfs.promises.writeFile);
-    fsExtraMock.outputFile.mockImplementation(outputFile);
-    fsExtraMock.stat.mockImplementation(stat);
-    fsExtraMock.chmod.mockImplementation(memfs.promises.chmod);
+    fsExtraMock.pathExists.mockReset();
+    fsExtraMock.remove.mockReset();
+    fsExtraMock.removeSync.mockReset();
+    fsExtraMock.readFile.mockReset();
+    fsExtraMock.writeFile.mockReset();
+    fsExtraMock.outputFile.mockReset();
+    fsExtraMock.stat.mockReset();
+    fsExtraMock.chmod.mockReset();
+    fsExtraMock.ensureDir.mockReset();
   }
 
   private static getPathToFixtures(fixturesRoot = '.'): string {
@@ -113,27 +134,32 @@ export class Fixtures {
 }
 
 const fsExtraMock = {
-  pathExists: jest.fn(),
-  remove: jest.fn(),
-  removeSync: jest.fn(),
-  readFile: jest.fn(),
-  writeFile: jest.fn(),
-  outputFile: jest.fn(),
-  stat: jest.fn(),
-  chmod: jest.fn(),
+  pathExists: vi.fn(pathExists),
+  remove: vi.fn(memfs.promises.rm),
+  removeSync: vi.fn(memfs.rmSync),
+  readFile: vi.fn(readFile),
+  writeFile: vi.fn(memfs.promises.writeFile),
+  outputFile: vi.fn(outputFile),
+  stat: vi.fn(stat),
+  chmod: vi.fn(memfs.promises.chmod),
+  // See fs-extra
+  ensureDir: vi.fn((path) =>
+    memfs.promises.mkdir(path, { recursive: true, mode: 0o777 }),
+  ),
 };
 
 // Temporary solution, when all tests will be rewritten to Fixtures mocks can be moved into __mocks__ folder
 export function fsExtra(): any {
-  return {
+  const fs = {
     ...memfs,
     ...fsExtraMock,
   };
+  return { ...fs, default: fs };
 }
 
 export function readFile(fileName: string, options: any): Promise<TDataOut> {
   if (fileName.endsWith('.wasm') || fileName.endsWith('.wasm.gz')) {
-    return fs.promises.readFile(fileName, options);
+    return realFs.promises.readFile(fileName, options);
   }
 
   return memfs.promises.readFile(fileName, options);

@@ -1,63 +1,112 @@
-import is from '@sindresorhus/is';
+import {
+  ATTR_VCS_OWNER_NAME,
+  ATTR_VCS_PROVIDER_NAME,
+  ATTR_VCS_REPOSITORY_NAME,
+} from '@opentelemetry/semantic-conventions/incubating';
+import {
+  isNonEmptyObject,
+  isNonEmptyString,
+  isNonEmptyStringAndNotWhitespace,
+  isString,
+} from '@sindresorhus/is';
 import { ERROR } from 'bunyan';
 import fs from 'fs-extra';
 import semver from 'semver';
 import upath from 'upath';
-import * as configParser from '../../config';
-import { mergeChildConfig } from '../../config';
-import { GlobalConfig } from '../../config/global';
-import { resolveConfigPresets } from '../../config/presets';
-import { validateConfigSecrets } from '../../config/secrets';
+import { GlobalConfig } from '../../config/global.ts';
+import * as configParser from '../../config/index.ts';
+import { resolveConfigPresets } from '../../config/presets/index.ts';
+import { validateConfigSecretsAndVariables } from '../../config/secrets.ts';
 import type {
   AllConfig,
+  InternalGlobalConfigOptions,
   RenovateConfig,
   RenovateRepository,
-} from '../../config/types';
-import { CONFIG_PRESETS_INVALID } from '../../constants/error-messages';
-import { pkg } from '../../expose.cjs';
-import { instrument } from '../../instrumentation';
-import { exportStats, finalizeReport } from '../../instrumentation/reporting';
-import { getProblems, logger, setMeta } from '../../logger';
-import { setGlobalLogLevelRemaps } from '../../logger/remap';
-import * as hostRules from '../../util/host-rules';
-import * as queue from '../../util/http/queue';
-import * as throttle from '../../util/http/throttle';
-import { regexEngineStatus } from '../../util/regex';
-import { addSecretForSanitizing } from '../../util/sanitize';
-import * as repositoryWorker from '../repository';
-import { autodiscoverRepositories } from './autodiscover';
-import { parseConfigs } from './config/parse';
-import { globalFinalize, globalInitialize } from './initialize';
-import { isLimitReached } from './limits';
+  RepoGlobalConfig,
+} from '../../config/types.ts';
+import { CONFIG_PRESETS_INVALID } from '../../constants/error-messages.ts';
+import { pkg } from '../../expose.ts';
+import { instrument } from '../../instrumentation/index.ts';
+import {
+  exportStats,
+  finalizeReport,
+} from '../../instrumentation/reporting.ts';
+import { getProblems, logLevel, logger, setMeta } from '../../logger/index.ts';
+import { setGlobalLogLevelRemaps } from '../../logger/remap.ts';
+import type { HostRule } from '../../types/index.ts';
+import { getEnv } from '../../util/env.ts';
+import * as hostRules from '../../util/host-rules.ts';
+import * as queue from '../../util/http/queue.ts';
+import * as throttle from '../../util/http/throttle.ts';
+import { regexEngineStatus } from '../../util/regex.ts';
+import { addSecretForSanitizing } from '../../util/sanitize.ts';
+import { coerceString } from '../../util/string.ts';
+import * as repositoryWorker from '../repository/index.ts';
+import type { RepositoryWorkerConfig } from '../repository/init/types.ts';
+import { autodiscoverRepositories } from './autodiscover.ts';
+import { parseConfigs } from './config/parse/index.ts';
+import { globalFinalize, globalInitialize } from './initialize.ts';
+import { isLimitReached } from './limits.ts';
+
+function applyGlobalOption<
+  K extends keyof RepoGlobalConfig | keyof InternalGlobalConfigOptions,
+>(
+  target: RepoGlobalConfig & InternalGlobalConfigOptions,
+  source: RepoGlobalConfig & InternalGlobalConfigOptions,
+  key: K,
+): void {
+  target[key] = source[key];
+  delete source[key];
+}
 
 export async function getRepositoryConfig(
   globalConfig: RenovateConfig,
   repository: RenovateRepository,
-): Promise<RenovateConfig> {
-  const repoConfig = configParser.mergeChildConfig(
-    globalConfig,
-    is.string(repository) ? { repository } : repository,
-  );
-  const repoParts = repoConfig.repository.split('/');
+): Promise<RepositoryWorkerConfig> {
+  const repoIsString = isString(repository);
+  const repoName = repoIsString ? repository : repository.repository;
+
+  const repoConfig: RepositoryWorkerConfig = {
+    ...globalConfig,
+    repository: repoName,
+  };
+
+  if (!repoIsString) {
+    const { repository: _repository, ...repositoryEntryConfig } = repository;
+
+    // Promote GlobalConfig.OPTIONS keys into repoConfig directly so that
+    // GlobalConfig.set(repoConfig) in the repository worker picks them up
+    // with per-repo overrides before onboarding checks run.
+    for (const option of GlobalConfig.OPTIONS) {
+      if (option in repositoryEntryConfig) {
+        applyGlobalOption(repoConfig, repositoryEntryConfig, option);
+      }
+    }
+
+    if (isNonEmptyObject(repositoryEntryConfig)) {
+      // mergeRenovateConfig later resolves this repositories[] object-entry
+      // config in the correct order
+      repoConfig.repositoryEntryConfig = repositoryEntryConfig;
+    }
+  }
+
+  const repoParts = repoName.split('/');
   repoParts.pop();
   repoConfig.parentOrg = repoParts.join('/');
   repoConfig.topLevelOrg = repoParts.shift();
-  // TODO: types (#22198)
-  const platform = GlobalConfig.get('platform')!;
+  const platform = GlobalConfig.get('platform');
   repoConfig.localDir =
     platform === 'local'
       ? process.cwd()
-      : upath.join(
-          repoConfig.baseDir,
-          `./repos/${platform}/${repoConfig.repository}`,
-        );
+      : // TODO: types (#22198)
+        upath.join(repoConfig.baseDir!, `./repos/${platform}/${repoName}`);
   await fs.ensureDir(repoConfig.localDir);
   delete repoConfig.baseDir;
   return configParser.filterConfig(repoConfig, 'repository');
 }
 
 function getGlobalConfig(): Promise<RenovateConfig> {
-  return parseConfigs(process.env, process.argv);
+  return parseConfigs(getEnv(), process.argv);
 }
 
 function haveReachedLimits(): boolean {
@@ -70,7 +119,7 @@ function haveReachedLimits(): boolean {
 
 /* istanbul ignore next */
 function checkEnv(): void {
-  const range = pkg.engines!.node!;
+  const range = pkg.engines.node;
   if (process.release?.name !== 'node' || !process.versions?.node) {
     logger.warn(
       { release: process.release, versions: process.versions },
@@ -94,21 +143,8 @@ export async function validatePresets(config: AllConfig): Promise<void> {
   }
 }
 
-export async function resolveGlobalExtends(
-  globalExtends: string[],
-): Promise<AllConfig> {
-  try {
-    // Make a "fake" config to pass to resolveConfigPresets and resolve globalPresets
-    const config = { extends: globalExtends };
-    const resolvedConfig = await resolveConfigPresets(config);
-    return resolvedConfig;
-  } catch (err) {
-    logger.error({ err }, 'Error resolving config preset');
-    throw new Error(CONFIG_PRESETS_INVALID);
-  }
-}
-
 export async function start(): Promise<number> {
+  logger.info({ renovateVersion: pkg.version }, 'Renovate started');
   // istanbul ignore next
   if (regexEngineStatus.type === 'available') {
     logger.debug('Using RE2 regex engine');
@@ -122,37 +158,40 @@ export async function start(): Promise<number> {
   }
 
   let config: AllConfig;
+  let repoExitCode = 0;
+  const env = getEnv();
   try {
-    if (is.nonEmptyStringAndNotWhitespace(process.env.AWS_SECRET_ACCESS_KEY)) {
-      addSecretForSanitizing(process.env.AWS_SECRET_ACCESS_KEY, 'global');
+    if (isNonEmptyStringAndNotWhitespace(env.AWS_SECRET_ACCESS_KEY)) {
+      addSecretForSanitizing(env.AWS_SECRET_ACCESS_KEY, 'global');
     }
-    if (is.nonEmptyStringAndNotWhitespace(process.env.AWS_SESSION_TOKEN)) {
-      addSecretForSanitizing(process.env.AWS_SESSION_TOKEN, 'global');
+    if (isNonEmptyStringAndNotWhitespace(env.AWS_SESSION_TOKEN)) {
+      addSecretForSanitizing(env.AWS_SESSION_TOKEN, 'global');
+    }
+    if (isNonEmptyStringAndNotWhitespace(env.COREPACK_NPM_TOKEN)) {
+      addSecretForSanitizing(env.COREPACK_NPM_TOKEN, 'global');
+    }
+    if (isNonEmptyStringAndNotWhitespace(env.COREPACK_NPM_PASSWORD)) {
+      addSecretForSanitizing(env.COREPACK_NPM_PASSWORD, 'global');
     }
 
     await instrument('config', async () => {
       // read global config from file, env and cli args
       config = await getGlobalConfig();
-      if (config?.globalExtends) {
-        // resolve global presets immediately
-        config = mergeChildConfig(
-          await resolveGlobalExtends(config.globalExtends),
-          config,
-        );
-      }
 
-      // Set allowedHeaders in case hostRules headers are configured in file config
+      // Set allowedHeaders and userAgent in case hostRules headers are configured in file config
       GlobalConfig.set({
         allowedHeaders: config.allowedHeaders,
+        userAgent: config.userAgent,
       });
       // initialize all submodules
       config = await globalInitialize(config);
 
-      // Set platform, endpoint and allowedHeaders in case local presets are used
+      // Set platform, endpoint, allowedHeaders and userAgent in case local presets are used
       GlobalConfig.set({
         allowedHeaders: config.allowedHeaders,
         platform: config.platform,
         endpoint: config.endpoint,
+        userAgent: config.userAgent,
       });
 
       await validatePresets(config);
@@ -161,8 +200,8 @@ export async function start(): Promise<number> {
 
       checkEnv();
 
-      // validate secrets. Will throw and abort if invalid
-      validateConfigSecrets(config);
+      // validate secrets and variables. Will throw and abort if invalid
+      validateConfigSecretsAndVariables(config);
     });
 
     // autodiscover repositories (needs to come after platform initialization)
@@ -170,7 +209,7 @@ export async function start(): Promise<number> {
       autodiscoverRepositories(config),
     );
 
-    if (is.nonEmptyString(config.writeDiscoveredRepos)) {
+    if (isNonEmptyString(config.writeDiscoveredRepos)) {
       const content = JSON.stringify(config.repositories);
       await fs.writeFile(config.writeDiscoveredRepos, content);
       logger.info(
@@ -179,11 +218,20 @@ export async function start(): Promise<number> {
       return 0;
     }
 
+    // the self-hosted admin's own headers get no exemption from `allowedHeaders` either, as `applyHostRule` filters the rule it matches by header name alone whoever set it - so we drop them here too, with a WARN, rather than leave them to be silently discarded at request time
+    // filtered once, outside the loop, rather than for every repository it processes
+    let filteredGlobalHostRules: HostRule[] | undefined;
+
     // Iterate through repositories sequentially
     for (const repository of config.repositories!) {
       if (haveReachedLimits()) {
         break;
       }
+
+      const { owner, repo } = repositoryToOwnerAndRepo(
+        isString(repository) ? repository : repository.repository,
+      );
+
       await instrument(
         'repository',
         async () => {
@@ -191,7 +239,30 @@ export async function start(): Promise<number> {
           if (repoConfig.hostRules) {
             logger.debug('Reinitializing hostRules for repo');
             hostRules.clear();
-            repoConfig.hostRules.forEach((rule) => hostRules.add(rule));
+            // `GlobalConfig` still reflects the previous repository at this point, so filter with this repository's own `allowedHeaders`: usually the global allowlist (filtered once, above), re-filtered only for a `repositories[]` entry carrying an override of its own
+            const rules =
+              // reuse the memo only for the exact global inputs it was computed from - today `repoConfig.hostRules` is always the global array, but nothing should break if that ever changes
+              repoConfig.hostRules === config.hostRules &&
+              repoConfig.allowedHeaders === config.allowedHeaders
+                ? (filteredGlobalHostRules ??= hostRules.filterAllowedHeaders(
+                    repoConfig.hostRules,
+                    config.allowedHeaders,
+                    // `globalInitialize` already registered these very rules against this very allowlist, and warned about whatever it dropped
+                    false,
+                  ))
+                : hostRules.filterAllowedHeaders(
+                    repoConfig.hostRules,
+                    repoConfig.allowedHeaders,
+                  );
+            for (const rule of rules) {
+              // already filtered: pass the same allowlist through so `add()` does not re-filter against a stale `GlobalConfig`
+              // the self-hosted admin's own rules: `trusted`, so that their `headers` are applied over any a repository or preset sets for the same host
+              hostRules.add(rule, {
+                // we haven't yet set `GlobalConfig`, so we need to explicitly pass these in
+                allowedHeaders: repoConfig.allowedHeaders,
+                trusted: true,
+              });
+            }
             repoConfig.hostRules = [];
           }
 
@@ -199,15 +270,22 @@ export async function start(): Promise<number> {
           queue.clear();
           throttle.clear();
 
-          await repositoryWorker.renovateRepository(repoConfig);
+          const repoResult =
+            await repositoryWorker.renovateRepository(repoConfig);
+          if (config.exitCodeForErrors && !repoExitCode) {
+            repoExitCode = repoResult?.exitCode ?? 0;
+          }
           setMeta({});
         },
         {
           attributes: {
-            repository:
-              typeof repository === 'string'
-                ? repository
-                : repository.repository,
+            [ATTR_VCS_PROVIDER_NAME]: config.platform,
+            [ATTR_VCS_OWNER_NAME]: owner,
+            [ATTR_VCS_REPOSITORY_NAME]: repo,
+            /** @deprecated TODO remove */
+            repository: isString(repository)
+              ? repository
+              : repository.repository,
           },
         },
       );
@@ -217,9 +295,12 @@ export async function start(): Promise<number> {
     await exportStats(config);
   } catch (err) /* istanbul ignore next */ {
     if (err.message.startsWith('Init: ')) {
-      logger.fatal(err.message.substring(6));
+      logger.fatal(
+        { errorMessage: err.message.substring(6) },
+        'Initialization error',
+      );
     } else {
-      logger.fatal({ err }, `Fatal error: ${String(err.message)}`);
+      logger.fatal({ err }, 'Unknown error');
     }
     if (!config!) {
       // return early if we can't parse config options
@@ -228,12 +309,18 @@ export async function start(): Promise<number> {
     }
   } finally {
     await globalFinalize(config!);
-    const logLevel = process.env.LOG_LEVEL ?? 'info';
-    if (logLevel === 'info') {
+    if (logLevel() === 'info') {
       logger.info(
-        `Renovate was run at log level "${logLevel}". Set LOG_LEVEL=debug in environment variables to see extended debug logs.`,
+        `Renovate was run at log level "${logLevel()}". Set LOG_LEVEL=debug in environment variables to see extended debug logs.`,
       );
     }
+  }
+  if (repoExitCode) {
+    logger.info(
+      { exitCode: repoExitCode },
+      'Renovate is exiting with an error-specific code due to a repository error',
+    );
+    return repoExitCode;
   }
   const loggerErrors = getProblems().filter((p) => p.level >= ERROR);
   if (loggerErrors.length) {
@@ -244,4 +331,14 @@ export async function start(): Promise<number> {
     return 1;
   }
   return 0;
+}
+
+function repositoryToOwnerAndRepo(fullName: string): {
+  owner: string;
+  repo: string;
+} {
+  const parts = fullName.split('/');
+  const repo = coerceString(parts.pop());
+  const owner = parts.join('/');
+  return { owner, repo };
 }

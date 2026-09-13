@@ -1,13 +1,13 @@
-import { GlobalConfig } from '../../config/global';
-import { bootstrap } from '../../proxy';
-import type { HostRule } from '../../types';
-import * as hostRules from '../host-rules';
-import { applyHostRule, findMatchingRule } from './host-rules';
-import type { GotOptions } from './types';
+import { GlobalConfig } from '../../config/global.ts';
+import { bootstrap } from '../../proxy.ts';
+import type { HostRule } from '../../types/index.ts';
+import * as hostRules from '../host-rules.ts';
+import { applyHostRule, findMatchingRule } from './host-rules.ts';
+import type { GotOptions } from './types.ts';
 
 const url = 'https://github.com';
 
-jest.mock('global-agent');
+vi.mock('global-agent');
 
 describe('util/http/host-rules', () => {
   const options: GotOptions = {
@@ -15,13 +15,18 @@ describe('util/http/host-rules', () => {
   };
 
   beforeEach(() => {
-    delete process.env.HTTP_PROXY;
+    vi.stubEnv('HTTP_PROXY', undefined);
 
     // clean up hostRules
     hostRules.clear();
     hostRules.add({
       hostType: 'github',
       token: 'token',
+    });
+    hostRules.add({
+      hostType: 'github',
+      matchHost: 'api.github.com',
+      token: 'dotcom-api-token',
     });
     hostRules.add({
       hostType: 'gitea',
@@ -44,10 +49,11 @@ describe('util/http/host-rules', () => {
       hostType: 'bitbucket',
       token: 'cdef',
     });
-  });
 
-  afterEach(() => {
-    delete process.env.HTTP_PROXY;
+    hostRules.add({
+      hostType: 'bitbucket-server',
+      token: 'cdef',
+    });
   });
 
   it('adds token', () => {
@@ -62,6 +68,23 @@ describe('util/http/host-rules', () => {
       },
       hostType: 'github',
       token: 'token',
+    });
+  });
+
+  it('adds token to an api.github.com URL', () => {
+    const url = 'https://api.github.com/user';
+
+    const opts = { ...options };
+    const hostRule = findMatchingRule(url, opts);
+    expect(hostRule).toEqual({
+      token: 'dotcom-api-token',
+    });
+    expect(applyHostRule(url, opts, hostRule)).toEqual({
+      context: {
+        authType: undefined,
+      },
+      hostType: 'github',
+      token: 'dotcom-api-token',
     });
   });
 
@@ -137,7 +160,7 @@ describe('util/http/host-rules', () => {
   });
 
   it('disables http2', () => {
-    process.env.HTTP_PROXY = 'http://proxy';
+    vi.stubEnv('HTTP_PROXY', 'http://proxy');
     bootstrap();
     hostRules.add({ enableHttp2: true });
 
@@ -344,6 +367,250 @@ describe('util/http/host-rules', () => {
       hostType: 'pod',
       token: 'token',
     });
+
+    // in the case that an API URL is used for GitHub.com, auto-detect it as a `hostType=github`, and use the `url`'s host to find a `matchHost: github.com`
+    {
+      const url = 'https://api.github.com/renovatebot/renovate';
+
+      {
+        opts = {};
+        hostRule = findMatchingRule(url, opts);
+        expect(hostRule).toEqual({
+          token: 'dotcom-api-token',
+        });
+        expect(applyHostRule(url, opts, hostRule)).toEqual({
+          context: {
+            authType: undefined,
+          },
+          token: 'dotcom-api-token',
+        });
+      }
+
+      // in the case a Datasource uses GitHub APIs, but doesn't have an explicit wiring in via GITHUB_API_USING_HOST_TYPES, we should also auto-detect
+      // See #30490 #38725
+      {
+        const url =
+          'https://api.github.com/repos/bitrise-io/bitrise-steplib/contents';
+
+        opts = { hostType: 'bitrise' };
+        hostRule = findMatchingRule(url, opts);
+        expect(hostRule).toEqual({
+          token: 'dotcom-api-token',
+        });
+        expect(applyHostRule(url, opts, hostRule)).toEqual({
+          context: {
+            authType: undefined,
+          },
+          hostType: 'bitrise',
+          token: 'dotcom-api-token',
+        });
+      }
+
+      // and validate that this has lowest precedence compared to other rules
+      {
+        hostRules.clear();
+        hostRules.add({
+          hostType: 'github-changelog',
+          token: 'changelogtoken',
+        });
+        hostRules.add({
+          hostType: 'github',
+          token: 'token',
+        });
+        hostRules.add({
+          matchHost: 'api.github.com',
+          token: 'dotcom-api-token',
+        });
+
+        // the specific `hostType` wins if we use it
+        opts = { hostType: 'github-changelog' };
+        hostRule = findMatchingRule('https://github.com/chalk/chalk', opts);
+        expect(hostRule).toEqual({
+          token: 'changelogtoken',
+        });
+        expect(
+          applyHostRule('https://github.com/chalk/chalk', opts, hostRule),
+        ).toEqual({
+          context: {
+            authType: undefined,
+          },
+          hostType: 'github-changelog',
+          token: 'changelogtoken',
+        });
+
+        // but if no `hostType` matching, we'll use our `hostType: github` for `github.com`
+        opts = {};
+        hostRule = findMatchingRule(url, opts);
+        expect(hostRule).toEqual({
+          token: 'dotcom-api-token',
+        });
+        expect(applyHostRule(url, opts, hostRule)).toEqual({
+          context: {
+            authType: undefined,
+          },
+          token: 'dotcom-api-token',
+        });
+      }
+    }
+  });
+
+  it('when multiple GitHub host types are set', () => {
+    let opts: GotOptions;
+    let hostRule: HostRule;
+
+    hostRules.clear();
+
+    // for instance, if running with GitHub Enterprise Server, this may be set as the default host rule
+    hostRules.add({
+      hostType: 'github',
+      token: 'token',
+    });
+    // and our GitHub.com authentication
+    hostRules.add({
+      // with the `hostType`
+      hostType: 'github',
+      matchHost: 'github.com',
+      token: 'dotcom-hostType-token',
+    });
+    hostRules.add({
+      // and without `hostType`
+      matchHost: 'github.com',
+      token: 'dotcom-token',
+    });
+
+    {
+      const url = 'https://github.enterprise';
+      opts = { ...options };
+      hostRule = findMatchingRule(url, opts);
+      expect(hostRule).toEqual({
+        token: 'token',
+      });
+      expect(applyHostRule(url, opts, hostRule)).toEqual({
+        context: {
+          authType: undefined,
+        },
+        hostType: 'github',
+        token: 'token',
+      });
+    }
+
+    {
+      const url = 'https://github.enterprise/api/v4';
+      opts = { ...options };
+      hostRule = findMatchingRule(url, opts);
+      expect(hostRule).toEqual({
+        token: 'token',
+      });
+      expect(applyHostRule(url, opts, hostRule)).toEqual({
+        context: {
+          authType: undefined,
+        },
+        hostType: 'github',
+        token: 'token',
+      });
+    }
+
+    {
+      const url = 'https://api.github.com/user';
+      opts = { ...options };
+      hostRule = findMatchingRule(url, opts);
+      expect(hostRule).toEqual({
+        token: 'dotcom-hostType-token',
+      });
+      expect(applyHostRule(url, opts, hostRule)).toEqual({
+        context: {
+          authType: undefined,
+        },
+        hostType: 'github',
+        token: 'dotcom-hostType-token',
+      });
+    }
+
+    opts = { ...options, hostType: 'github-tags' };
+    hostRule = findMatchingRule(url, opts);
+    expect(hostRule).toEqual({
+      token: 'dotcom-token',
+    });
+    expect(applyHostRule(url, opts, hostRule)).toEqual({
+      context: {
+        authType: undefined,
+      },
+      hostType: 'github-tags',
+      token: 'dotcom-token',
+    });
+
+    opts = { ...options, hostType: 'github-changelog' };
+    hostRule = findMatchingRule(url, opts);
+    expect(hostRule).toEqual({
+      token: 'dotcom-token',
+    });
+    expect(applyHostRule(url, opts, hostRule)).toEqual({
+      context: {
+        authType: undefined,
+      },
+      hostType: 'github-changelog',
+      token: 'dotcom-token',
+    });
+
+    opts = { ...options, hostType: 'pod' };
+    hostRule = findMatchingRule(url, opts);
+    expect(hostRule).toEqual({
+      token: 'dotcom-token',
+    });
+    expect(applyHostRule(url, opts, hostRule)).toEqual({
+      context: {
+        authType: undefined,
+      },
+      hostType: 'pod',
+      token: 'dotcom-token',
+    });
+  });
+
+  describe('GHE platform endpoint fallback', () => {
+    beforeEach(() => {
+      GlobalConfig.set({
+        platform: 'github',
+        endpoint: 'https://ghe.example.com/',
+      });
+      hostRules.clear();
+      hostRules.add({
+        hostType: 'github',
+        matchHost: 'ghe.example.com',
+        token: 'ghe-token',
+      });
+    });
+
+    it('fallback to github for non-listed hostType targeting GHE endpoint', () => {
+      // github-digest is NOT in GITHUB_API_USING_HOST_TYPES,
+      // but should still get credentials when targeting the GHE endpoint
+      const opts = { hostType: 'github-digest' };
+      const hostRule = findMatchingRule(
+        'https://ghe.example.com/api/v3/',
+        opts,
+      );
+      expect(hostRule).toEqual({
+        token: 'ghe-token',
+      });
+      expect(
+        applyHostRule('https://ghe.example.com/api/v3/', opts, hostRule),
+      ).toEqual({
+        context: {
+          authType: undefined,
+        },
+        hostType: 'github-digest',
+        token: 'ghe-token',
+      });
+    });
+
+    it('no fallback when request targets a different host', () => {
+      // Request targets a different host than the platform endpoint — no fallback
+      const opts = { hostType: 'github-digest' };
+      const hostRule = findMatchingRule(
+        'https://other-ghe.example.com/api/v3/',
+        opts,
+      );
+      expect(hostRule).toEqual({});
+    });
   });
 
   it('no fallback to gitlab', () => {
@@ -494,6 +761,40 @@ describe('util/http/host-rules', () => {
     });
   });
 
+  it('no fallback to bitbucket-server', () => {
+    hostRules.add({
+      hostType: 'bitbucket-server-tags',
+      username: 'some',
+      password: 'xxx',
+    });
+    const opts = { ...options, hostType: 'bitbucket-server-tags' };
+    const hostRule = findMatchingRule(url, opts);
+    expect(hostRule).toEqual({
+      password: 'xxx',
+      username: 'some',
+    });
+    expect(applyHostRule(url, opts, hostRule)).toEqual({
+      hostType: 'bitbucket-server-tags',
+      username: 'some',
+      password: 'xxx',
+    });
+  });
+
+  it('fallback to bitbucket-server', () => {
+    const opts = { ...options, hostType: 'bitbucket-server-tags' };
+    const hostRule = findMatchingRule(url, opts);
+    expect(hostRule).toEqual({
+      token: 'cdef',
+    });
+    expect(applyHostRule(url, opts, hostRule)).toEqual({
+      context: {
+        authType: undefined,
+      },
+      hostType: 'bitbucket-server-tags',
+      token: 'cdef',
+    });
+  });
+
   it('no fallback to gitea', () => {
     hostRules.add({
       hostType: 'gitea-tags',
@@ -541,6 +842,41 @@ describe('util/http/host-rules', () => {
       headers: {
         'X-Auth-Token': 'token',
       },
+    });
+  });
+
+  it('should replace existing headers with host rule headers', () => {
+    GlobalConfig.set({ allowedHeaders: ['Accept'] });
+    const hostRule = {
+      matchHost: 'https://domain.com/all-versions',
+      headers: {
+        Accept: 'replacement',
+      },
+    };
+    const options = {
+      headers: {
+        Accept: 'default',
+      },
+    };
+    expect(applyHostRule(url, options, hostRule)).toEqual({
+      headers: {
+        Accept: 'replacement',
+      },
+    });
+  });
+
+  it('enabled=false with noAuth', () => {
+    hostRules.add({
+      hostType: 'docker',
+      enabled: false,
+    });
+
+    const opts = { ...options, hostType: 'docker', noAuth: true };
+    const hostRule = findMatchingRule(url, opts);
+    expect(applyHostRule(url, opts, hostRule)).toEqual({
+      hostType: 'docker',
+      noAuth: true,
+      enabled: false,
     });
   });
 });

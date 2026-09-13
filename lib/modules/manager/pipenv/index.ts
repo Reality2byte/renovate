@@ -1,15 +1,20 @@
-import type { Category } from '../../../constants';
-import { PypiDatasource } from '../../datasource/pypi';
+import type { Category } from '../../../constants/index.ts';
+import { PypiDatasource } from '../../datasource/pypi/index.ts';
 
-export { extractPackageFile } from './extract';
-export { updateArtifacts } from './artifacts';
+export { updateArtifacts } from './artifacts.ts';
+export { extractPackageFile } from './extract.ts';
 
 export const supportsLockFileMaintenance = true;
+export const lockFileNames = ['Pipfile.lock'];
+export const lockFileMaintenanceIsDelegatedToPackageManager = true;
+
+export const url = 'https://pipenv.pypa.io/en/latest';
+export const categories: Category[] = ['python'];
+
+export const defaultConfig = {
+  managerFilePatterns: ['/(^|/)Pipfile$/'],
+};
 
 export const supportedDatasources = [PypiDatasource.id];
 
-export const defaultConfig = {
-  fileMatch: ['(^|/)Pipfile$'],
-};
-
-export const categories: Category[] = ['python'];
+export { knownDepTypes, supportsDynamicDepTypesNote } from './dep-types.ts';

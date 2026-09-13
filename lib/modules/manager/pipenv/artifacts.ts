@@ -1,10 +1,14 @@
 import { pipenv as pipenvDetect } from '@renovatebot/detect-tools';
-import is from '@sindresorhus/is';
-import { TEMPORARY_ERROR } from '../../../constants/error-messages';
-import { logger } from '../../../logger';
-import type { HostRule } from '../../../types';
-import { exec } from '../../../util/exec';
-import type { ExecOptions, ExtraEnv, Opt } from '../../../util/exec/types';
+import {
+  isNonEmptyStringAndNotWhitespace,
+  isUrlInstance,
+} from '@sindresorhus/is';
+import { TEMPORARY_ERROR } from '../../../constants/error-messages.ts';
+import { logger } from '../../../logger/index.ts';
+import type { HostRule } from '../../../types/index.ts';
+import { coerceArray } from '../../../util/array.ts';
+import { exec } from '../../../util/exec/index.ts';
+import type { ExecOptions, ExtraEnv, Opt } from '../../../util/exec/types.ts';
 import {
   deleteLocalFile,
   ensureCacheDir,
@@ -12,15 +16,15 @@ import {
   localPathExists,
   readLocalFile,
   writeLocalFile,
-} from '../../../util/fs';
-import { ensureLocalPath } from '../../../util/fs/util';
-import { getRepoStatus } from '../../../util/git';
-import { find } from '../../../util/host-rules';
-import { regEx } from '../../../util/regex';
-import { parseUrl } from '../../../util/url';
-import { PypiDatasource } from '../../datasource/pypi';
-import type { UpdateArtifact, UpdateArtifactsResult } from '../types';
-import { extractPackageFile } from './extract';
+} from '../../../util/fs/index.ts';
+import { ensureLocalPath } from '../../../util/fs/util.ts';
+import { getRepoStatus } from '../../../util/git/index.ts';
+import { find } from '../../../util/host-rules.ts';
+import { regEx } from '../../../util/regex.ts';
+import { parseUrl } from '../../../util/url.ts';
+import { PypiDatasource } from '../../datasource/pypi/index.ts';
+import type { UpdateArtifact, UpdateArtifactsResult } from '../types.ts';
+import { extractPackageFile } from './extract.ts';
 
 export function getMatchingHostRule(url: string): HostRule | null {
   const parsedUrl = parseUrl(url);
@@ -40,11 +44,11 @@ async function findPipfileSourceUrlsWithCredentials(
 ): Promise<URL[]> {
   const pipfile = await extractPackageFile(pipfileContent, pipfileName);
 
-  return (
+  return coerceArray(
     pipfile?.registryUrls
       ?.map(parseUrl)
-      .filter(is.urlInstance)
-      .filter((url) => is.nonEmptyStringAndNotWhitespace(url.username)) ?? []
+      .filter(isUrlInstance)
+      .filter((url) => isNonEmptyStringAndNotWhitespace(url.username)),
   );
 }
 
@@ -60,7 +64,7 @@ export function extractEnvironmentVariableName(
 }
 
 export function addExtraEnvVariable(
-  extraEnv: ExtraEnv<unknown>,
+  extraEnv: ExtraEnv,
   environmentVariableName: string,
   environmentValue: string,
 ): void {
@@ -72,7 +76,8 @@ export function addExtraEnvVariable(
     extraEnv[environmentVariableName] !== environmentValue
   ) {
     logger.warn(
-      `Possible misconfiguration, ${environmentVariableName} is already set to a different value`,
+      { envVar: environmentVariableName },
+      'Possible misconfiguration, environment variable already set to a different value',
     );
   }
   extraEnv[environmentVariableName] = environmentValue;
@@ -87,7 +92,7 @@ export function addExtraEnvVariable(
 async function addCredentialsForSourceUrls(
   newPipfileContent: string,
   pipfileName: string,
-  extraEnv: ExtraEnv<unknown>,
+  extraEnv: ExtraEnv,
 ): Promise<void> {
   const sourceUrls = await findPipfileSourceUrlsWithCredentials(
     newPipfileContent,
@@ -128,7 +133,7 @@ export async function updateArtifacts({
 }: UpdateArtifact): Promise<UpdateArtifactsResult[] | null> {
   logger.debug(`pipenv.updateArtifacts(${pipfileName})`);
 
-  const lockFileName = pipfileName + '.lock';
+  const lockFileName = `${pipfileName}.lock`;
   if (!(await localPathExists(lockFileName))) {
     logger.debug('No Pipfile.lock found');
     return null;
@@ -154,7 +159,6 @@ export async function updateArtifacts({
     const execOptions: ExecOptions = {
       cwdFile: pipfileName,
       docker: {},
-      userConfiguredEnv: config.env,
       toolConstraints: [
         {
           toolName: 'python',
@@ -194,7 +198,7 @@ export async function updateArtifacts({
     return [
       {
         artifactError: {
-          lockFile: lockFileName,
+          fileName: lockFileName,
           stderr: err.message,
         },
       },

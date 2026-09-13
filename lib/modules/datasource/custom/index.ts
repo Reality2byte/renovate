@@ -1,11 +1,15 @@
-import is from '@sindresorhus/is';
-import { logger } from '../../../logger';
-import { getExpression } from '../../../util/jsonata';
-import { Datasource } from '../datasource';
-import type { DigestConfig, GetReleasesConfig, ReleaseResult } from '../types';
-import { fetchers } from './formats';
-import { ReleaseResultZodSchema } from './schema';
-import { getCustomConfig } from './utils';
+import { isNullOrUndefined } from '@sindresorhus/is';
+import { logger } from '../../../logger/index.ts';
+import { getExpression } from '../../../util/jsonata.ts';
+import { Datasource } from '../datasource.ts';
+import type {
+  DigestConfig,
+  GetReleasesConfig,
+  ReleaseResult,
+} from '../types.ts';
+import { fetchers } from './formats/index.ts';
+import { ReleaseResultZod } from './schema.ts';
+import { getCustomConfig } from './utils.ts';
 
 export class CustomDatasource extends Datasource {
   static readonly id = 'custom';
@@ -20,7 +24,7 @@ export class CustomDatasource extends Datasource {
     getReleasesConfig: GetReleasesConfig,
   ): Promise<ReleaseResult | null> {
     const config = getCustomConfig(getReleasesConfig);
-    if (is.nullOrUndefined(config)) {
+    if (isNullOrUndefined(config)) {
       return null;
     }
 
@@ -43,32 +47,42 @@ export class CustomDatasource extends Datasource {
       return null;
     }
 
-    logger.trace({ data }, `Custom manager fetcher '${format}' returned data.`);
+    logger.trace(
+      { data },
+      `Custom datasource API fetcher '${format}' received data. Starting transformation.`,
+    );
 
     for (const transformTemplate of transformTemplates) {
       const expression = getExpression(transformTemplate);
 
       if (expression instanceof Error) {
         logger.once.warn(
-          { errorMessage: expression.message },
-          `Invalid JSONata expression: ${transformTemplate}`,
+          { errorMessage: expression.message, transformTemplate },
+          'Invalid JSONata expression',
         );
         return null;
       }
 
       try {
-        data = await expression.evaluate(data);
+        const modifiedData = await expression.evaluate(data);
+
+        logger.trace(
+          { before: data, after: modifiedData },
+          `Custom datasource transformed data.`,
+        );
+
+        data = modifiedData;
       } catch (err) {
         logger.once.warn(
-          { err },
-          `Error while evaluating JSONata expression: ${transformTemplate}`,
+          { err, transformTemplate },
+          'Error while evaluating JSONata expression',
         );
         return null;
       }
     }
 
     try {
-      const parsed = ReleaseResultZodSchema.parse(data);
+      const parsed = ReleaseResultZod.parse(data);
       return structuredClone(parsed);
     } catch (err) {
       logger.debug({ err }, `Response has failed validation`);
@@ -78,8 +92,8 @@ export class CustomDatasource extends Datasource {
   }
 
   override getDigest(
-    { packageName }: DigestConfig,
-    newValue?: string,
+    _cfg: DigestConfig,
+    _newValue?: string,
   ): Promise<string | null> {
     // Return null here to support setting a digest: value can be provided digest in getReleases
     return Promise.resolve(null);

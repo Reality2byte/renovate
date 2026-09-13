@@ -1,11 +1,11 @@
 import * as marshal from '@hyrious/marshal';
 import { codeBlock } from 'common-tags';
-import { getPkgReleases } from '..';
-import * as httpMock from '../../../../test/http-mock';
-import { ExternalHostError } from '../../../types/errors/external-host-error';
-import * as rubyVersioning from '../../versioning/ruby';
-import { memCache } from './versions-endpoint-cache';
-import { RubygemsDatasource } from '.';
+import * as httpMock from '~test/http-mock.ts';
+import { ExternalHostError } from '../../../types/errors/external-host-error.ts';
+import * as rubyVersioning from '../../versioning/ruby/index.ts';
+import { getPkgReleases } from '../index.ts';
+import { RubygemsDatasource } from './index.ts';
+import { memCache } from './versions-endpoint-cache.ts';
 
 const rubygemsOrgVersions = codeBlock`
   created_at: 2023-01-01T00:00:00.000Z
@@ -13,7 +13,9 @@ const rubygemsOrgVersions = codeBlock`
   foobar 1.0.0,2.0.0,3.0.0 01010101010101010101010101010101
 `;
 
-const rubyMarshal = (data: unknown) => Buffer.from(marshal.dump(data));
+function rubyMarshal(data: unknown) {
+  return Buffer.from(marshal.dump(data));
+}
 
 describe('modules/datasource/rubygems/index', () => {
   describe('getReleases', () => {
@@ -30,14 +32,14 @@ describe('modules/datasource/rubygems/index', () => {
         .reply(200, '')
         .get('/api/v1/dependencies?gems=foobar')
         .reply(200, rubyMarshal([]));
-      expect(
-        await getPkgReleases({
+      await expect(
+        getPkgReleases({
           versioning: rubyVersioning.id,
           datasource: RubygemsDatasource.id,
           packageName: 'foobar',
           registryUrls: ['https://example.com'],
         }),
-      ).toBeNull();
+      ).resolves.toBeNull();
     });
 
     it('returns null for rubygems.org package miss', async () => {

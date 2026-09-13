@@ -1,5 +1,5 @@
-import { Fixtures } from '../../../../test/fixtures';
-import { extractPackageFile } from '.';
+import { Fixtures } from '~test/fixtures.ts';
+import { extractPackageFile } from './index.ts';
 
 describe('modules/manager/deps-edn/extract', () => {
   describe('extractPackageFile', () => {

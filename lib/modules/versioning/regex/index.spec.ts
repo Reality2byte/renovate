@@ -1,5 +1,5 @@
-import { get } from '..';
-import { CONFIG_VALIDATION } from '../../../constants/error-messages';
+import { CONFIG_VALIDATION } from '../../../constants/error-messages.ts';
+import { get } from '../index.ts';
 
 describe('modules/versioning/regex/index', () => {
   describe('regex versioning', () => {
@@ -8,7 +8,7 @@ describe('modules/versioning/regex/index', () => {
     );
 
     it('requires a valid configuration to be initialized', () => {
-      expect(() => get('regex:not a regex')).toThrow();
+      expect(() => get('regex:not a regex')).toThrow('config-validation');
     });
 
     it('works without config', () => {

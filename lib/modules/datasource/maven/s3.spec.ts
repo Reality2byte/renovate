@@ -1,13 +1,13 @@
 import { Readable } from 'node:stream';
 import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { mockClient } from 'aws-sdk-client-mock';
-import type { ReleaseResult } from '..';
-import { getPkgReleases } from '..';
-import { Fixtures } from '../../../../test/fixtures';
-import { logger } from '../../../logger';
-import * as hostRules from '../../../util/host-rules';
-import { id as versioning } from '../../versioning/maven';
-import { MavenDatasource } from '.';
+import { Fixtures } from '~test/fixtures.ts';
+import { logger } from '../../../logger/index.ts';
+import * as hostRules from '../../../util/host-rules.ts';
+import { id as versioning } from '../../versioning/maven/index.ts';
+import type { ReleaseResult } from '../index.ts';
+import { getPkgReleases } from '../index.ts';
+import { MavenDatasource } from './index.ts';
 
 const datasource = MavenDatasource.id;
 
@@ -46,7 +46,10 @@ describe('modules/datasource/maven/s3', () => {
           Bucket: 'repobucket',
           Key: 'org/example/package/maven-metadata.xml',
         })
-        .resolvesOnce({ Body: meta as never });
+        .resolvesOnce({
+          Body: meta as never,
+          LastModified: new Date('2020-01-01T00:00Z'),
+        });
 
       const res = await get('org.example:package', baseUrlS3);
 
@@ -62,6 +65,11 @@ describe('modules/datasource/maven/s3', () => {
           { version: '1.0.2' },
           { version: '1.0.3' },
         ],
+        respectLatest: false,
+        tags: {
+          latest: '1.0.2',
+          release: '1.0.2',
+        },
         isPrivate: true,
       });
     });
@@ -85,11 +93,12 @@ describe('modules/datasource/maven/s3', () => {
         const res = await get('org.example:package', baseUrlS3);
 
         expect(res).toBeNull();
+
         expect(logger.debug).toHaveBeenCalledWith(
           {
             failedUrl: 's3://repobucket/org/example/package/maven-metadata.xml',
           },
-          'Dependency lookup authorization failed. Please correct AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY env vars',
+          'Maven S3 lookup error: credentials provider error, check "AWS_ACCESS_KEY_ID" and "AWS_SECRET_ACCESS_KEY" variables',
         );
       });
 
@@ -104,11 +113,12 @@ describe('modules/datasource/maven/s3', () => {
         const res = await get('org.example:package', baseUrlS3);
 
         expect(res).toBeNull();
+
         expect(logger.debug).toHaveBeenCalledWith(
           {
             failedUrl: 's3://repobucket/org/example/package/maven-metadata.xml',
           },
-          'Dependency lookup failed. Please a correct AWS_REGION env var',
+          'Maven S3 lookup error: missing region, check "AWS_REGION" variable',
         );
       });
 
@@ -123,11 +133,12 @@ describe('modules/datasource/maven/s3', () => {
         const res = await get('org.example:package', baseUrlS3);
 
         expect(res).toBeNull();
+
         expect(logger.trace).toHaveBeenCalledWith(
           {
             failedUrl: 's3://repobucket/org/example/package/maven-metadata.xml',
           },
-          'S3 url not found',
+          'Maven S3 lookup error: object not found',
         );
       });
 
@@ -142,12 +153,26 @@ describe('modules/datasource/maven/s3', () => {
         const res = await get('org.example:package', baseUrlS3);
 
         expect(res).toBeNull();
+
         expect(logger.trace).toHaveBeenCalledWith(
           {
             failedUrl: 's3://repobucket/org/example/package/maven-metadata.xml',
           },
-          'S3 url not found',
+          'Maven S3 lookup error: object not found',
         );
+      });
+
+      it('returns null for Deleted marker', async () => {
+        s3mock
+          .on(GetObjectCommand, {
+            Bucket: 'repobucket',
+            Key: 'org/example/package/maven-metadata.xml',
+          })
+          .resolvesOnce({ DeleteMarker: true });
+
+        const res = await get('org.example:package', baseUrlS3);
+
+        expect(res).toBeNull();
       });
 
       it('returns null for unknown error', async () => {
@@ -161,12 +186,13 @@ describe('modules/datasource/maven/s3', () => {
         const res = await get('org.example:package', baseUrlS3);
 
         expect(res).toBeNull();
+
         expect(logger.debug).toHaveBeenCalledWith(
           {
+            err: expect.objectContaining({ message: 'Unknown error' }),
             failedUrl: 's3://repobucket/org/example/package/maven-metadata.xml',
-            message: 'Unknown error',
           },
-          'Unknown S3 download error',
+          'Maven S3 lookup error: unknown error',
         );
       });
 
@@ -177,10 +203,7 @@ describe('modules/datasource/maven/s3', () => {
             Key: 'org/example/package/maven-metadata.xml',
           })
           .resolvesOnce({});
-        expect(await get('org.example:package', baseUrlS3)).toBeNull();
-        expect(logger.debug).toHaveBeenCalledWith(
-          "Expecting Readable response type got 'undefined' type instead",
-        );
+        await expect(get('org.example:package', baseUrlS3)).resolves.toBeNull();
       });
     });
   });

@@ -1,20 +1,27 @@
-import is from '@sindresorhus/is';
-import { logger } from '../../../logger';
-import { cache } from '../../../util/cache/package/decorator';
-import { regEx } from '../../../util/regex';
-import { addSecretForSanitizing } from '../../../util/sanitize';
-import { parseUrl } from '../../../util/url';
-import { id as semverId } from '../../versioning/semver';
-import { BitbucketTagsDatasource } from '../bitbucket-tags';
-import { Datasource } from '../datasource';
-import { GitTagsDatasource } from '../git-tags';
-import { GithubTagsDatasource } from '../github-tags';
-import { GitlabTagsDatasource } from '../gitlab-tags';
-import type { DigestConfig, GetReleasesConfig, ReleaseResult } from '../types';
-import { BaseGoDatasource } from './base';
-import { parseGoproxy } from './goproxy-parser';
-import { GoDirectDatasource } from './releases-direct';
-import { GoProxyDatasource } from './releases-goproxy';
+import { isString } from '@sindresorhus/is';
+import { logger } from '../../../logger/index.ts';
+import { withCache } from '../../../util/cache/package/with-cache.ts';
+import { getEnv } from '../../../util/env.ts';
+import { regEx } from '../../../util/regex.ts';
+import { addSecretForSanitizing } from '../../../util/sanitize.ts';
+import { parseUrl } from '../../../util/url.ts';
+import { id as semverId } from '../../versioning/semver/index.ts';
+import { BitbucketTagsDatasource } from '../bitbucket-tags/index.ts';
+import { Datasource } from '../datasource.ts';
+import { ForgejoTagsDatasource } from '../forgejo-tags/index.ts';
+import { GitTagsDatasource } from '../git-tags/index.ts';
+import { GiteaTagsDatasource } from '../gitea-tags/index.ts';
+import { GithubTagsDatasource } from '../github-tags/index.ts';
+import { GitlabTagsDatasource } from '../gitlab-tags/index.ts';
+import type {
+  DigestConfig,
+  GetReleasesConfig,
+  ReleaseResult,
+} from '../types.ts';
+import { BaseGoDatasource } from './base.ts';
+import { parseGoproxy } from './goproxy-parser.ts';
+import { GoDirectDatasource } from './releases-direct.ts';
+import { GoProxyDatasource } from './releases-goproxy.ts';
 
 export class GoDatasource extends Datasource {
   static readonly id = 'go';
@@ -33,7 +40,7 @@ export class GoDatasource extends Datasource {
 
   override readonly releaseTimestampSupport = true;
   override readonly releaseTimestampNote =
-    'If the release timestamp is not returned from the respective datasoure used to fetch the releases, then Renovate uses the `Time` field in the results instead.';
+    'If the release timestamp is not returned from the respective datasoure used to fetch the releases, then Renovate uses the `Time` field in the results instead. For modules hosted on GitHub, a later GitHub Release publication time takes precedence over both.';
   override readonly sourceUrlSupport = 'package';
   override readonly sourceUrlNote =
     'The source URL is determined from the `packageName` and `registryUrl`.';
@@ -45,13 +52,27 @@ export class GoDatasource extends Datasource {
   static readonly pversionRegexp = regEx(
     /v\d+\.\d+\.\d+-(?:\w+\.)?(?:0\.)?\d{14}-(?<digest>[a-f0-9]{12})/,
   );
-  @cache({
-    namespace: `datasource-${GoDatasource.id}`,
-    // TODO: types (#22198)
-    key: ({ packageName }: GetReleasesConfig) => `getReleases:${packageName}`,
-  })
-  getReleases(config: GetReleasesConfig): Promise<ReleaseResult | null> {
+
+  private _getReleases(
+    config: GetReleasesConfig,
+  ): Promise<ReleaseResult | null> {
     return this.goproxy.getReleases(config);
+  }
+
+  getReleases(config: GetReleasesConfig): Promise<ReleaseResult | null> {
+    const constraintsFilteringKey =
+      config.constraintsFiltering && config.constraintsFiltering !== 'none'
+        ? `@@${config.constraintsFiltering}`
+        : '';
+    return withCache(
+      {
+        namespace: `datasource-${GoDatasource.id}`,
+        // TODO: types (#22198)
+        key: `getReleases:${config.packageName}@@${constraintsFilteringKey}`,
+        fallback: true,
+      },
+      () => this._getReleases(config),
+    );
   }
 
   /**
@@ -64,12 +85,7 @@ export class GoDatasource extends Datasource {
    *  - Determine the source URL for the module
    *  - Call the respective getDigest in github to retrieve the commit hash
    */
-  @cache({
-    namespace: `datasource-${GoDatasource.id}`,
-    key: ({ packageName }: DigestConfig, newValue?: string) =>
-      `getDigest:${packageName}:${newValue}`,
-  })
-  override async getDigest(
+  private async _getDigest(
     { packageName }: DigestConfig,
     newValue?: string,
   ): Promise<string | null> {
@@ -95,8 +111,14 @@ export class GoDatasource extends Datasource {
         : undefined;
 
     switch (source.datasource) {
+      case ForgejoTagsDatasource.id: {
+        return this.direct.forgejo.getDigest(source, tag);
+      }
       case GitTagsDatasource.id: {
         return this.direct.git.getDigest(source, tag);
+      }
+      case GiteaTagsDatasource.id: {
+        return this.direct.gitea.getDigest(source, tag);
       }
       case GithubTagsDatasource.id: {
         return this.direct.github.getDigest(source, tag);
@@ -107,17 +129,32 @@ export class GoDatasource extends Datasource {
       case GitlabTagsDatasource.id: {
         return this.direct.gitlab.getDigest(source, tag);
       }
-      /* istanbul ignore next: can never happen, makes lint happy */
+      /* v8 ignore next: can never happen, makes lint happy */
       default: {
         return null;
       }
     }
   }
+
+  override getDigest(
+    config: DigestConfig,
+    newValue?: string,
+  ): Promise<string | null> {
+    return withCache(
+      {
+        namespace: `datasource-${GoDatasource.id}`,
+        key: `getDigest:${config.packageName}:${newValue}`,
+        fallback: true,
+      },
+      () => this._getDigest(config, newValue),
+    );
+  }
 }
 
-// istanbul ignore if
-if (is.string(process.env.GOPROXY)) {
-  const uri = parseUrl(process.env.GOPROXY);
+const env = getEnv();
+/* v8 ignore if -- hard to test */
+if (isString(env.GOPROXY)) {
+  const uri = parseUrl(env.GOPROXY);
   if (uri?.password) {
     addSecretForSanitizing(uri.password, 'global');
   } else if (uri?.username) {

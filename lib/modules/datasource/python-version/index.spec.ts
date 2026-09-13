@@ -1,12 +1,14 @@
 import { satisfies } from '@renovatebot/pep440';
-import { getPkgReleases } from '..';
-import { Fixtures } from '../../../../test/fixtures';
-import * as httpMock from '../../../../test/http-mock';
-import { EXTERNAL_HOST_ERROR } from '../../../constants/error-messages';
-import * as githubGraphql from '../../../util/github/graphql';
-import { registryUrl as eolRegistryUrl } from '../endoflife-date/common';
-import { datasource, defaultRegistryUrl } from './common';
-import { PythonVersionDatasource } from '.';
+import { Fixtures } from '~test/fixtures.ts';
+import * as httpMock from '~test/http-mock.ts';
+import { EXTERNAL_HOST_ERROR } from '../../../constants/error-messages.ts';
+import { coerceArray } from '../../../util/array.ts';
+import * as githubGraphql from '../../../util/github/graphql/index.ts';
+import type { Timestamp } from '../../../util/timestamp.ts';
+import { registryUrl as eolRegistryUrl } from '../endoflife-date/common.ts';
+import { getPkgReleases } from '../index.ts';
+import { datasource, defaultRegistryUrl } from './common.ts';
+import { PythonVersionDatasource } from './index.ts';
 
 describe('modules/datasource/python-version/index', () => {
   describe('dependent datasources', () => {
@@ -31,14 +33,14 @@ describe('modules/datasource/python-version/index', () => {
         .get('/api/python.json')
         .reply(200, Fixtures.get('eol.json'));
 
-      jest.spyOn(githubGraphql, 'queryReleases').mockResolvedValueOnce([
+      vi.spyOn(githubGraphql, 'queryReleases').mockResolvedValueOnce([
         {
           id: 1,
           url: 'https://example.com',
           name: 'containerbase/python-prebuild',
           description: 'some description',
           version: '3.12.1',
-          releaseTimestamp: '2020-03-09T13:00:00Z',
+          releaseTimestamp: '2020-03-09T13:00:00Z' as Timestamp,
         },
         {
           id: 2,
@@ -46,7 +48,7 @@ describe('modules/datasource/python-version/index', () => {
           name: 'containerbase/python-prebuild',
           description: 'some description',
           version: '3.12.0',
-          releaseTimestamp: '2020-03-09T13:00:00Z',
+          releaseTimestamp: '2020-03-09T13:00:00Z' as Timestamp,
         },
         {
           id: 3,
@@ -54,7 +56,7 @@ describe('modules/datasource/python-version/index', () => {
           name: 'containerbase/python-prebuild',
           description: 'some description',
           version: '3.7.8',
-          releaseTimestamp: '2020-03-09T13:00:00Z',
+          releaseTimestamp: '2020-03-09T13:00:00Z' as Timestamp,
         },
       ]);
     });
@@ -71,22 +73,55 @@ describe('modules/datasource/python-version/index', () => {
 
     it('returns null for error', async () => {
       httpMock.scope(defaultRegistryUrl).get('').replyWithError('error');
-      expect(
-        await getPkgReleases({
+      await expect(
+        getPkgReleases({
           datasource,
           packageName: 'python',
         }),
-      ).toBeNull();
+      ).resolves.toBeNull();
+    });
+
+    it('falls back to prebuild releases on 429', async () => {
+      httpMock.scope(defaultRegistryUrl).get('').reply(429);
+      const res = await getPkgReleases({
+        datasource,
+        packageName: 'python',
+      });
+      expect(res?.releases).toHaveLength(3);
+      const versions = res?.releases.map((r) => r.version);
+      expect(versions).toContain('3.12.1');
+      expect(versions).toContain('3.12.0');
+      expect(versions).toContain('3.7.8');
+      expect(
+        res?.releases.find((r) => r.version === '3.7.8')?.isDeprecated,
+      ).toBeTrue();
+      expect(
+        res?.releases.find((r) => r.version === '3.12.1')?.isDeprecated,
+      ).toBeFalse();
+    });
+
+    it('returns null on 429 when prebuild releases are unavailable', async () => {
+      vi.spyOn(
+        PythonVersionDatasource.prototype,
+        'getPrebuildReleases',
+      ).mockResolvedValueOnce(null);
+      httpMock.scope(defaultRegistryUrl).get('').reply(429);
+      await expect(
+        getPkgReleases({
+          datasource,
+          packageName: 'python',
+        }),
+      ).resolves.toBeNull();
     });
 
     it('returns null for empty 200 OK', async () => {
       httpMock.scope(defaultRegistryUrl).get('').reply(200, []);
-      expect(
-        await getPkgReleases({
+      await expect(
+        getPkgReleases({
           datasource,
           packageName: 'python',
         }),
-      ).toBeNull();
+      ).resolves.toBeNull();
     });
 
     describe('processes real data', () => {
@@ -105,7 +140,7 @@ describe('modules/datasource/python-version/index', () => {
         expect(res?.releases[0]).toEqual({
           isDeprecated: true,
           isStable: true,
-          releaseTimestamp: '2020-06-27T12:55:01.000Z',
+          releaseTimestamp: '2020-06-27T12:55:01.000Z' as Timestamp,
           version: '3.7.8',
         });
       });
@@ -116,7 +151,7 @@ describe('modules/datasource/python-version/index', () => {
           packageName: 'python',
         });
         expect(res?.releases).toHaveLength(2);
-        for (const release of res?.releases ?? []) {
+        for (const release of coerceArray(res?.releases)) {
           expect(release.isStable).toBeTrue();
         }
       });
@@ -139,7 +174,7 @@ describe('modules/datasource/python-version/index', () => {
           packageName: 'python',
         });
         expect(res?.releases).toHaveLength(2);
-        for (const release of res?.releases ?? []) {
+        for (const release of coerceArray(res?.releases)) {
           expect(release.isDeprecated).toBeBoolean();
         }
       });

@@ -1,13 +1,15 @@
-import { logger } from '../../../logger';
-import { cache } from '../../../util/cache/package/decorator';
-import { clone } from '../../../util/clone';
-import { ensureTrailingSlash } from '../../../util/url';
-import { Datasource } from '../datasource';
-import type { GetReleasesConfig, Release, ReleaseResult } from '../types';
-import type {
+import { type ZodType } from 'zod/v4';
+import { logger } from '../../../logger/index.ts';
+import { withCache } from '../../../util/cache/package/with-cache.ts';
+import { clone } from '../../../util/clone.ts';
+import { asTimestamp } from '../../../util/timestamp.ts';
+import { ensureTrailingSlash } from '../../../util/url.ts';
+import { Datasource } from '../datasource.ts';
+import type { GetReleasesConfig, Release, ReleaseResult } from '../types.ts';
+import {
   JenkinsPluginsInfoResponse,
   JenkinsPluginsVersionsResponse,
-} from './types';
+} from './schema.ts';
 
 export class JenkinsPluginsDatasource extends Datasource {
   static readonly id = 'jenkins-plugins';
@@ -36,7 +38,7 @@ export class JenkinsPluginsDatasource extends Datasource {
     packageName,
     registryUrl,
   }: GetReleasesConfig): Promise<ReleaseResult | null> {
-    // istanbul ignore if
+    /* v8 ignore next -- should never happen */
     if (!registryUrl) {
       return null;
     }
@@ -55,21 +57,16 @@ export class JenkinsPluginsDatasource extends Datasource {
     return result;
   }
 
-  @cache({
-    namespace: `datasource-${JenkinsPluginsDatasource.id}`,
-    key: 'info',
-    ttlMinutes: 1440,
-  })
-  async getJenkinsPluginInfo(
+  private async _getJenkinsPluginInfo(
     updateSiteUrl: string,
   ): Promise<Record<string, ReleaseResult>> {
-    const { plugins } =
-      await this.getJenkinsUpdateCenterResponse<JenkinsPluginsInfoResponse>(
-        `${updateSiteUrl}${JenkinsPluginsDatasource.packageInfoPath}`,
-      );
+    const { plugins } = await this.getJenkinsUpdateCenterResponse(
+      `${updateSiteUrl}${JenkinsPluginsDatasource.packageInfoPath}`,
+      JenkinsPluginsInfoResponse,
+    );
 
     const info: Record<string, ReleaseResult> = {};
-    for (const name of Object.keys(plugins ?? [])) {
+    for (const name of Object.keys(plugins)) {
       info[name] = {
         releases: [], // releases
         sourceUrl: plugins[name]?.scm,
@@ -78,26 +75,34 @@ export class JenkinsPluginsDatasource extends Datasource {
     return info;
   }
 
-  @cache({
-    namespace: `datasource-${JenkinsPluginsDatasource.id}`,
-    key: 'versions',
-  })
-  async getJenkinsPluginVersions(
+  getJenkinsPluginInfo(
+    updateSiteUrl: string,
+  ): Promise<Record<string, ReleaseResult>> {
+    return withCache(
+      {
+        namespace: `datasource-${JenkinsPluginsDatasource.id}`,
+        key: 'info',
+        ttlMinutes: 1440,
+      },
+      () => this._getJenkinsPluginInfo(updateSiteUrl),
+    );
+  }
+
+  private async _getJenkinsPluginVersions(
     updateSiteUrl: string,
   ): Promise<Record<string, Release[]>> {
-    const { plugins } =
-      await this.getJenkinsUpdateCenterResponse<JenkinsPluginsVersionsResponse>(
-        `${updateSiteUrl}${JenkinsPluginsDatasource.packageVersionsPath}`,
-      );
+    const { plugins } = await this.getJenkinsUpdateCenterResponse(
+      `${updateSiteUrl}${JenkinsPluginsDatasource.packageVersionsPath}`,
+      JenkinsPluginsVersionsResponse,
+    );
 
     const versions: Record<string, Release[]> = {};
-    for (const name of Object.keys(plugins ?? [])) {
+    for (const name of Object.keys(plugins)) {
       versions[name] = Object.keys(plugins[name]).map((version) => {
         const downloadUrl = plugins[name][version]?.url;
         const buildDate = plugins[name][version]?.buildDate;
         const releaseTimestamp =
-          plugins[name][version]?.releaseTimestamp ??
-          (buildDate ? new Date(`${buildDate} UTC`).toISOString() : null);
+          plugins[name][version]?.releaseTimestamp ?? asTimestamp(buildDate);
         const jenkins = plugins[name][version]?.requiredCore;
         const constraints = jenkins ? { jenkins: [`>=${jenkins}`] } : undefined;
         return {
@@ -111,13 +116,28 @@ export class JenkinsPluginsDatasource extends Datasource {
     return versions;
   }
 
-  private async getJenkinsUpdateCenterResponse<T>(url: string): Promise<T> {
+  getJenkinsPluginVersions(
+    updateSiteUrl: string,
+  ): Promise<Record<string, Release[]>> {
+    return withCache(
+      {
+        namespace: `datasource-${JenkinsPluginsDatasource.id}`,
+        key: 'versions',
+      },
+      () => this._getJenkinsPluginVersions(updateSiteUrl),
+    );
+  }
+
+  private async getJenkinsUpdateCenterResponse<T>(
+    url: string,
+    schema: ZodType<T>,
+  ): Promise<T> {
     let response: T;
 
     try {
       logger.debug(`jenkins-plugins: Fetching Jenkins plugins from ${url}`);
       const startTime = Date.now();
-      response = (await this.http.getJson<T>(url)).body;
+      response = (await this.http.getJson(url, schema)).body;
       const durationMs = Math.round(Date.now() - startTime);
       logger.debug(
         { durationMs },
